@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum AssetType {
+  STOCK
+  OPTION
+  FUTURE
+  FOREX
+  CRYPTO
+  ETF
+  OTHER
+}
+
+enum Side {
+  BUY
+  SELL
+}
+
+model Account {
+  id           String          @id @default(cuid())
+  name         String
+  ibkrAccount  String          @unique
+  baseCurrency String          @default("USD")
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  executions   Execution[]
+  positions    Position[]
+  positionSnapshots PositionSnapshot[]
+  snapshots    DailySnapshot[]
+  dayNotes     DayNote[]
+  symbolNotes  SymbolNote[]
+  importBatches ImportBatch[]
+}
+
+model Instrument {
+  id          String       @id @default(cuid())
+  symbol      String
+  exchange    String?
+  assetType   AssetType    @default(STOCK)
+  currency    String       @default("USD")
+  executions  Execution[]
+  positions   Position[]
+  positionSnapshots PositionSnapshot[]
+  symbolNotes SymbolNote[]
+
+  @@unique([symbol, exchange, assetType])
+}
+
+model ImportBatch {
+  id           String      @id @default(cuid())
+  filename     String
+  fileType     String
+  importedAt   DateTime    @default(now())
+  accountId    String?
+  account      Account?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  rowsSeen     Int         @default(0)
+  rowsImported Int         @default(0)
+  rowsSkipped  Int         @default(0)
+  notes        String?
+  executions   Execution[]
+}
+
+model Execution {
+  id           String       @id @default(cuid())
+  dedupeKey    String       @unique
+  accountId    String
+  account      Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrumentId String
+  instrument   Instrument   @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  importBatchId String?
+  importBatch  ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  executedAt   DateTime
+  side         Side
+  quantity     Float
+  price        Float
+  commission   Float        @default(0)
+  fees         Float        @default(0)
+  currency     String       @default("USD")
+  orderId      String?
+  strategy     String?
+  createdAt    DateTime     @default(now())
+  tradeNote    TradeNote?
+  tags         ExecutionTag[]
+
+  @@index([executedAt])
+  @@index([accountId, executedAt])
+}
+
+model Position {
+  id            String     @id @default(cuid())
+  accountId      String
+  account        Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrumentId   String
+  instrument     Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  quantity       Float
+  avgCost        Float
+  unrealizedPnl  Float?
+  currency       String     @default("USD")
+  updatedAt      DateTime   @updatedAt
+
+  @@unique([accountId, instrumentId])
+}
+
+model PositionSnapshot {
+  id           String     @id @default(cuid())
+  accountId    String
+  account      Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  date         DateTime
+  quantity     Float
+  avgCost      Float
+  unrealizedPnl Float?
+  currency     String     @default("USD")
+  createdAt    DateTime   @default(now())
+
+  @@unique([accountId, instrumentId, date])
+  @@index([accountId, date])
+}
+
+model DailySnapshot {
+  id            String   @id @default(cuid())
+  accountId     String
+  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date          DateTime
+  equity        Float?
+  realizedPnl   Float?
+  unrealizedPnl Float?
+  currency      String   @default("USD")
+  createdAt     DateTime @default(now())
+
+  @@unique([accountId, date])
+  @@index([date])
+}
+
+model Tag {
+  id            String         @id @default(cuid())
+  name          String         @unique
+  createdAt     DateTime       @default(now())
+  executionTags ExecutionTag[]
+  dayNoteTags   DayNoteTag[]
+  symbolNoteTags SymbolNoteTag[]
+}
+
+model ExecutionTag {
+  executionId String
+  tagId       String
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  tag         Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([executionId, tagId])
+}
+
+model TradeNote {
+  id          String    @id @default(cuid())
+  executionId String    @unique
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  content     String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model DayNote {
+  id         String       @id @default(cuid())
+  accountId  String
+  account    Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  date       DateTime
+  content    String
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  tags       DayNoteTag[]
+
+  @@unique([accountId, date])
+}
+
+model ClosedTradeNote {
+  id        String   @id @default(cuid())
+  groupKey  String   @unique
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SymbolNote {
+  id           String          @id @default(cuid())
+  accountId    String
+  account      Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrumentId String
+  instrument   Instrument      @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  thesis       String
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  tags         SymbolNoteTag[]
+
+  @@unique([accountId, instrumentId])
+}
+
+model DayNoteTag {
+  dayNoteId String
+  tagId     String
+  dayNote   DayNote @relation(fields: [dayNoteId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([dayNoteId, tagId])
+}
+
+model SymbolNoteTag {
+  symbolNoteId String
+  tagId        String
+  symbolNote   SymbolNote @relation(fields: [symbolNoteId], references: [id], onDelete: Cascade)
+  tag          Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([symbolNoteId, tagId])
+}

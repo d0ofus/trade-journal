@@ -1,0 +1,109 @@
+import Link from "next/link";
+import { ClosedTradesPanel } from "@/components/closed-trades-panel";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getClosedTrades, getTrades } from "@/lib/server/queries";
+import { formatCurrency } from "@/lib/utils";
+
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+export default async function TradesPage(props: { searchParams: SearchParams }) {
+  const searchParams = await props.searchParams;
+  const filters = {
+    from: typeof searchParams.from === "string" ? searchParams.from : undefined,
+    to: typeof searchParams.to === "string" ? searchParams.to : undefined,
+    symbol: typeof searchParams.symbol === "string" ? searchParams.symbol : undefined,
+    side: typeof searchParams.side === "string" ? searchParams.side : undefined,
+    tag: typeof searchParams.tag === "string" ? searchParams.tag : undefined,
+    strategy: typeof searchParams.strategy === "string" ? searchParams.strategy : undefined,
+  };
+
+  const trades = await getTrades(filters);
+  const closedTrades = await getClosedTrades(filters);
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold">Trades</h2>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form className="grid gap-3 md:grid-cols-6" method="get">
+            <Input name="from" type="date" defaultValue={filters.from} />
+            <Input name="to" type="date" defaultValue={filters.to} />
+            <Input name="symbol" placeholder="Symbol" defaultValue={filters.symbol} />
+            <Select name="side" defaultValue={filters.side ?? ""}>
+              <option value="">All sides</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </Select>
+            <Input name="tag" placeholder="Tag" defaultValue={filters.tag} />
+            <Input name="strategy" placeholder="Strategy" defaultValue={filters.strategy} />
+            <button type="submit" className="hidden" aria-hidden />
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="pt-6">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Account</TableHead>
+                <TableHead>Symbol</TableHead>
+                <TableHead>Side</TableHead>
+                <TableHead>Qty</TableHead>
+                <TableHead>Price</TableHead>
+                <TableHead>Commission</TableHead>
+                <TableHead>Fees</TableHead>
+                <TableHead>Total Cost</TableHead>
+                <TableHead>Realized</TableHead>
+                <TableHead>Tags</TableHead>
+                <TableHead>Strategy</TableHead>
+                <TableHead>Detail</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {trades.map((trade) => (
+                <TableRow key={trade.id}>
+                  <TableCell>{trade.executedAt.toISOString().replace("T", " ").slice(0, 16)}</TableCell>
+                  <TableCell>{trade.account.ibkrAccount}</TableCell>
+                  <TableCell>{trade.instrument.symbol}</TableCell>
+                  <TableCell>{trade.side}</TableCell>
+                  <TableCell>{trade.quantity}</TableCell>
+                  <TableCell>{trade.price.toFixed(2)}</TableCell>
+                  <TableCell>{formatCurrency(trade.commission)}</TableCell>
+                  <TableCell>{formatCurrency(trade.fees)}</TableCell>
+                  <TableCell>{formatCurrency(trade.commissionTotal)}</TableCell>
+                  <TableCell className={trade.realizedPnl >= 0 ? "text-emerald-600" : "text-red-600"}>
+                    {formatCurrency(trade.realizedPnl)}
+                  </TableCell>
+                  <TableCell className="space-x-1">
+                    {trade.tags.map((tag) => (
+                      <Badge key={tag.tagId} variant="outline">
+                        {tag.tag.name}
+                      </Badge>
+                    ))}
+                  </TableCell>
+                  <TableCell>{trade.strategy ?? "-"}</TableCell>
+                  <TableCell>
+                    <Link className="text-blue-600 hover:underline" href={`/trade/${trade.id}`}>
+                      Open
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <ClosedTradesPanel closedTrades={closedTrades} />
+    </div>
+  );
+}
