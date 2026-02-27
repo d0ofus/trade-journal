@@ -61,6 +61,46 @@ export async function getDashboardData() {
 
   const returnValues = pnlRows.filter((row) => row.matchedQuantity > 0).map((row) => row.realizedPnl);
   const histogram = bucketHistogram(returnValues, 12);
+  const closedRows = pnlRows.filter((row) => row.matchedQuantity > 0);
+  const largestGain = closedRows.length > 0 ? Math.max(...closedRows.map((row) => row.realizedPnl)) : 0;
+  const largestLoss = closedRows.length > 0 ? Math.min(...closedRows.map((row) => row.realizedPnl)) : 0;
+  const winningRows = closedRows.filter((row) => row.realizedPnl > 0);
+  const losingRows = closedRows.filter((row) => row.realizedPnl < 0);
+  const avgWinHoldMs =
+    winningRows.length > 0 ? winningRows.reduce((sum, row) => sum + row.avgHoldTimeMs, 0) / winningRows.length : 0;
+  const avgLossHoldMs =
+    losingRows.length > 0 ? losingRows.reduce((sum, row) => sum + row.avgHoldTimeMs, 0) / losingRows.length : 0;
+
+  const grossDailyMap = new Map<string, number>();
+  const dailyTradeCountMap = new Map<string, number>();
+  const dailyVolumeMap = new Map<string, number>();
+
+  executions.forEach((exec) => {
+    const key = format(exec.executedAt, "yyyy-MM-dd");
+    const pnl = pnlByExecution.get(exec.id);
+    if (pnl?.matchedQuantity && pnl.matchedQuantity > 0) {
+      grossDailyMap.set(key, (grossDailyMap.get(key) ?? 0) + pnl.grossRealizedPnl);
+    }
+    dailyTradeCountMap.set(key, (dailyTradeCountMap.get(key) ?? 0) + 1);
+    dailyVolumeMap.set(key, (dailyVolumeMap.get(key) ?? 0) + Math.abs(exec.quantity));
+  });
+
+  const grossDailyPnl = [...grossDailyMap.entries()]
+    .map(([date, pnl]) => ({ date, pnl }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  let grossRunning = 0;
+  const grossCumulativePnl = grossDailyPnl.map((row) => {
+    grossRunning += row.pnl;
+    return { date: row.date, pnl: grossRunning };
+  });
+
+  const dailyTradeCounts = [...dailyTradeCountMap.entries()]
+    .map(([date, trades]) => ({ date, trades }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  const volumeDays = [...dailyVolumeMap.values()];
+  const avgDailyVolume = volumeDays.length > 0 ? volumeDays.reduce((sum, value) => sum + value, 0) / volumeDays.length : 0;
 
   const scatter = executions.map((exec) => ({
     time: format(exec.executedAt, "HH:mm"),
@@ -71,6 +111,12 @@ export async function getDashboardData() {
 
   return {
     cards: {
+      totalTrades: executions.length,
+      largestGain,
+      largestLoss,
+      avgWinHoldMs,
+      avgLossHoldMs,
+      avgDailyVolume,
       realizedDay,
       realizedWeek,
       realizedMonth,
@@ -78,6 +124,9 @@ export async function getDashboardData() {
     },
     charts: {
       dailyPnl,
+      grossDailyPnl,
+      grossCumulativePnl,
+      dailyTradeCounts,
       equityCurve,
       histogram,
       scatter,

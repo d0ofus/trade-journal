@@ -30,7 +30,7 @@ export function CandlestickWithMarkers({ candles, markers }: { candles: Candle[]
         textColor: "#334155",
       },
       width: containerRef.current.clientWidth,
-      height: 320,
+      height: 460,
       grid: {
         vertLines: { color: "#e2e8f0" },
         horzLines: { color: "#e2e8f0" },

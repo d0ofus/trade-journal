@@ -16,13 +16,16 @@ export interface ExecutionForCalc {
 export interface ExecutionPnl {
   executionId: string;
   realizedPnl: number;
+  grossRealizedPnl: number;
   cumulativePnl: number;
   matchedQuantity: number;
+  avgHoldTimeMs: number;
 }
 
 interface Lot {
   qty: number;
   price: number;
+  openedAtMs: number;
 }
 
 export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPnl[] {
@@ -45,11 +48,14 @@ export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPn
     for (const exec of group) {
       let signedQty = exec.side === "BUY" ? exec.quantity : -exec.quantity;
       let realized = 0;
+      let grossRealized = 0;
       let matched = 0;
+      let holdTimeWeightedMs = 0;
 
       while (signedQty !== 0 && lots.length > 0 && Math.sign(signedQty) !== Math.sign(lots[0].qty)) {
         const lot = lots[0];
         const matchQty = Math.min(Math.abs(signedQty), Math.abs(lot.qty));
+        const holdMs = Math.max(0, exec.executedAt.getTime() - lot.openedAtMs);
 
         if (lot.qty > 0 && signedQty < 0) {
           realized += matchQty * (exec.price - lot.price);
@@ -57,7 +63,9 @@ export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPn
           realized += matchQty * (lot.price - exec.price);
         }
 
+        grossRealized = realized;
         matched += matchQty;
+        holdTimeWeightedMs += holdMs * matchQty;
         lot.qty += Math.sign(signedQty) * matchQty;
         signedQty -= Math.sign(signedQty) * matchQty;
 
@@ -67,7 +75,7 @@ export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPn
       }
 
       if (signedQty !== 0) {
-        lots.push({ qty: signedQty, price: exec.price });
+        lots.push({ qty: signedQty, price: exec.price, openedAtMs: exec.executedAt.getTime() });
       }
 
       realized -= exec.commission + exec.fees;
@@ -76,8 +84,10 @@ export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPn
       result.push({
         executionId: exec.id,
         realizedPnl: realized,
+        grossRealizedPnl: grossRealized,
         cumulativePnl: cumulative,
         matchedQuantity: matched,
+        avgHoldTimeMs: matched > 0 ? holdTimeWeightedMs / matched : 0,
       });
     }
   }
