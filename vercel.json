@@ -3,7 +3,7 @@
   "crons": [
     {
       "path": "/api/cron/flex-import",
-      "schedule": "0 23 * * *"
+      "schedule": "0 1 * * *"
     }
   ]
 }
