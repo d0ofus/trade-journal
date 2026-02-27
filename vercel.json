@@ -1,0 +1,9 @@
+{
+  "buildCommand": "npm run prisma:migrate:deploy && npm run build",
+  "crons": [
+    {
+      "path": "/api/cron/flex-import",
+      "schedule": "0 23 * * *"
+    }
+  ]
+}

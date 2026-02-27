@@ -1,0 +1,13 @@
+Trades
+Account,Date/Time,Symbol,Exchange,Asset Type,Side,Quantity,Price,Currency,Order ID,Strategy
+DU1234567,02/25/2026 09:35:00,SPY,ARCA,ETF,BUY,50,510.10,USD,2001,opening-range
+DU1234567,02/25/2026 10:05:00,SPY,ARCA,ETF,SELL,50,511.90,USD,2002,opening-range
+
+Positions
+Account,Symbol,Exchange,Asset Type,Quantity,Avg Cost,Unrealized PnL,Currency
+DU1234567,TSLA,NASDAQ,STOCK,-20,182.10,48.00,USD
+
+Commissions
+Order ID,Commission,Fees
+2001,0.80,0.10
+2002,0.80,0.10
