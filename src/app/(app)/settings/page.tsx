@@ -1,5 +1,5 @@
-import { format } from "date-fns";
 import { FlexRunButton } from "@/components/flex-run-button";
+import { ImportHistoryList } from "@/components/import-history-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getSettingsData } from "@/lib/server/queries";
 
@@ -46,16 +46,17 @@ export default async function SettingsPage() {
           <CardTitle className="text-base">Import History</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          {batches.length === 0 && <p className="text-slate-500">No imports yet.</p>}
-          {batches.map((batch) => (
-            <div key={batch.id} className="rounded border border-slate-200 px-3 py-2">
-              <p className="font-medium">{batch.filename}</p>
-              <p className="text-slate-600">
-                {batch.fileType} | seen {batch.rowsSeen}, imported {batch.rowsImported}, skipped {batch.rowsSkipped}
-              </p>
-              <p className="text-xs text-slate-500">{format(batch.importedAt, "EEE, MMM d, yyyy h:mm:ss a")}</p>
-            </div>
-          ))}
+          <ImportHistoryList
+            batches={batches.map((batch) => ({
+              id: batch.id,
+              filename: batch.filename,
+              fileType: batch.fileType,
+              rowsSeen: batch.rowsSeen,
+              rowsImported: batch.rowsImported,
+              rowsSkipped: batch.rowsSkipped,
+              importedAt: batch.importedAt.toISOString(),
+            }))}
+          />
         </CardContent>
       </Card>
     </div>
