@@ -83,9 +83,9 @@ export async function importParsedFile(params: {
         row.orderId ?? "",
       ]);
 
-      try {
-        await prisma.execution.create({
-          data: {
+      const created = await prisma.execution.createMany({
+        data: [
+          {
             dedupeKey: key,
             accountId: account.id,
             instrumentId: instrument.id,
@@ -100,11 +100,11 @@ export async function importParsedFile(params: {
             orderId: row.orderId,
             strategy: row.strategy,
           },
-        });
-        rowsImported += 1;
-      } catch {
-        rowsSkipped += 1;
-      }
+        ],
+        skipDuplicates: true,
+      });
+      rowsImported += created.count;
+      rowsSkipped += 1 - created.count;
     }
   }
 
