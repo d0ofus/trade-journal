@@ -210,6 +210,10 @@ type TradeFilters = {
   strategy?: string;
 };
 
+function startOfUtcDay(date: Date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
 function buildExecutionWhere(filters: TradeFilters) {
   const where: Record<string, unknown> = {};
   if (filters.from || filters.to) {
@@ -261,11 +265,13 @@ export async function getClosedTrades(filters: TradeFilters) {
   const openingEntries = await Promise.all(
     [...firstExecutionByAccountInstrument.entries()].map(async ([key, firstExecutionAt]) => {
       const [accountId, instrumentId] = key.split(":");
+      const openingCutoff = startOfUtcDay(firstExecutionAt);
       const snapshot = await prisma.positionSnapshot.findFirst({
         where: {
           accountId,
           instrumentId,
-          date: { lt: firstExecutionAt },
+          // Position snapshots are day-level records; use only prior-day snapshots as opening state.
+          date: { lt: openingCutoff },
         },
         orderBy: { date: "desc" },
       });
