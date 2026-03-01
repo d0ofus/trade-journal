@@ -58,6 +58,26 @@ function filterCandles(candles: Candle[], timeframe: Timeframe) {
   return candles.filter((candle) => new Date(`${candle.time}T00:00:00`) >= cutoff);
 }
 
+function alignExecutionToBarTime(executedAt: string, candles: Candle[]) {
+  if (candles.length === 0) return executedAt.slice(0, 10);
+  const rawDate = executedAt.slice(0, 10);
+  if (candles.some((c) => c.time === rawDate)) {
+    return rawDate;
+  }
+
+  const targetTs = new Date(executedAt).getTime();
+  let fallback = candles[0].time;
+  for (const candle of candles) {
+    const candleTs = new Date(`${candle.time}T00:00:00.000Z`).getTime();
+    if (candleTs <= targetTs) {
+      fallback = candle.time;
+      continue;
+    }
+    break;
+  }
+  return fallback;
+}
+
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [candlesByKey, setCandlesByKey] = useState<Record<string, Candle[]>>({});
@@ -132,15 +152,16 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
           <div className="divide-y divide-slate-200">
             {rows.map((trade) => {
               const open = expanded === trade.groupKey;
+              const allCandles = candlesByKey[trade.groupKey] ?? [];
               const markers = trade.executions.map((exec) => ({
-                time: exec.executedAt.slice(0, 10),
+                time: alignExecutionToBarTime(exec.executedAt, allCandles),
                 position: exec.side === "BUY" ? "belowBar" : "aboveBar",
                 color: exec.side === "BUY" ? "#16a34a" : "#dc2626",
                 shape: exec.side === "BUY" ? "arrowUp" : "arrowDown",
                 text: `${exec.side} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
               })) as Array<{ time: string; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string }>;
               const timeframe = timeframeByKey[trade.groupKey] ?? "6M";
-              const filteredCandles = filterCandles(candlesByKey[trade.groupKey] ?? [], timeframe);
+              const filteredCandles = filterCandles(allCandles, timeframe);
 
               return (
                 <div key={trade.groupKey} className="p-4">
