@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { ClosedTradesPanel } from "@/components/closed-trades-panel";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -63,8 +62,6 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
                 <TableHead>Fees</TableHead>
                 <TableHead>Total Cost</TableHead>
                 <TableHead>Realized</TableHead>
-                <TableHead>Tags</TableHead>
-                <TableHead>Strategy</TableHead>
                 <TableHead>Detail</TableHead>
               </TableRow>
             </TableHeader>
@@ -83,14 +80,6 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
                   <TableCell className={trade.realizedPnl >= 0 ? "text-emerald-600" : "text-red-600"}>
                     {formatCurrency(trade.realizedPnl)}
                   </TableCell>
-                  <TableCell className="space-x-1">
-                    {trade.tags.map((tag) => (
-                      <Badge key={tag.tagId} variant="outline">
-                        {tag.tag.name}
-                      </Badge>
-                    ))}
-                  </TableCell>
-                  <TableCell>{trade.strategy ?? "-"}</TableCell>
                   <TableCell>
                     <Link className="text-blue-600 hover:underline" href={`/trade/${trade.id}`}>
                       Open
