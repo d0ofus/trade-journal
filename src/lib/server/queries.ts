@@ -234,7 +234,11 @@ function buildExecutionWhere(filters: TradeFilters) {
 }
 
 export async function getClosedTrades(filters: TradeFilters) {
-  const where = buildExecutionWhere(filters);
+  const where = buildExecutionWhere({
+    ...filters,
+    from: undefined,
+    to: undefined,
+  });
   const executions = await prisma.execution.findMany({
     where,
     include: {
@@ -245,56 +249,74 @@ export async function getClosedTrades(filters: TradeFilters) {
     orderBy: { executedAt: "asc" },
   });
 
-  const byDay = new Map<string, typeof executions>();
+  const firstExecutionByAccountInstrument = new Map<string, Date>();
   for (const exec of executions) {
-    const day = exec.executedAt.toISOString().slice(0, 10);
-    const key = `${exec.accountId}:${exec.instrumentId}:${day}`;
-    const list = byDay.get(key) ?? [];
-    list.push(exec);
-    byDay.set(key, list);
+    const key = `${exec.accountId}:${exec.instrumentId}`;
+    const existing = firstExecutionByAccountInstrument.get(key);
+    if (!existing || exec.executedAt < existing) {
+      firstExecutionByAccountInstrument.set(key, exec.executedAt);
+    }
   }
 
-  const groups = [] as ReturnType<typeof computeClosedTradeGroups>;
-  for (const [key, dayExecutions] of byDay.entries()) {
-    const [accountId, instrumentId, day] = key.split(":");
-    const openingCutoff = new Date(`${day}T00:00:00.000Z`);
-    const snapshot = await prisma.positionSnapshot.findFirst({
-      where: {
-        accountId,
-        instrumentId,
-        date: { lt: openingCutoff },
-      },
-      orderBy: { date: "desc" },
-    });
-
-    const openingMap = new Map([
-      [
-        `${accountId}:${instrumentId}`,
+  const openingEntries = await Promise.all(
+    [...firstExecutionByAccountInstrument.entries()].map(async ([key, firstExecutionAt]) => {
+      const [accountId, instrumentId] = key.split(":");
+      const snapshot = await prisma.positionSnapshot.findFirst({
+        where: {
+          accountId,
+          instrumentId,
+          date: { lt: firstExecutionAt },
+        },
+        orderBy: { date: "desc" },
+      });
+      return [
+        key,
         {
           quantity: snapshot?.quantity ?? 0,
           avgCost: snapshot?.avgCost ?? 0,
         },
-      ],
-    ]);
+      ] as const;
+    }),
+  );
 
-    const computed = computeClosedTradeGroups(
-      dayExecutions.map((exec) => ({
-        id: exec.id,
-        accountId: exec.accountId,
-        accountCode: exec.account.ibkrAccount,
-        instrumentId: exec.instrumentId,
-        symbol: exec.instrument.symbol,
-        executedAt: exec.executedAt,
-        side: exec.side,
-        quantity: exec.quantity,
-        price: exec.price,
-        commission: exec.commission,
-        fees: exec.fees,
-      })),
-      openingMap,
-    );
-    groups.push(...computed);
-  }
+  const openingMap = new Map(openingEntries);
+
+  const filteredGroups = computeClosedTradeGroups(
+    executions.map((exec) => ({
+      id: exec.id,
+      accountId: exec.accountId,
+      accountCode: exec.account.ibkrAccount,
+      instrumentId: exec.instrumentId,
+      symbol: exec.instrument.symbol,
+      executedAt: exec.executedAt,
+      side: exec.side,
+      quantity: exec.quantity,
+      price: exec.price,
+      commission: exec.commission,
+      fees: exec.fees,
+    })),
+    openingMap,
+  ).filter((group) => {
+    const tradeDate = new Date(`${group.tradeDate}T00:00:00.000Z`);
+    if (filters.from && tradeDate < startOfDay(new Date(filters.from))) {
+      return false;
+    }
+    if (filters.to && tradeDate > endOfDay(new Date(filters.to))) {
+      return false;
+    }
+    return true;
+  });
+
+  const cycleByDay = new Map<string, number>();
+  const groups = filteredGroups.map((group) => {
+    const cycleKey = `${group.accountId}:${group.instrumentId}:${group.tradeDate}`;
+    const cycleNumber = (cycleByDay.get(cycleKey) ?? 0) + 1;
+    cycleByDay.set(cycleKey, cycleNumber);
+    return {
+      ...group,
+      groupKey: `${cycleKey}:${cycleNumber}`,
+    };
+  });
 
   const dayNoteKeys = groups.map((group) => ({
     accountId: group.accountId,
