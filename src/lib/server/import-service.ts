@@ -109,11 +109,15 @@ export async function importParsedFile(params: {
   }
 
   if (params.parsed.kind === "positions") {
+    const seenInstrumentsByAccount = new Map<string, Set<string>>();
+    const seenAccounts = new Set<string>();
+
     for (const row of params.parsed.positions) {
       rowsSeen += 1;
 
       const account = await getOrCreateAccount(row.account, row.currency);
       accountId = account.id;
+      seenAccounts.add(account.id);
       const instrument = await getOrCreateInstrument({
         symbol: row.symbol,
         exchange: row.exchange,
@@ -121,23 +125,33 @@ export async function importParsedFile(params: {
         currency: row.currency,
       });
 
-      await prisma.position.upsert({
-        where: { accountId_instrumentId: { accountId: account.id, instrumentId: instrument.id } },
-        update: {
-          quantity: row.quantity,
-          avgCost: row.avgCost,
-          unrealizedPnl: row.unrealizedPnl,
-          currency: row.currency,
-        },
-        create: {
-          accountId: account.id,
-          instrumentId: instrument.id,
-          quantity: row.quantity,
-          avgCost: row.avgCost,
-          unrealizedPnl: row.unrealizedPnl,
-          currency: row.currency,
-        },
-      });
+      if (row.quantity === 0) {
+        await prisma.position.deleteMany({
+          where: { accountId: account.id, instrumentId: instrument.id },
+        });
+      } else {
+        await prisma.position.upsert({
+          where: { accountId_instrumentId: { accountId: account.id, instrumentId: instrument.id } },
+          update: {
+            quantity: row.quantity,
+            avgCost: row.avgCost,
+            unrealizedPnl: row.unrealizedPnl,
+            currency: row.currency,
+          },
+          create: {
+            accountId: account.id,
+            instrumentId: instrument.id,
+            quantity: row.quantity,
+            avgCost: row.avgCost,
+            unrealizedPnl: row.unrealizedPnl,
+            currency: row.currency,
+          },
+        });
+
+        const seen = seenInstrumentsByAccount.get(account.id) ?? new Set<string>();
+        seen.add(instrument.id);
+        seenInstrumentsByAccount.set(account.id, seen);
+      }
 
       const snapshotDate = row.reportDate
         ? new Date(Date.UTC(row.reportDate.getUTCFullYear(), row.reportDate.getUTCMonth(), row.reportDate.getUTCDate()))
@@ -169,6 +183,20 @@ export async function importParsedFile(params: {
       });
 
       rowsImported += 1;
+    }
+
+    for (const seenAccountId of seenAccounts) {
+      const seenInstruments = [...(seenInstrumentsByAccount.get(seenAccountId) ?? new Set<string>())];
+      if (seenInstruments.length === 0) {
+        await prisma.position.deleteMany({ where: { accountId: seenAccountId } });
+        continue;
+      }
+      await prisma.position.deleteMany({
+        where: {
+          accountId: seenAccountId,
+          instrumentId: { notIn: seenInstruments },
+        },
+      });
     }
   }
 

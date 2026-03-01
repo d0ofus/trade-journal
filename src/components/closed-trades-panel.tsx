@@ -1,6 +1,5 @@
 "use client";
 
-import { subMonths, subYears } from "date-fns";
 import { useMemo, useState, useTransition } from "react";
 import { CandlestickWithMarkers } from "@/components/candlestick-with-markers";
 import { RichTextEditor } from "@/components/rich-text-editor";
@@ -30,46 +29,22 @@ type ClosedTrade = {
   tradeNote: string;
 };
 
-type Candle = { time: string; open: number; high: number; low: number; close: number };
-type Timeframe = "1M" | "3M" | "6M" | "1Y" | "ALL";
+type Candle = { time: number; open: number; high: number; low: number; close: number };
+type ChartInterval = "5m" | "1h" | "1d";
 
-const TIMEFRAME_OPTIONS: Timeframe[] = ["1M", "3M", "6M", "1Y", "ALL"];
-
-function filterCandles(candles: Candle[], timeframe: Timeframe) {
-  if (timeframe === "ALL" || candles.length === 0) {
-    return candles;
-  }
-
-  const last = candles.at(-1);
-  if (!last) {
-    return candles;
-  }
-
-  const lastDate = new Date(`${last.time}T00:00:00`);
-  const cutoff =
-    timeframe === "1M"
-      ? subMonths(lastDate, 1)
-      : timeframe === "3M"
-        ? subMonths(lastDate, 3)
-        : timeframe === "6M"
-          ? subMonths(lastDate, 6)
-          : subYears(lastDate, 1);
-
-  return candles.filter((candle) => new Date(`${candle.time}T00:00:00`) >= cutoff);
-}
+const CHART_INTERVALS: Array<{ value: ChartInterval; label: string }> = [
+  { value: "5m", label: "5 minute" },
+  { value: "1h", label: "1 hour" },
+  { value: "1d", label: "1 day" },
+];
 
 function alignExecutionToBarTime(executedAt: string, candles: Candle[]) {
-  if (candles.length === 0) return executedAt.slice(0, 10);
-  const rawDate = executedAt.slice(0, 10);
-  if (candles.some((c) => c.time === rawDate)) {
-    return rawDate;
-  }
+  if (candles.length === 0) return Math.floor(new Date(executedAt).getTime() / 1000);
 
-  const targetTs = new Date(executedAt).getTime();
+  const targetTs = Math.floor(new Date(executedAt).getTime() / 1000);
   let fallback = candles[0].time;
   for (const candle of candles) {
-    const candleTs = new Date(`${candle.time}T00:00:00.000Z`).getTime();
-    if (candleTs <= targetTs) {
+    if (candle.time <= targetTs) {
       fallback = candle.time;
       continue;
     }
@@ -81,7 +56,7 @@ function alignExecutionToBarTime(executedAt: string, candles: Candle[]) {
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [candlesByKey, setCandlesByKey] = useState<Record<string, Candle[]>>({});
-  const [timeframeByKey, setTimeframeByKey] = useState<Record<string, Timeframe>>({});
+  const [intervalByKey, setIntervalByKey] = useState<Record<string, ChartInterval>>({});
   const [dayNotes, setDayNotes] = useState<Record<string, string>>(
     Object.fromEntries(closedTrades.map((trade) => [`${trade.accountId}:${trade.tradeDate}`, trade.dayNote])),
   );
@@ -101,15 +76,18 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
     return [...map.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
   }, [closedTrades]);
 
-  async function ensureCandles(trade: ClosedTrade) {
-    if (candlesByKey[trade.groupKey]) return;
-    const res = await fetch(`/api/market/candles?symbol=${encodeURIComponent(trade.symbol)}&limit=750`);
+  async function ensureCandles(trade: ClosedTrade, interval: ChartInterval) {
+    const cacheKey = `${trade.groupKey}:${interval}`;
+    if (candlesByKey[cacheKey]) return;
+    const res = await fetch(
+      `/api/market/candles?symbol=${encodeURIComponent(trade.symbol)}&timeframe=${interval}&limit=1200`,
+    );
     if (!res.ok) {
-      setStatus((prev) => ({ ...prev, [trade.groupKey]: "Unable to load market candles." }));
+      setStatus((prev) => ({ ...prev, [trade.groupKey]: `Unable to load ${interval} market candles.` }));
       return;
     }
     const data = await res.json();
-    setCandlesByKey((prev) => ({ ...prev, [trade.groupKey]: data.candles ?? [] }));
+    setCandlesByKey((prev) => ({ ...prev, [cacheKey]: data.candles ?? [] }));
   }
 
   function saveDayNote(trade: ClosedTrade) {
@@ -152,16 +130,15 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
           <div className="divide-y divide-slate-200">
             {rows.map((trade) => {
               const open = expanded === trade.groupKey;
-              const allCandles = candlesByKey[trade.groupKey] ?? [];
+              const interval = intervalByKey[trade.groupKey] ?? "1d";
+              const allCandles = candlesByKey[`${trade.groupKey}:${interval}`] ?? [];
               const markers = trade.executions.map((exec) => ({
                 time: alignExecutionToBarTime(exec.executedAt, allCandles),
                 position: exec.side === "BUY" ? "belowBar" : "aboveBar",
                 color: exec.side === "BUY" ? "#16a34a" : "#dc2626",
                 shape: exec.side === "BUY" ? "arrowUp" : "arrowDown",
                 text: `${exec.side} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
-              })) as Array<{ time: string; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string }>;
-              const timeframe = timeframeByKey[trade.groupKey] ?? "6M";
-              const filteredCandles = filterCandles(allCandles, timeframe);
+              })) as Array<{ time: number; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string }>;
 
               return (
                 <div key={trade.groupKey} className="p-4">
@@ -172,7 +149,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                       const next = open ? null : trade.groupKey;
                       setExpanded(next);
                       if (!open) {
-                        await ensureCandles(trade);
+                        await ensureCandles(trade, interval);
                       }
                     }}
                   >
@@ -192,18 +169,21 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                   {open && (
                     <div className="mt-4 space-y-4">
                       <div className="flex flex-wrap items-center gap-2">
-                        {TIMEFRAME_OPTIONS.map((option) => (
+                        {CHART_INTERVALS.map((option) => (
                           <Button
-                            key={option}
+                            key={option.value}
                             size="sm"
-                            variant={timeframe === option ? "default" : "outline"}
-                            onClick={() => setTimeframeByKey((prev) => ({ ...prev, [trade.groupKey]: option }))}
+                            variant={interval === option.value ? "default" : "outline"}
+                            onClick={async () => {
+                              setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
+                              await ensureCandles(trade, option.value);
+                            }}
                           >
-                            {option}
+                            {option.label}
                           </Button>
                         ))}
                       </div>
-                      <CandlestickWithMarkers candles={filteredCandles} markers={markers} />
+                      <CandlestickWithMarkers candles={allCandles} markers={markers} height={620} />
 
                       <div className="grid gap-4 lg:grid-cols-2">
                         <div>

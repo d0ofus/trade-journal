@@ -394,6 +394,7 @@ export async function getTradeDetail(id: string) {
 
 export async function getPositions() {
   return prisma.position.findMany({
+    where: { NOT: { quantity: 0 } },
     include: {
       account: true,
       instrument: {

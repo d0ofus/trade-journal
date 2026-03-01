@@ -10,12 +10,21 @@ import {
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type Time,
+  type UTCTimestamp,
 } from "lightweight-charts";
 
-type Candle = { time: string; open: number; high: number; low: number; close: number };
-type Marker = { time: string; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string };
+type Candle = { time: number; open: number; high: number; low: number; close: number };
+type Marker = { time: number; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string };
 
-export function CandlestickWithMarkers({ candles, markers }: { candles: Candle[]; markers: Marker[] }) {
+export function CandlestickWithMarkers({
+  candles,
+  markers,
+  height = 460,
+}: {
+  candles: Candle[];
+  markers: Marker[];
+  height?: number;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -30,7 +39,7 @@ export function CandlestickWithMarkers({ candles, markers }: { candles: Candle[]
         textColor: "#334155",
       },
       width: containerRef.current.clientWidth,
-      height: 460,
+      height,
       grid: {
         vertLines: { color: "#e2e8f0" },
         horzLines: { color: "#e2e8f0" },
@@ -65,12 +74,12 @@ export function CandlestickWithMarkers({ candles, markers }: { candles: Candle[]
       seriesRef.current = null;
       markerPluginRef.current = null;
     };
-  }, []);
+  }, [height]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    seriesRef.current.setData(candles);
-    markerPluginRef.current?.setMarkers(markers);
+    seriesRef.current.setData(candles.map((candle) => ({ ...candle, time: candle.time as UTCTimestamp })));
+    markerPluginRef.current?.setMarkers(markers.map((marker) => ({ ...marker, time: marker.time as UTCTimestamp })));
     chartRef.current?.timeScale().fitContent();
   }, [candles, markers]);
 
