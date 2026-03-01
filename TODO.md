@@ -1,11 +1,13 @@
 # TODO
 
 ## 🔴 High Priority
-- [ ] Fix duplicate execution dedupeKey edge case
+- Show executions on multiple timeframes
+- Improve UI
 
 
 ## 🟡 Medium
-- [ ] Add trade tagging feature
+- Add trade tagging feature
+- Remove 'Day Note'
 
 ## 🟢 Low / Future
 - [ ] Dark mode toggle
