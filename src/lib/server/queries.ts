@@ -288,6 +288,9 @@ export async function getClosedTrades(filters: TradeFilters) {
       accountCode: exec.account.ibkrAccount,
       instrumentId: exec.instrumentId,
       symbol: exec.instrument.symbol,
+      exchange: exec.instrument.exchange,
+      assetType: exec.instrument.assetType,
+      currency: exec.currency ?? exec.instrument.currency,
       executedAt: exec.executedAt,
       side: exec.side,
       quantity: exec.quantity,
@@ -307,16 +310,7 @@ export async function getClosedTrades(filters: TradeFilters) {
     return true;
   });
 
-  const cycleByDay = new Map<string, number>();
-  const groups = filteredGroups.map((group) => {
-    const cycleKey = `${group.accountId}:${group.instrumentId}:${group.tradeDate}`;
-    const cycleNumber = (cycleByDay.get(cycleKey) ?? 0) + 1;
-    cycleByDay.set(cycleKey, cycleNumber);
-    return {
-      ...group,
-      groupKey: `${cycleKey}:${cycleNumber}`,
-    };
-  });
+  const groups = filteredGroups;
 
   const dayNoteKeys = groups.map((group) => ({
     accountId: group.accountId,
