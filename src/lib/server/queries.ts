@@ -3,11 +3,23 @@ import { prisma } from "@/lib/prisma";
 import { computeClosedTradeGroups } from "@/lib/stats/closed-trades";
 import { bucketHistogram, buildMetrics, computeExecutionPnl } from "@/lib/stats/pnl";
 
-export async function getDashboardData() {
+export async function getDashboardData(filters?: { from?: string; to?: string }) {
+  const dashboardTo = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
   const executions = await prisma.execution.findMany({
-    include: { instrument: true, account: true, tags: { include: { tag: true } }, tradeNote: true },
+    where: {
+      executedAt: dashboardTo ? { lte: dashboardTo } : undefined,
+    },
+    include: { instrument: true },
     orderBy: { executedAt: "asc" },
   });
+
+  const rangeStart = filters?.from ? startOfDay(new Date(filters.from)) : undefined;
+  const rangeEnd = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
+  const inSelectedRange = (executedAt: Date) => {
+    if (rangeStart && executedAt < rangeStart) return false;
+    if (rangeEnd && executedAt > rangeEnd) return false;
+    return true;
+  };
 
   const execRows = executions.map((exec) => ({
     id: exec.id,
@@ -24,44 +36,58 @@ export async function getDashboardData() {
 
   const pnlRows = computeExecutionPnl(execRows);
   const pnlByExecution = new Map(pnlRows.map((row) => [row.executionId, row]));
+  const executionById = new Map(executions.map((execution) => [execution.id, execution]));
+  const filteredExecutions = executions.filter((execution) => inSelectedRange(execution.executedAt));
+  const filteredExecutionIds = new Set(filteredExecutions.map((execution) => execution.id));
 
-  const now = new Date();
-  const dayStart = startOfDay(now);
-  const weekStart = startOfWeek(now, { weekStartsOn: 1 });
-  const monthStart = startOfMonth(now);
+  const anchorDate = rangeEnd ?? new Date();
+  const dayStart = startOfDay(anchorDate);
+  const weekStart = startOfWeek(anchorDate, { weekStartsOn: 1 });
+  const monthStart = startOfMonth(anchorDate);
 
-  const realizedDay = executions
+  const realizedDay = filteredExecutions
     .filter((exec) => exec.executedAt >= dayStart)
     .reduce((sum, exec) => sum + (pnlByExecution.get(exec.id)?.realizedPnl ?? 0), 0);
-  const realizedWeek = executions
+  const realizedWeek = filteredExecutions
     .filter((exec) => exec.executedAt >= weekStart)
     .reduce((sum, exec) => sum + (pnlByExecution.get(exec.id)?.realizedPnl ?? 0), 0);
-  const realizedMonth = executions
+  const realizedMonth = filteredExecutions
     .filter((exec) => exec.executedAt >= monthStart)
     .reduce((sum, exec) => sum + (pnlByExecution.get(exec.id)?.realizedPnl ?? 0), 0);
 
-  const totalCommissions = executions.reduce((sum, exec) => sum + exec.commission + exec.fees, 0);
-  const metrics = buildMetrics(pnlRows, totalCommissions);
+  const filteredPnlRows = pnlRows.filter((row) => filteredExecutionIds.has(row.executionId));
+  const filteredCommissions = filteredExecutions.reduce((sum, exec) => sum + exec.commission + exec.fees, 0);
+  const metrics = buildMetrics(filteredPnlRows, filteredCommissions);
 
   const daily = new Map<string, number>();
-  executions.forEach((exec) => {
+  filteredExecutions.forEach((exec) => {
     const key = format(exec.executedAt, "yyyy-MM-dd");
     daily.set(key, (daily.get(key) ?? 0) + (pnlByExecution.get(exec.id)?.realizedPnl ?? 0));
   });
 
   const dailyPnl = [...daily.entries()].map(([date, pnl]) => ({ date, pnl }));
 
-  const equityCurve = pnlRows.map((row) => {
-    const exec = executions.find((item) => item.id === row.executionId)!;
+  let equityBaseline = 0;
+  if (filteredExecutions.length > 0) {
+    const firstExecutionAt = filteredExecutions[0].executedAt;
+    for (const row of pnlRows) {
+      const exec = executionById.get(row.executionId);
+      if (!exec || exec.executedAt >= firstExecutionAt) break;
+      equityBaseline = row.cumulativePnl;
+    }
+  }
+
+  const equityCurve = filteredPnlRows.map((row) => {
+    const exec = executionById.get(row.executionId)!;
     return {
       at: format(exec.executedAt, "yyyy-MM-dd HH:mm"),
-      equity: row.cumulativePnl,
+      equity: row.cumulativePnl - equityBaseline,
     };
   });
 
-  const returnValues = pnlRows.filter((row) => row.matchedQuantity > 0).map((row) => row.realizedPnl);
+  const returnValues = filteredPnlRows.filter((row) => row.matchedQuantity > 0).map((row) => row.realizedPnl);
   const histogram = bucketHistogram(returnValues, 12);
-  const closedRows = pnlRows.filter((row) => row.matchedQuantity > 0);
+  const closedRows = filteredPnlRows.filter((row) => row.matchedQuantity > 0);
   const largestGain = closedRows.length > 0 ? Math.max(...closedRows.map((row) => row.realizedPnl)) : 0;
   const largestLoss = closedRows.length > 0 ? Math.min(...closedRows.map((row) => row.realizedPnl)) : 0;
   const winningRows = closedRows.filter((row) => row.realizedPnl > 0);
@@ -75,7 +101,7 @@ export async function getDashboardData() {
   const dailyTradeCountMap = new Map<string, number>();
   const dailyVolumeMap = new Map<string, number>();
 
-  executions.forEach((exec) => {
+  filteredExecutions.forEach((exec) => {
     const key = format(exec.executedAt, "yyyy-MM-dd");
     const pnl = pnlByExecution.get(exec.id);
     if (pnl?.matchedQuantity && pnl.matchedQuantity > 0) {
@@ -102,7 +128,7 @@ export async function getDashboardData() {
   const volumeDays = [...dailyVolumeMap.values()];
   const avgDailyVolume = volumeDays.length > 0 ? volumeDays.reduce((sum, value) => sum + value, 0) / volumeDays.length : 0;
 
-  const scatter = executions.map((exec) => ({
+  const scatter = filteredExecutions.map((exec) => ({
     time: format(exec.executedAt, "HH:mm"),
     symbol: exec.instrument.symbol,
     price: exec.price,
