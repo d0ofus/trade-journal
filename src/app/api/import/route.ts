@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
       const previews = files.flatMap((file) => {
         const sections = splitFlexSections(file.content);
         if (sections.tradesCsv || sections.positionsCsv || sections.commissionsCsv) {
+          const parsedFlex = parseFlexStatementCsv(file.content);
           const out = [] as Array<{
             filename: string;
             kind: "executions" | "positions" | "snapshots" | "unknown" | "commissions";
@@ -37,19 +38,80 @@ export async function POST(req: NextRequest) {
             mapping: Record<string, string | null>;
             rows: Record<string, string>[];
             errors: string[];
+            totalRows: number;
           }>;
 
           if (sections.tradesCsv) {
+            const rows = parsedFlex.trades.executions.map((row) => ({
+              account: row.account,
+              executedAt: row.executedAt.toISOString(),
+              symbol: row.symbol,
+              exchange: row.exchange ?? "",
+              assetType: row.assetType,
+              side: row.side,
+              quantity: String(row.quantity),
+              price: String(row.price),
+              commission: String(row.commission),
+              fees: String(row.fees),
+              currency: row.currency,
+              orderId: row.orderId ?? "",
+              strategy: row.strategy ?? "",
+            }));
             out.push({
-              ...previewCsv(`${file.filename} :: Trades`, sections.tradesCsv),
+              filename: `${file.filename} :: Trades`,
               kind: "executions",
+              headers: [
+                "account",
+                "executedAt",
+                "symbol",
+                "exchange",
+                "assetType",
+                "side",
+                "quantity",
+                "price",
+                "commission",
+                "fees",
+                "currency",
+                "orderId",
+                "strategy",
+              ],
+              mapping: {},
+              rows,
+              errors: [],
+              totalRows: rows.length,
             });
           }
 
           if (sections.positionsCsv) {
+            const rows = parsedFlex.positions.positions.map((row) => ({
+              account: row.account,
+              symbol: row.symbol,
+              exchange: row.exchange ?? "",
+              assetType: row.assetType,
+              reportDate: row.reportDate ? row.reportDate.toISOString().slice(0, 10) : "",
+              quantity: String(row.quantity),
+              avgCost: String(row.avgCost),
+              unrealizedPnl: String(row.unrealizedPnl ?? 0),
+              currency: row.currency,
+            }));
             out.push({
-              ...previewCsv(`${file.filename} :: Positions`, sections.positionsCsv),
+              filename: `${file.filename} :: Positions`,
               kind: "positions",
+              headers: [
+                "account",
+                "symbol",
+                "exchange",
+                "assetType",
+                "reportDate",
+                "quantity",
+                "avgCost",
+                "unrealizedPnl",
+                "currency",
+              ],
+              mapping: {},
+              rows,
+              errors: [],
+              totalRows: rows.length,
             });
           }
 
@@ -70,15 +132,17 @@ export async function POST(req: NextRequest) {
               kind: "commissions",
               headers,
               mapping: {},
-              rows: normalizedRows.slice(0, 5),
+              rows: normalizedRows,
               errors: [],
+              totalRows: normalizedRows.length,
             });
           }
 
           return out;
         }
 
-        return [previewCsv(file.filename, file.content)];
+        const preview = previewCsv(file.filename, file.content);
+        return [{ ...preview, totalRows: preview.rows.length }];
       });
       return NextResponse.json({ previews });
     }
