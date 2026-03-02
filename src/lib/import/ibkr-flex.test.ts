@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
+import { filterOutIdealFxCommissionRows, parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
 
 describe("IBKR flex parser", () => {
   it("splits sectioned CSV", () => {
@@ -30,5 +30,16 @@ describe("IBKR flex parser", () => {
     expect(parsed.trades.executions.length).toBe(9);
     expect(parsed.positions.positions.length).toBe(3);
     expect(parsed.commissionsSeen).toBe(9);
+  });
+
+  it("filters IDEALFX commission rows", () => {
+    const rows = [
+      { Exchange: "IDEALFX", TradeID: "87254631", TotalCommission: "-0.5" },
+      { Exchange: "NASDAQ", TradeID: "123", TotalCommission: "-1.0" },
+    ];
+
+    const filtered = filterOutIdealFxCommissionRows(rows);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].TradeID).toBe("123");
   });
 });
