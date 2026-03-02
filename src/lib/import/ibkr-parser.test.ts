@@ -43,4 +43,18 @@ describe("IBKR parser", () => {
     expect(parsed.executions[0].symbol).toBe("AAPL");
     expect(parsed.executions[0].exchange).toBe("NASDAQ");
   });
+
+  it("omits IDEALFX even when ListingExchange appears before Exchange", () => {
+    const csv = [
+      "ClientAccountID,DateTime,Symbol,ListingExchange,Exchange,AssetClass,Buy/Sell,Quantity,TradePrice,IBCommission",
+      "U1,2026-01-02 10:00:00,USD.SGD,,IDEALFX,CASH,SELL,1000,1.35,0.8",
+      "U1,2026-01-02 10:01:00,MSFT,NASDAQ,NASDAQ,STK,BUY,1,420.5,0.5",
+    ].join("\n");
+
+    const preview = previewCsv("fx-listing-exchange.csv", csv);
+    const parsed = parseCsvWithMapping("executions", csv, preview.mapping);
+
+    expect(parsed.executions).toHaveLength(1);
+    expect(parsed.executions[0].symbol).toBe("MSFT");
+  });
 });

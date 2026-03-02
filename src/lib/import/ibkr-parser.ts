@@ -178,11 +178,22 @@ function readField(row: PreviewRow, mapping: HeaderMap, field: string): string |
   return row[mapped];
 }
 
+function readFieldByHeaderAliases(row: PreviewRow, aliases: string[]): string | undefined {
+  for (const [key, value] of Object.entries(row)) {
+    if (aliases.includes(normalizeHeader(key))) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionImport[] {
   const parsed: ExecutionImport[] = [];
 
   for (const row of rows) {
-    const exchange = (readField(row, mapping, "exchange") ?? "").trim() || undefined;
+    const explicitExchange = readFieldByHeaderAliases(row, ["exchange"]);
+    const mappedExchange = readField(row, mapping, "exchange");
+    const exchange = (explicitExchange ?? mappedExchange ?? "").trim() || undefined;
     if ((exchange ?? "").toUpperCase() === "IDEALFX") {
       continue;
     }
