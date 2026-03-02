@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 
 type Preview = {
   filename: string;
-  kind: "executions" | "positions" | "snapshots" | "unknown";
+  kind: "executions" | "positions" | "snapshots" | "unknown" | "commissions";
   headers: string[];
   mapping: Record<string, string | null>;
   rows: Record<string, string>[];
@@ -29,7 +29,9 @@ export function ImportUploader() {
   const kindByFile = useMemo(() => {
     const mapped: Record<string, "executions" | "positions" | "snapshots"> = {};
     for (const preview of previews) {
-      if (preview.kind !== "unknown") mapped[preview.filename] = preview.kind;
+      if (preview.kind === "executions" || preview.kind === "positions" || preview.kind === "snapshots") {
+        mapped[preview.filename] = preview.kind;
+      }
     }
     return mapped;
   }, [previews]);
