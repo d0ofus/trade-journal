@@ -11,6 +11,7 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function TradesPage(props: { searchParams: SearchParams }) {
   const searchParams = await props.searchParams;
+  const page = Math.max(1, Number(typeof searchParams.page === "string" ? searchParams.page : "1") || 1);
   const filters = {
     from: typeof searchParams.from === "string" ? searchParams.from : undefined,
     to: typeof searchParams.to === "string" ? searchParams.to : undefined,
@@ -20,12 +21,24 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
     strategy: typeof searchParams.strategy === "string" ? searchParams.strategy : undefined,
   };
 
-  const trades = await getTrades(filters);
+  const trades = await getTrades({ ...filters, page, pageSize: 50 });
   const closedTrades = await getClosedTrades(filters);
+
+  const baseParams = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) baseParams.set(key, value);
+  });
+
+  const pageHref = (target: number) => {
+    const params = new URLSearchParams(baseParams.toString());
+    params.set("page", String(target));
+    return `/trades?${params.toString()}`;
+  };
 
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold">Trades</h2>
+      <ClosedTradesPanel closedTrades={closedTrades} />
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Filters</CardTitle>
@@ -66,7 +79,7 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {trades.map((trade) => (
+              {trades.rows.map((trade) => (
                 <TableRow key={trade.id}>
                   <TableCell>{trade.executedAt.toISOString().replace("T", " ").slice(0, 16)}</TableCell>
                   <TableCell>{trade.account.ibkrAccount}</TableCell>
@@ -89,10 +102,29 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
               ))}
             </TableBody>
           </Table>
+          <div className="mt-4 flex items-center justify-between text-sm text-slate-600">
+            <p>
+              Page {trades.page} of {trades.totalPages} | {trades.total} trades
+            </p>
+            <div className="flex items-center gap-2">
+              {trades.page > 1 ? (
+                <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.page - 1)}>
+                  Previous
+                </Link>
+              ) : (
+                <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Previous</span>
+              )}
+              {trades.page < trades.totalPages ? (
+                <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.page + 1)}>
+                  Next
+                </Link>
+              ) : (
+                <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Next</span>
+              )}
+            </div>
+          </div>
         </CardContent>
       </Card>
-
-      <ClosedTradesPanel closedTrades={closedTrades} />
     </div>
   );
 }

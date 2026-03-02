@@ -141,8 +141,13 @@ export async function getTrades(filters: {
   side?: string;
   tag?: string;
   strategy?: string;
+  page?: number;
+  pageSize?: number;
 }) {
   const where: Record<string, unknown> = {};
+  const pageSize = Math.max(1, Math.min(200, Math.floor(filters.pageSize ?? 50)));
+  const page = Math.max(1, Math.floor(filters.page ?? 1));
+  const skip = (page - 1) * pageSize;
 
   if (filters.from || filters.to) {
     where.executedAt = {
@@ -167,16 +172,21 @@ export async function getTrades(filters: {
     where.strategy = { equals: filters.strategy };
   }
 
-  const executions = await prisma.execution.findMany({
-    where,
-    include: {
-      instrument: true,
-      account: true,
-      tags: { include: { tag: true } },
-      tradeNote: true,
-    },
-    orderBy: { executedAt: "desc" },
-  });
+  const [executions, total] = await Promise.all([
+    prisma.execution.findMany({
+      where,
+      include: {
+        instrument: true,
+        account: true,
+        tags: { include: { tag: true } },
+        tradeNote: true,
+      },
+      orderBy: { executedAt: "desc" },
+      skip,
+      take: pageSize,
+    }),
+    prisma.execution.count({ where }),
+  ]);
 
   const pnlRows = computeExecutionPnl(
     executions.map((exec) => ({
@@ -194,11 +204,19 @@ export async function getTrades(filters: {
   );
   const pnlMap = new Map(pnlRows.map((row) => [row.executionId, row]));
 
-  return executions.map((exec) => ({
+  const rows = executions.map((exec) => ({
     ...exec,
     realizedPnl: pnlMap.get(exec.id)?.realizedPnl ?? 0,
     commissionTotal: exec.commission + exec.fees,
   }));
+
+  return {
+    rows,
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
 }
 
 type TradeFilters = {

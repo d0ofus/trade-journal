@@ -1,5 +1,6 @@
 import { parse as parseSync } from "csv-parse/sync";
 import { parseCsvWithMapping, type ParsedImport } from "@/lib/import/ibkr-parser";
+import { isExcludedFxPairSymbol } from "@/lib/import/fx-exclusions";
 import type { ExecutionImport } from "@/lib/import/schemas";
 
 type FlexSectionName = "trades" | "positions" | "commissions";
@@ -120,15 +121,11 @@ function parseNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function isForexPairSymbol(symbol: string) {
-  return /^[A-Z]{3}\.[A-Z]{3}$/i.test(symbol.trim());
-}
-
 function isIdealFxCommissionRow(row: Record<string, string>) {
   const exchange = readByAliases(row, ["exchange", "listingexchange"]).toUpperCase();
   const assetClass = readByAliases(row, ["assetclass", "assettype", "sectype", "securitytype"]).toUpperCase();
   const symbol = readByAliases(row, ["symbol", "underlyingsymbol"]).toUpperCase();
-  return exchange === "IDEALFX" || ((assetClass === "CASH" || assetClass === "FOREX") && isForexPairSymbol(symbol));
+  return exchange === "IDEALFX" || ((assetClass === "CASH" || assetClass === "FOREX") && isExcludedFxPairSymbol(symbol));
 }
 
 export function filterOutIdealFxCommissionRows(rows: Record<string, string>[]) {
