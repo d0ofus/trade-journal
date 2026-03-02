@@ -95,6 +95,10 @@ function parseNumber(raw: string | undefined): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function isForexPairSymbol(symbol: string) {
+  return /^[A-Z]{3}\.[A-Z]{3}$/i.test(symbol.trim());
+}
+
 function parseDate(raw: string | undefined): Date | undefined {
   if (!raw) return undefined;
   const value = raw.trim();
@@ -191,10 +195,15 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionIm
   const parsed: ExecutionImport[] = [];
 
   for (const row of rows) {
+    const symbol = (readField(row, mapping, "symbol") ?? "").trim();
+    const rawAssetClass = (readField(row, mapping, "assetType") ?? "").trim().toUpperCase();
     const explicitExchange = readFieldByHeaderAliases(row, ["exchange"]);
     const mappedExchange = readField(row, mapping, "exchange");
     const exchange = (explicitExchange ?? mappedExchange ?? "").trim() || undefined;
-    if ((exchange ?? "").toUpperCase() === "IDEALFX") {
+    const isForexLike =
+      (exchange ?? "").toUpperCase() === "IDEALFX" ||
+      ((rawAssetClass === "CASH" || rawAssetClass === "FOREX") && isForexPairSymbol(symbol));
+    if (isForexLike) {
       continue;
     }
 
@@ -207,7 +216,7 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionIm
     const candidate = {
       account: readField(row, mapping, "account") ?? "DEFAULT",
       executedAt: parseDate(readField(row, mapping, "executedAt")),
-      symbol: (readField(row, mapping, "symbol") ?? "").trim(),
+      symbol,
       exchange,
       assetType: parseAssetType(readField(row, mapping, "assetType")),
       side: inferredSide,

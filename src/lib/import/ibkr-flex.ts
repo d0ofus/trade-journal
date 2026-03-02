@@ -120,9 +120,15 @@ function parseNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function isForexPairSymbol(symbol: string) {
+  return /^[A-Z]{3}\.[A-Z]{3}$/i.test(symbol.trim());
+}
+
 function isIdealFxCommissionRow(row: Record<string, string>) {
   const exchange = readByAliases(row, ["exchange", "listingexchange"]).toUpperCase();
-  return exchange === "IDEALFX";
+  const assetClass = readByAliases(row, ["assetclass", "assettype", "sectype", "securitytype"]).toUpperCase();
+  const symbol = readByAliases(row, ["symbol", "underlyingsymbol"]).toUpperCase();
+  return exchange === "IDEALFX" || ((assetClass === "CASH" || assetClass === "FOREX") && isForexPairSymbol(symbol));
 }
 
 export function filterOutIdealFxCommissionRows(rows: Record<string, string>[]) {
