@@ -28,4 +28,19 @@ describe("IBKR parser", () => {
     expect(positions.positions[0].symbol).toBe("TSLA");
     expect(snapshots.snapshots).toHaveLength(3);
   });
+
+  it("omits execution rows from IDEALFX exchange", () => {
+    const csv = [
+      "ClientAccountID,DateTime,Symbol,Exchange,AssetClass,Buy/Sell,Quantity,TradePrice,IBCommission",
+      "U1,2026-01-02 10:00:00,EUR.USD,IDEALFX,FOREX,BUY,1000,1.05,1.00",
+      "U1,2026-01-02 10:01:00,AAPL,NASDAQ,STK,BUY,1,190.5,0.5",
+    ].join("\n");
+
+    const preview = previewCsv("fx-filter.csv", csv);
+    const parsed = parseCsvWithMapping("executions", csv, preview.mapping);
+
+    expect(parsed.executions).toHaveLength(1);
+    expect(parsed.executions[0].symbol).toBe("AAPL");
+    expect(parsed.executions[0].exchange).toBe("NASDAQ");
+  });
 });

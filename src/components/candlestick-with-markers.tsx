@@ -19,7 +19,13 @@ import {
 import { Button } from "@/components/ui/button";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
-type Marker = { time: number; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string };
+type Marker = {
+  time: number;
+  position: "aboveBar" | "belowBar" | "inBar";
+  color: string;
+  shape: "arrowUp" | "arrowDown" | "circle";
+  text: string;
+};
 type AnnotationTool = "none" | "horizontal" | "trend";
 type HorizontalAnnotation = { id: string; type: "horizontal"; price: number; color: string };
 type TrendAnnotation = { id: string; type: "trend"; fromTime: number; fromPrice: number; toTime: number; toPrice: number; color: string };
