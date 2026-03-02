@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parse as parseSync } from "csv-parse/sync";
 import { parseCsvWithMapping, previewCsv } from "@/lib/import/ibkr-parser";
-import { parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
+import { filterOutIdealFxCommissionRows, parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
 import { importParsedFile } from "@/lib/server/import-service";
 
 async function readFiles(formData: FormData) {
@@ -123,7 +123,8 @@ export async function POST(req: NextRequest) {
               bom: true,
               relax_column_count: true,
             }) as Record<string, string>[];
-            const normalizedRows = rows.map((row) =>
+            const filteredRows = filterOutIdealFxCommissionRows(rows);
+            const normalizedRows = filteredRows.map((row) =>
               Object.fromEntries(Object.entries(row).map(([key, value]) => [key, String(value ?? "")])),
             );
             const headers = normalizedRows.length > 0 ? Object.keys(normalizedRows[0]) : [];

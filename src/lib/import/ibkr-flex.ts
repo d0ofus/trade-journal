@@ -120,10 +120,19 @@ function parseNumber(value: string) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function isIdealFxCommissionRow(row: Record<string, string>) {
+  const exchange = readByAliases(row, ["exchange", "listingexchange"]).toUpperCase();
+  return exchange === "IDEALFX";
+}
+
+export function filterOutIdealFxCommissionRows(rows: Record<string, string>[]) {
+  return rows.filter((row) => !isIdealFxCommissionRow(row));
+}
+
 function mergeCommissions(executions: ExecutionImport[], commissionsCsv: string | null) {
   if (!commissionsCsv || executions.length === 0) return executions;
 
-  const rows = toRows(commissionsCsv);
+  const rows = filterOutIdealFxCommissionRows(toRows(commissionsCsv));
   const byOrderId = new Map<string, { commission: number; fees: number }>();
 
   for (const row of rows) {
@@ -196,7 +205,7 @@ export function parseFlexStatementCsv(csvText: string): {
     : ({ kind: "positions", executions: [], positions: [], snapshots: [] } satisfies ParsedImport);
 
   const mergedExecutions = mergeCommissions(tradesParsed.executions, sections.commissionsCsv);
-  const commissionsSeen = sections.commissionsCsv ? toRows(sections.commissionsCsv).length : 0;
+  const commissionsSeen = sections.commissionsCsv ? filterOutIdealFxCommissionRows(toRows(sections.commissionsCsv)).length : 0;
 
   return {
     trades: { ...tradesParsed, executions: mergedExecutions },
