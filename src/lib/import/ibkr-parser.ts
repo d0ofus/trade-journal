@@ -182,6 +182,11 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionIm
   const parsed: ExecutionImport[] = [];
 
   for (const row of rows) {
+    const exchange = (readField(row, mapping, "exchange") ?? "").trim() || undefined;
+    if ((exchange ?? "").toUpperCase() === "IDEALFX") {
+      continue;
+    }
+
     const rawQty = parseNumber(readField(row, mapping, "quantity"));
     const parsedSide = parseSide(readField(row, mapping, "side"));
     const inferredSide =
@@ -192,7 +197,7 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionIm
       account: readField(row, mapping, "account") ?? "DEFAULT",
       executedAt: parseDate(readField(row, mapping, "executedAt")),
       symbol: (readField(row, mapping, "symbol") ?? "").trim(),
-      exchange: (readField(row, mapping, "exchange") ?? "").trim() || undefined,
+      exchange,
       assetType: parseAssetType(readField(row, mapping, "assetType")),
       side: inferredSide,
       quantity: normalizedQty,
