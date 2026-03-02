@@ -1,18 +1,21 @@
 # TODO
 
 ## 🔴 High Priority
-- Change how charts are displayed:
-> Ability to reset view (Alt + R) 
-> Change colour of tiny circles 
-> Remove gridlines
+- Rework calculation of Gross Cumulative P&L and Equity curve graphs 
+- Remove execution prices (intra-day) graph
+
+- Change how charts of 'closed trades' are displayed:
 > Add green/red horizontal lines on chart for executions
-- Add section toggle to go to list of trades 
-- Improve UI
+- Change page selector for list of trades to have the numbers, and 'Go to first' and 'Go to last'
 - Change note-taking feature to a template format, remove 'List' option
 - Add feature to search for 'closed trades'
+- Add feature to tag 'closed trades'
+- Add feature to collapse or open all of the charts of the current 'Closed Trades' (limit to 20 (?)) on the page
 
 ## 🟡 Medium
-- Add trade tagging feature
+- Improve UI
+> Change date format on x-axis of dashboard graphs
+> Change to 2 d.p. for P&L charts
 
 ## 🟢 Low / Future
 - [ ] Dark mode toggle
