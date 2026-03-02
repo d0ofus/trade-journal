@@ -83,6 +83,9 @@ export async function GET(req: NextRequest) {
   const timeframeRaw = (req.nextUrl.searchParams.get("timeframe") ?? "1d").trim().toLowerCase();
   const timeframe: CandleTimeframe = timeframeRaw === "5m" || timeframeRaw === "1h" || timeframeRaw === "1d" ? timeframeRaw : "1d";
   const config = TIMEFRAME_CONFIG[timeframe];
+  const fromRaw = Number(req.nextUrl.searchParams.get("from") ?? "");
+  const toRaw = Number(req.nextUrl.searchParams.get("to") ?? "");
+  const hasCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;
   const limitRaw = Number(req.nextUrl.searchParams.get("limit") ?? "120");
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 30), 5000) : 120;
   if (!symbol) {
@@ -91,7 +94,12 @@ export async function GET(req: NextRequest) {
 
   const yahooUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   yahooUrl.searchParams.set("interval", config.interval);
-  yahooUrl.searchParams.set("range", config.range);
+  if (hasCustomRange) {
+    yahooUrl.searchParams.set("period1", String(Math.floor(fromRaw)));
+    yahooUrl.searchParams.set("period2", String(Math.ceil(toRaw)));
+  } else {
+    yahooUrl.searchParams.set("range", config.range);
+  }
   yahooUrl.searchParams.set("includePrePost", "false");
   yahooUrl.searchParams.set("events", "div,splits");
 

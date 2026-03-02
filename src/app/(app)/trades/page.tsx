@@ -38,7 +38,18 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold">Trades</h2>
-      <ClosedTradesPanel closedTrades={closedTrades} />
+      <div className="flex flex-wrap gap-2">
+        <Link className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50" href="#closed-trades-section">
+          Closed Trades
+        </Link>
+        <Link className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50" href="#trades-list-section">
+          Trades List
+        </Link>
+      </div>
+
+      <div id="closed-trades-section">
+        <ClosedTradesPanel closedTrades={closedTrades} />
+      </div>
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Filters</CardTitle>
@@ -60,8 +71,13 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="trades-list-section">
         <CardContent className="pt-6">
+          <div className="mb-4 flex justify-end">
+            <Link className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50" href="#closed-trades-section">
+              Back To Closed Trades
+            </Link>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
