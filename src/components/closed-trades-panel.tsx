@@ -38,28 +38,50 @@ const CHART_INTERVALS: Array<{ value: ChartInterval; label: string }> = [
   { value: "1d", label: "1 day" },
 ];
 
+function inferBarIntervalSeconds(candles: Candle[]) {
+  let interval = Number.POSITIVE_INFINITY;
+  for (let i = 1; i < candles.length; i += 1) {
+    const delta = candles[i].time - candles[i - 1].time;
+    if (delta > 0 && delta < interval) {
+      interval = delta;
+    }
+  }
+  return Number.isFinite(interval) ? interval : 24 * 60 * 60;
+}
+
 function alignExecutionToBarTime(executedAt: string, candles: Candle[]) {
-  if (candles.length === 0) return Math.floor(new Date(executedAt).getTime() / 1000);
+  if (candles.length === 0) return null;
 
   const targetTs = Math.floor(new Date(executedAt).getTime() / 1000);
-  let fallback = candles[0].time;
-  for (const candle of candles) {
-    if (candle.time <= targetTs) {
-      fallback = candle.time;
-      continue;
-    }
-    break;
+  const interval = inferBarIntervalSeconds(candles);
+  const first = candles[0].time;
+  const last = candles[candles.length - 1].time;
+
+  if (targetTs < first || targetTs > last + interval) {
+    return null;
   }
-  return fallback;
+
+  let left = 0;
+  let right = candles.length - 1;
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2);
+    const barTime = candles[mid].time;
+    if (barTime === targetTs) return barTime;
+    if (barTime < targetTs) {
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+
+  const idx = Math.max(0, right);
+  return candles[idx].time;
 }
 
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [candlesByKey, setCandlesByKey] = useState<Record<string, Candle[]>>({});
   const [intervalByKey, setIntervalByKey] = useState<Record<string, ChartInterval>>({});
-  const [dayNotes, setDayNotes] = useState<Record<string, string>>(
-    Object.fromEntries(closedTrades.map((trade) => [`${trade.accountId}:${trade.tradeDate}`, trade.dayNote])),
-  );
   const [tradeNotes, setTradeNotes] = useState<Record<string, string>>(
     Object.fromEntries(closedTrades.map((trade) => [trade.groupKey, trade.tradeNote])),
   );
@@ -90,23 +112,6 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
     setCandlesByKey((prev) => ({ ...prev, [cacheKey]: data.candles ?? [] }));
   }
 
-  function saveDayNote(trade: ClosedTrade) {
-    const key = `${trade.accountId}:${trade.tradeDate}`;
-    const content = dayNotes[key] ?? "";
-    startTransition(async () => {
-      const res = await fetch("/api/notes/day", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId: trade.accountId,
-          date: trade.tradeDate,
-          content,
-        }),
-      });
-      setStatus((prev) => ({ ...prev, [trade.groupKey]: res.ok ? "Saved notes." : "Failed to save day note." }));
-    });
-  }
-
   function saveTradeNote(trade: ClosedTrade) {
     const content = tradeNotes[trade.groupKey] ?? "";
     startTransition(async () => {
@@ -132,13 +137,19 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
               const open = expanded === trade.groupKey;
               const interval = intervalByKey[trade.groupKey] ?? "1d";
               const allCandles = candlesByKey[`${trade.groupKey}:${interval}`] ?? [];
-              const markers = trade.executions.map((exec) => ({
-                time: alignExecutionToBarTime(exec.executedAt, allCandles),
-                position: exec.side === "BUY" ? "belowBar" : "aboveBar",
-                color: exec.side === "BUY" ? "#16a34a" : "#dc2626",
-                shape: exec.side === "BUY" ? "arrowUp" : "arrowDown",
-                text: `${exec.side} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
-              })) as Array<{ time: number; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string }>;
+              const markersInRange = trade.executions
+                .map((exec) => {
+                  const markerTime = alignExecutionToBarTime(exec.executedAt, allCandles);
+                  if (markerTime === null) return null;
+                  return {
+                    time: markerTime,
+                    position: exec.side === "BUY" ? "belowBar" : "aboveBar",
+                    color: exec.side === "BUY" ? "#16a34a" : "#dc2626",
+                    shape: exec.side === "BUY" ? "arrowUp" : "arrowDown",
+                    text: `${exec.side} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
+                  };
+                })
+                .filter((marker): marker is { time: number; position: "aboveBar" | "belowBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string } => marker !== null);
 
               return (
                 <div key={trade.groupKey} className="p-4">
@@ -183,43 +194,33 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                           </Button>
                         ))}
                       </div>
-                      <CandlestickWithMarkers candles={allCandles} markers={markers} height={620} />
+                      <CandlestickWithMarkers
+                        candles={allCandles}
+                        markers={markersInRange}
+                        height={620}
+                        annotationStorageKey={`${trade.groupKey}:${interval}`}
+                      />
+                      {markersInRange.length < trade.executions.length && (
+                        <p className="text-xs text-slate-500">
+                          Some execution markers are outside the currently loaded {interval} candle range.
+                        </p>
+                      )}
 
-                      <div className="grid gap-4 lg:grid-cols-2">
-                        <div>
-                          <p className="mb-2 text-sm font-medium">Day Note</p>
-                          <RichTextEditor
-                            value={dayNotes[`${trade.accountId}:${trade.tradeDate}`] ?? ""}
-                            onChange={(value) =>
-                              setDayNotes((prev) => ({ ...prev, [`${trade.accountId}:${trade.tradeDate}`]: value }))
-                            }
-                            placeholder="Add market context, psychology notes, and rule adherence for this day."
-                          />
-                          <Button
-                            size="sm"
-                            className="mt-2"
-                            disabled={pending}
-                            onClick={() => saveDayNote(trade)}
-                          >
-                            Save Day Note
-                          </Button>
-                        </div>
-                        <div>
-                          <p className="mb-2 text-sm font-medium">Closed Trade Note</p>
-                          <RichTextEditor
-                            value={tradeNotes[trade.groupKey] ?? ""}
-                            onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
-                            placeholder="Add setup quality, entry/exit rationale, and improvements."
-                          />
-                          <Button
-                            size="sm"
-                            className="mt-2"
-                            disabled={pending}
-                            onClick={() => saveTradeNote(trade)}
-                          >
-                            Save Trade Note
-                          </Button>
-                        </div>
+                      <div>
+                        <p className="mb-2 text-sm font-medium">Notes</p>
+                        <RichTextEditor
+                          value={tradeNotes[trade.groupKey] ?? ""}
+                          onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
+                          placeholder="Add setup quality, entry/exit rationale, and improvements."
+                        />
+                        <Button
+                          size="sm"
+                          className="mt-2"
+                          disabled={pending}
+                          onClick={() => saveTradeNote(trade)}
+                        >
+                          Save Notes
+                        </Button>
                       </div>
 
                       {status[trade.groupKey] && <p className="text-xs text-slate-600">{status[trade.groupKey]}</p>}
