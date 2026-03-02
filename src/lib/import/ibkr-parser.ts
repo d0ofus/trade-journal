@@ -9,6 +9,7 @@ import {
   type PositionImport,
   type SnapshotImport,
 } from "@/lib/import/schemas";
+import { isExcludedFxPairSymbol } from "@/lib/import/fx-exclusions";
 
 export type FileKind = "executions" | "positions" | "snapshots" | "unknown";
 
@@ -93,10 +94,6 @@ function parseNumber(raw: string | undefined): number | undefined {
   if (!cleaned) return undefined;
   const value = Number(cleaned);
   return Number.isFinite(value) ? value : undefined;
-}
-
-function isForexPairSymbol(symbol: string) {
-  return /^[A-Z]{3}\.[A-Z]{3}$/i.test(symbol.trim());
 }
 
 function parseDate(raw: string | undefined): Date | undefined {
@@ -202,7 +199,7 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionIm
     const exchange = (explicitExchange ?? mappedExchange ?? "").trim() || undefined;
     const isForexLike =
       (exchange ?? "").toUpperCase() === "IDEALFX" ||
-      ((rawAssetClass === "CASH" || rawAssetClass === "FOREX") && isForexPairSymbol(symbol));
+      ((rawAssetClass === "CASH" || rawAssetClass === "FOREX") && isExcludedFxPairSymbol(symbol));
     if (isForexLike) {
       continue;
     }
