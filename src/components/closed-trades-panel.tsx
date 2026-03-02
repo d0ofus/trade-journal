@@ -54,10 +54,10 @@ function alignExecutionToBarTime(executedAt: string, candles: Candle[]) {
 
   const targetTs = Math.floor(new Date(executedAt).getTime() / 1000);
   const interval = inferBarIntervalSeconds(candles);
-  const first = candles[0].time;
-  const last = candles[candles.length - 1].time;
+  const first = candles[0].time - interval;
+  const last = candles[candles.length - 1].time + interval;
 
-  if (targetTs < first || targetTs > last + interval) {
+  if (targetTs < first || targetTs > last) {
     return null;
   }
 
@@ -74,8 +74,21 @@ function alignExecutionToBarTime(executedAt: string, candles: Candle[]) {
     }
   }
 
-  const idx = Math.max(0, right);
-  return candles[idx].time;
+  const prevIdx = Math.max(0, right);
+  const nextIdx = Math.min(candles.length - 1, left);
+  const prev = candles[prevIdx];
+  const next = candles[nextIdx];
+
+  const prevDiff = Math.abs(targetTs - prev.time);
+  const nextDiff = Math.abs(next.time - targetTs);
+  const chosen = nextDiff < prevDiff ? next : prev;
+
+  // Keep marker off-chart when execution is too far from the nearest loaded bar.
+  if (Math.abs(chosen.time - targetTs) > interval * 2) {
+    return null;
+  }
+
+  return chosen.time;
 }
 
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
