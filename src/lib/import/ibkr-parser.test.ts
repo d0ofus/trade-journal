@@ -57,4 +57,18 @@ describe("IBKR parser", () => {
     expect(parsed.executions).toHaveLength(1);
     expect(parsed.executions[0].symbol).toBe("MSFT");
   });
+
+  it("omits forex cash pair rows even when exchange is blank", () => {
+    const csv = [
+      "ClientAccountID,DateTime,Symbol,Exchange,AssetClass,Buy/Sell,Quantity,TradePrice,IBCommission",
+      "U1,2026-01-02 10:00:00,USD.SGD,,CASH,SELL,1000,1.35,0.8",
+      "U1,2026-01-02 10:01:00,NVDA,NASDAQ,STK,BUY,1,700.0,0.5",
+    ].join("\n");
+
+    const preview = previewCsv("fx-blank-exchange.csv", csv);
+    const parsed = parseCsvWithMapping("executions", csv, preview.mapping);
+
+    expect(parsed.executions).toHaveLength(1);
+    expect(parsed.executions[0].symbol).toBe("NVDA");
+  });
 });

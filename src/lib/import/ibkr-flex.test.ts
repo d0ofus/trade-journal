@@ -42,4 +42,16 @@ describe("IBKR flex parser", () => {
     expect(filtered).toHaveLength(1);
     expect(filtered[0].TradeID).toBe("123");
   });
+
+  it("filters cash forex pair commission rows when exchange is blank", () => {
+    const rows = [
+      { Exchange: "", AssetClass: "CASH", Symbol: "USD.SGD", TradeID: "87254631", TotalCommission: "-0.5" },
+      { Exchange: "", AssetClass: "CASH", Symbol: "USD.SGD", TradeID: "87254690", TotalCommission: "-0.5" },
+      { Exchange: "NASDAQ", AssetClass: "STK", Symbol: "AAPL", TradeID: "111", TotalCommission: "-1.0" },
+    ];
+
+    const filtered = filterOutIdealFxCommissionRows(rows);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].TradeID).toBe("111");
+  });
 });
