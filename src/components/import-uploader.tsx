@@ -12,6 +12,7 @@ type Preview = {
   mapping: Record<string, string | null>;
   rows: Record<string, string>[];
   errors: string[];
+  totalRows?: number;
 };
 
 export function ImportUploader() {
@@ -128,7 +129,10 @@ export function ImportUploader() {
         <Card key={preview.filename}>
           <CardHeader>
             <CardTitle className="text-base">{preview.filename}</CardTitle>
-            <CardDescription>Detected type: {preview.kind}</CardDescription>
+            <CardDescription>
+              Detected type: {preview.kind}
+              {typeof preview.totalRows === "number" ? ` | Rows detected: ${preview.totalRows}` : ""}
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {preview.errors.length > 0 && (
