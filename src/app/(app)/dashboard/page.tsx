@@ -1,7 +1,14 @@
+import Link from "next/link";
+import { format, startOfYear, subMonths } from "date-fns";
 import { DashboardCharts } from "@/components/dashboard-charts";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { formatCurrency, formatPercent } from "@/lib/utils";
 import { getDashboardData } from "@/lib/server/queries";
+
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+type DashboardPreset = "all" | "ytd" | "3m" | "6m" | "custom";
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return "0m";
@@ -20,8 +27,70 @@ function formatVolume(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
 
-export default async function DashboardPage() {
-  const data = await getDashboardData();
+function parseDateParam(value: string | undefined) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? undefined : value;
+}
+
+function resolveRange(searchParams: Record<string, string | string[] | undefined>) {
+  const today = new Date();
+  const todayIso = format(today, "yyyy-MM-dd");
+  const fromInput = parseDateParam(typeof searchParams.from === "string" ? searchParams.from : undefined);
+  const toInput = parseDateParam(typeof searchParams.to === "string" ? searchParams.to : undefined);
+  const presetInput = typeof searchParams.preset === "string" ? searchParams.preset : undefined;
+
+  let preset: DashboardPreset = "all";
+  if (presetInput === "ytd" || presetInput === "3m" || presetInput === "6m" || presetInput === "custom" || presetInput === "all") {
+    preset = presetInput;
+  } else if (fromInput || toInput) {
+    preset = "custom";
+  }
+
+  if (preset === "ytd") {
+    return {
+      preset,
+      from: format(startOfYear(today), "yyyy-MM-dd"),
+      to: todayIso,
+      label: "Year-To-Date",
+    };
+  }
+  if (preset === "3m") {
+    return {
+      preset,
+      from: format(subMonths(today, 3), "yyyy-MM-dd"),
+      to: todayIso,
+      label: "Past 3 Months",
+    };
+  }
+  if (preset === "6m") {
+    return {
+      preset,
+      from: format(subMonths(today, 6), "yyyy-MM-dd"),
+      to: todayIso,
+      label: "Past 6 Months",
+    };
+  }
+  if (preset === "custom") {
+    return {
+      preset,
+      from: fromInput,
+      to: toInput,
+      label: "Custom Range",
+    };
+  }
+  return {
+    preset: "all" as const,
+    from: undefined,
+    to: undefined,
+    label: "All Time",
+  };
+}
+
+export default async function DashboardPage(props: { searchParams: SearchParams }) {
+  const searchParams = await props.searchParams;
+  const range = resolveRange(searchParams);
+  const data = await getDashboardData({ from: range.from, to: range.to });
 
   const cards = [
     { label: "Total Trades", value: data.cards.totalTrades.toLocaleString() },
@@ -51,9 +120,45 @@ export default async function DashboardPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold">Dashboard</h2>
-          <p className="text-sm text-slate-600">Performance overview from imported executions and snapshots.</p>
+          <p className="text-sm text-slate-600">Performance overview for: {range.label}</p>
         </div>
       </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Date Range</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <Link href="/dashboard?preset=all" className={buttonVariants({ size: "sm", variant: range.preset === "all" ? "default" : "outline" })}>
+              All Time
+            </Link>
+            <Link href="/dashboard?preset=ytd" className={buttonVariants({ size: "sm", variant: range.preset === "ytd" ? "default" : "outline" })}>
+              YTD
+            </Link>
+            <Link href="/dashboard?preset=3m" className={buttonVariants({ size: "sm", variant: range.preset === "3m" ? "default" : "outline" })}>
+              Past 3 Months
+            </Link>
+            <Link href="/dashboard?preset=6m" className={buttonVariants({ size: "sm", variant: range.preset === "6m" ? "default" : "outline" })}>
+              Past 6 Months
+            </Link>
+          </div>
+          <form className="flex flex-wrap items-end gap-3" method="get">
+            <input name="preset" type="hidden" value="custom" />
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-slate-600">From</p>
+              <Input name="from" type="date" defaultValue={range.preset === "custom" ? range.from : undefined} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-slate-600">To</p>
+              <Input name="to" type="date" defaultValue={range.preset === "custom" ? range.to : undefined} />
+            </div>
+            <Button size="sm" type="submit">
+              Apply
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {cards.map((card) => (

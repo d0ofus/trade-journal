@@ -15,9 +15,27 @@ type Preview = {
   totalRows?: number;
 };
 
+type ImportResult = {
+  filename: string;
+  rowsSeen: number;
+  rowsImported: number;
+  rowsSkipped: number;
+  durationMs: number;
+  rowsPerSecond: number;
+};
+
+function formatDurationMs(durationMs: number) {
+  return `${(durationMs / 1000).toFixed(2)}s`;
+}
+
+function formatRate(rowsPerSecond: number) {
+  return `${rowsPerSecond.toLocaleString(undefined, { maximumFractionDigits: 2 })} rows/s`;
+}
+
 export function ImportUploader() {
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<Preview[]>([]);
+  const [importResults, setImportResults] = useState<ImportResult[]>([]);
   const [message, setMessage] = useState<string>("");
   const [pending, startTransition] = useTransition();
 
@@ -61,6 +79,7 @@ export function ImportUploader() {
         return;
       }
 
+      setImportResults([]);
       setPreviews(data.previews ?? []);
       setMessage("Preview loaded. Adjust mappings if needed, then import.");
     } catch (error) {
@@ -84,12 +103,25 @@ export function ImportUploader() {
         return;
       }
 
-      const summary = (data.results ?? [])
-        .map((r: { filename: string; rowsImported: number; rowsSkipped: number }) =>
-          `${r.filename}: imported ${r.rowsImported}, skipped ${r.rowsSkipped}`,
-        )
-        .join(" | ");
-      setMessage(`Import complete. ${summary}`);
+      const results = (data.results ?? []) as ImportResult[];
+      setImportResults(results);
+
+      const summary = data.summary as
+        | {
+            totalRowsSeen: number;
+            totalRowsImported: number;
+            totalRowsSkipped: number;
+            totalDurationMs: number;
+            totalRowsPerSecond: number;
+          }
+        | undefined;
+      if (summary) {
+        setMessage(
+          `Import complete. Seen ${summary.totalRowsSeen}, imported ${summary.totalRowsImported}, skipped ${summary.totalRowsSkipped}. Duration ${formatDurationMs(summary.totalDurationMs)} at ${formatRate(summary.totalRowsPerSecond)}.`,
+        );
+      } else {
+        setMessage("Import complete.");
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Import failed due to a network or server error.");
     }
@@ -187,6 +219,43 @@ export function ImportUploader() {
           </CardContent>
         </Card>
       ))}
+
+      {importResults.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Latest Import Performance</CardTitle>
+            <CardDescription>Per-file throughput from the most recent import run.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-auto rounded-md border border-slate-200">
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-100">
+                  <tr>
+                    <th className="px-2 py-1 text-left font-semibold text-slate-700">File</th>
+                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Seen</th>
+                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Imported</th>
+                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Skipped</th>
+                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Duration</th>
+                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Throughput</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importResults.map((result) => (
+                    <tr key={result.filename} className="border-t border-slate-200">
+                      <td className="px-2 py-1 text-slate-700">{result.filename}</td>
+                      <td className="px-2 py-1 text-slate-700">{result.rowsSeen.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-slate-700">{result.rowsImported.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-slate-700">{result.rowsSkipped.toLocaleString()}</td>
+                      <td className="px-2 py-1 text-slate-700">{formatDurationMs(result.durationMs)}</td>
+                      <td className="px-2 py-1 text-slate-700">{formatRate(result.rowsPerSecond)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

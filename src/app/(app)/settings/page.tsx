@@ -55,6 +55,7 @@ export default async function SettingsPage() {
               rowsImported: batch.rowsImported,
               rowsSkipped: batch.rowsSkipped,
               importedAt: batch.importedAt.toISOString(),
+              notes: batch.notes ?? undefined,
             }))}
           />
         </CardContent>

@@ -149,6 +149,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "commit") {
+      const commitStartedAtMs = Date.now();
       const mappingRaw = String(formData.get("mappingByFile") ?? "{}");
       const kindRaw = String(formData.get("kindByFile") ?? "{}");
 
@@ -162,7 +163,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Invalid mapping payload." }, { status: 400 });
       }
 
-      const results = [] as Array<{ filename: string; rowsSeen: number; rowsImported: number; rowsSkipped: number }>;
+      const results = [] as Array<{
+        filename: string;
+        rowsSeen: number;
+        rowsImported: number;
+        rowsSkipped: number;
+        durationMs: number;
+        rowsPerSecond: number;
+      }>;
 
       for (const file of files) {
         const sections = splitFlexSections(file.content);
@@ -194,7 +202,22 @@ export async function POST(req: NextRequest) {
         results.push({ filename: file.filename, ...result });
       }
 
-      return NextResponse.json({ results });
+      const totalDurationMs = Math.max(1, Date.now() - commitStartedAtMs);
+      const totalRowsImported = results.reduce((sum, result) => sum + result.rowsImported, 0);
+      const totalRowsSeen = results.reduce((sum, result) => sum + result.rowsSeen, 0);
+      const totalRowsSkipped = results.reduce((sum, result) => sum + result.rowsSkipped, 0);
+      const totalRowsPerSecond = Number(((totalRowsImported / totalDurationMs) * 1000).toFixed(2));
+
+      return NextResponse.json({
+        results,
+        summary: {
+          totalRowsSeen,
+          totalRowsImported,
+          totalRowsSkipped,
+          totalDurationMs,
+          totalRowsPerSecond,
+        },
+      });
     }
 
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });

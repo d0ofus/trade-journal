@@ -30,6 +30,7 @@ interface Lot {
 
 export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPnl[] {
   const sorted = [...executions].sort((a, b) => a.executedAt.getTime() - b.executedAt.getTime());
+  const executedAtById = new Map(sorted.map((execution) => [execution.id, execution.executedAt.getTime()]));
   const grouped = new Map<string, ExecutionForCalc[]>();
 
   for (const exec of sorted) {
@@ -93,9 +94,7 @@ export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPn
   }
 
   return result.sort((a, b) => {
-    const aExec = executions.find((e) => e.id === a.executionId)!;
-    const bExec = executions.find((e) => e.id === b.executionId)!;
-    return aExec.executedAt.getTime() - bExec.executedAt.getTime();
+    return (executedAtById.get(a.executionId) ?? 0) - (executedAtById.get(b.executionId) ?? 0);
   });
 }
 

@@ -10,6 +10,7 @@ type ImportBatchItem = {
   rowsImported: number;
   rowsSkipped: number;
   importedAt: string;
+  notes?: string;
 };
 
 const ZONES = [
@@ -78,6 +79,7 @@ export function ImportHistoryList({ batches }: { batches: ImportBatchItem[] }) {
           <p className="text-slate-600">
             {batch.fileType} | seen {batch.rowsSeen}, imported {batch.rowsImported}, skipped {batch.rowsSkipped}
           </p>
+          {batch.notes && <p className="text-xs text-slate-600">{batch.notes}</p>}
           <p className="text-xs text-slate-500">{formatTimestamp(batch.importedAt, selectedZone)}</p>
         </div>
       ))}
