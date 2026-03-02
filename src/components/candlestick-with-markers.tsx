@@ -67,6 +67,11 @@ export function CandlestickWithMarkers({
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [hoverOhlc, setHoverOhlc] = useState<HoverOhlc | null>(null);
 
+  function resetView() {
+    seriesRef.current?.priceScale().applyOptions({ autoScale: true });
+    chartRef.current?.timeScale().fitContent();
+  }
+
   useEffect(() => {
     toolRef.current = tool;
   }, [tool]);
@@ -117,8 +122,8 @@ export function CandlestickWithMarkers({
       height,
       crosshair: { mode: CrosshairMode.Normal },
       grid: {
-        vertLines: { color: "#e2e8f0" },
-        horzLines: { color: "#e2e8f0" },
+        vertLines: { color: "transparent" },
+        horzLines: { color: "transparent" },
       },
       rightPriceScale: { borderColor: "#cbd5e1" },
       timeScale: { borderColor: "#cbd5e1" },
@@ -227,8 +232,20 @@ export function CandlestickWithMarkers({
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((candle) => ({ ...candle, time: candle.time as UTCTimestamp })));
     markerPluginRef.current?.setMarkers(markers.map((marker) => ({ ...marker, time: marker.time as UTCTimestamp })));
-    chartRef.current?.timeScale().fitContent();
+    resetView();
   }, [candles, markers]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey) return;
+      if (event.key.toLowerCase() !== "r") return;
+      event.preventDefault();
+      resetView();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -306,6 +323,9 @@ export function CandlestickWithMarkers({
             }}
           >
             Clear Drawings
+          </Button>
+          <Button size="sm" variant="outline" onClick={resetView}>
+            Reset View (Alt+R)
           </Button>
         </div>
         <div>

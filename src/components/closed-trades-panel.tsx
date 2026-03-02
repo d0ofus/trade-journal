@@ -148,9 +148,21 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
   async function ensureCandles(trade: ClosedTrade, interval: ChartInterval) {
     const cacheKey = `${trade.groupKey}:${interval}`;
     if (candlesByKey[cacheKey]) return;
-    const res = await fetch(
-      `/api/market/candles?symbol=${encodeURIComponent(trade.symbol)}&timeframe=${interval}&limit=1200`,
-    );
+
+    const url = new URL("/api/market/candles", window.location.origin);
+    url.searchParams.set("symbol", trade.symbol);
+    url.searchParams.set("timeframe", interval);
+    url.searchParams.set("limit", "1200");
+    if (interval === "5m" && trade.executions.length > 0) {
+      const execTimes = trade.executions.map((execution) => Math.floor(new Date(execution.executedAt).getTime() / 1000));
+      const minExec = Math.min(...execTimes);
+      const maxExec = Math.max(...execTimes);
+      const padding = 2 * 24 * 60 * 60;
+      url.searchParams.set("from", String(minExec - padding));
+      url.searchParams.set("to", String(maxExec + padding));
+    }
+
+    const res = await fetch(url.toString());
     if (!res.ok) {
       setStatus((prev) => ({ ...prev, [trade.groupKey]: `Unable to load ${interval} market candles.` }));
       return;
@@ -194,13 +206,14 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
 
                 const isBuy = exec.side === "BUY";
                 const color = isBuy ? "#16a34a" : "#dc2626";
+                const circleColor = isBuy ? "#0284c7" : "#ea580c";
                 const arrowPosition: "belowBar" | "aboveBar" = isBuy ? "belowBar" : "aboveBar";
                 const arrowShape: "arrowUp" | "arrowDown" = isBuy ? "arrowUp" : "arrowDown";
                 return [
                   {
                     time: markerTime,
                     position: "inBar" as const,
-                    color,
+                    color: circleColor,
                     shape: "circle" as const,
                     text: "",
                   },
