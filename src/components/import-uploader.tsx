@@ -34,44 +34,62 @@ export function ImportUploader() {
     return mapped;
   }, [previews]);
 
-  async function previewUpload() {
-    if (!files.length) return;
-    const formData = new FormData();
-    formData.set("action", "preview");
-    files.forEach((file) => formData.append("files", file));
-
-    const res = await fetch("/api/import", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!res.ok) {
-      setMessage(data.error ?? "Preview failed.");
-      return;
+  async function readApiPayload(res: Response) {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      return res.json();
     }
 
-    setPreviews(data.previews);
-    setMessage("Preview loaded. Adjust mappings if needed, then import.");
+    const text = await res.text();
+    return { error: text.slice(0, 300) || "Request failed with a non-JSON response." };
+  }
+
+  async function previewUpload() {
+    if (!files.length) return;
+    try {
+      const formData = new FormData();
+      formData.set("action", "preview");
+      files.forEach((file) => formData.append("files", file));
+
+      const res = await fetch("/api/import", { method: "POST", body: formData });
+      const data = await readApiPayload(res);
+      if (!res.ok) {
+        setMessage(data.error ?? "Preview failed.");
+        return;
+      }
+
+      setPreviews(data.previews ?? []);
+      setMessage("Preview loaded. Adjust mappings if needed, then import.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Preview failed due to a network or server error.");
+    }
   }
 
   async function commitImport() {
     if (!files.length || !previews.length) return;
-    const formData = new FormData();
-    formData.set("action", "commit");
-    formData.set("mappingByFile", JSON.stringify(mappingByFile));
-    formData.set("kindByFile", JSON.stringify(kindByFile));
-    files.forEach((file) => formData.append("files", file));
+    try {
+      const formData = new FormData();
+      formData.set("action", "commit");
+      formData.set("mappingByFile", JSON.stringify(mappingByFile));
+      formData.set("kindByFile", JSON.stringify(kindByFile));
+      files.forEach((file) => formData.append("files", file));
 
-    const res = await fetch("/api/import", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!res.ok) {
-      setMessage(data.error ?? "Import failed.");
-      return;
+      const res = await fetch("/api/import", { method: "POST", body: formData });
+      const data = await readApiPayload(res);
+      if (!res.ok) {
+        setMessage(data.error ?? "Import failed.");
+        return;
+      }
+
+      const summary = (data.results ?? [])
+        .map((r: { filename: string; rowsImported: number; rowsSkipped: number }) =>
+          `${r.filename}: imported ${r.rowsImported}, skipped ${r.rowsSkipped}`,
+        )
+        .join(" | ");
+      setMessage(`Import complete. ${summary}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Import failed due to a network or server error.");
     }
-
-    const summary = data.results
-      .map((r: { filename: string; rowsImported: number; rowsSkipped: number }) =>
-        `${r.filename}: imported ${r.rowsImported}, skipped ${r.rowsSkipped}`,
-      )
-      .join(" | ");
-    setMessage(`Import complete. ${summary}`);
   }
 
   return (
