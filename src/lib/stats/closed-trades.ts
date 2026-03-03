@@ -260,9 +260,13 @@ export function computeClosedTradeGroups(
             (sum, cycleExec) => sum + (cycleExec.side === "BUY" ? cycleExec.quantity : -cycleExec.quantity),
             0,
           );
-          if (Math.abs(executionSignedQty) > EPSILON) {
+          const expectedExecutionSignedQty = -currentTrade.openingQuantity;
+          if (Math.abs(executionSignedQty - expectedExecutionSignedQty) > EPSILON) {
             currentTrade = null;
-            positionQty = 0;
+            positionQty = lots.reduce((sum, lot) => sum + lot.qty, 0);
+            if (Math.abs(positionQty) <= EPSILON) {
+              positionQty = 0;
+            }
             continue;
           }
           const tradeId = stableTradeId(currentTrade, closeTime, closeCount);

@@ -1,5 +1,6 @@
 "use client";
 
+import { format } from "date-fns";
 import {
   Bar,
   BarChart,
@@ -24,6 +25,21 @@ type DashboardChartsProps = {
   scatter: { time: string; symbol: string; price: number; side: string }[];
 };
 
+function formatAxisDate(value: string) {
+  if (!value) return value;
+  const normalized = value.includes(" ") ? value.replace(" ", "T") : `${value}T00:00:00`;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return format(parsed, "MMM d");
+}
+
+function formatTwoDecimals(value: number | string | undefined) {
+  if (typeof value === "undefined") return "";
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  return numeric.toFixed(2);
+}
+
 export function DashboardCharts({
   dailyPnl,
   grossDailyPnl,
@@ -42,9 +58,9 @@ export function DashboardCharts({
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={grossDailyPnl}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
+                <XAxis dataKey="date" tickFormatter={formatAxisDate} />
                 <YAxis />
-                <Tooltip />
+                <Tooltip formatter={formatTwoDecimals} />
                 <Bar dataKey="pnl" fill="#0ea5e9" />
               </BarChart>
             </ResponsiveContainer>
@@ -57,9 +73,9 @@ export function DashboardCharts({
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={grossCumulativePnl}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
+                <XAxis dataKey="date" tickFormatter={formatAxisDate} />
                 <YAxis />
-                <Tooltip />
+                <Tooltip formatter={formatTwoDecimals} />
                 <Line type="monotone" dataKey="pnl" stroke="#0284c7" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
@@ -72,7 +88,7 @@ export function DashboardCharts({
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={dailyTradeCounts}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
+                <XAxis dataKey="date" tickFormatter={formatAxisDate} />
                 <YAxis allowDecimals={false} />
                 <Tooltip />
                 <Bar dataKey="trades" fill="#475569" />
@@ -89,9 +105,9 @@ export function DashboardCharts({
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={equityCurve}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="at" hide />
+              <XAxis dataKey="at" tickFormatter={formatAxisDate} />
               <YAxis />
-              <Tooltip />
+              <Tooltip formatter={formatTwoDecimals} />
               <Line type="monotone" dataKey="equity" stroke="#0f172a" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
@@ -104,9 +120,9 @@ export function DashboardCharts({
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={dailyPnl}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
+              <XAxis dataKey="date" tickFormatter={formatAxisDate} />
               <YAxis />
-              <Tooltip />
+              <Tooltip formatter={formatTwoDecimals} />
               <Bar dataKey="pnl" fill="#1d4ed8" />
             </BarChart>
           </ResponsiveContainer>
@@ -121,7 +137,7 @@ export function DashboardCharts({
               <CartesianGrid />
               <XAxis dataKey="time" />
               <YAxis dataKey="price" />
-              <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+              <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={formatTwoDecimals} />
               <Scatter data={scatter} fill="#16a34a" />
             </ScatterChart>
           </ResponsiveContainer>

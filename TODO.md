@@ -7,7 +7,7 @@
 
 - Change how charts of 'closed trades' are displayed:
 > Add green/red horizontal lines on chart for executions
-- Change page selector for list of trades to have the numbers, and 'Go to first' and 'Go to last'
+
 - Change note-taking feature to a template format, remove 'List' option
 - Add feature to search for 'closed trades'
 - Add feature to tag 'closed trades'
@@ -15,8 +15,6 @@
 
 ## 🟡 Medium
 - Improve UI
-> Change date format on x-axis of dashboard graphs
-> Change to 2 d.p. for P&L charts
 
 ## 🟢 Low / Future
 - [ ] Dark mode toggle
