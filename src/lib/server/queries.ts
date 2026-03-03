@@ -297,39 +297,62 @@ export async function getClosedTrades(filters: TradeFilters) {
     orderBy: { executedAt: "asc" },
   });
 
-  const firstExecutionByAccountInstrument = new Map<string, Date>();
+  const firstExecutionByAccountInstrument = new Map<
+    string,
+    {
+      accountId: string;
+      instrumentId: string;
+      openingCutoff: Date;
+      firstExecutionAt: Date;
+    }
+  >();
   for (const exec of executions) {
     const key = `${exec.accountId}:${exec.instrumentId}`;
     const existing = firstExecutionByAccountInstrument.get(key);
-    if (!existing || exec.executedAt < existing) {
-      firstExecutionByAccountInstrument.set(key, exec.executedAt);
+    if (!existing || exec.executedAt < existing.firstExecutionAt) {
+      firstExecutionByAccountInstrument.set(key, {
+        accountId: exec.accountId,
+        instrumentId: exec.instrumentId,
+        openingCutoff: startOfUtcDay(exec.executedAt),
+        firstExecutionAt: exec.executedAt,
+      });
     }
   }
 
-  const openingEntries = await Promise.all(
-    [...firstExecutionByAccountInstrument.entries()].map(async ([key, firstExecutionAt]) => {
-      const [accountId, instrumentId] = key.split(":");
-      const openingCutoff = startOfUtcDay(firstExecutionAt);
-      const snapshot = await prisma.positionSnapshot.findFirst({
-        where: {
-          accountId,
-          instrumentId,
-          // Position snapshots are day-level records; use only prior-day snapshots as opening state.
-          date: { lt: openingCutoff },
-        },
-        orderBy: { date: "desc" },
-      });
-      return [
-        key,
-        {
-          quantity: snapshot?.quantity ?? 0,
-          avgCost: snapshot?.avgCost ?? 0,
-        },
-      ] as const;
-    }),
-  );
+  const openingTargets = [...firstExecutionByAccountInstrument.entries()];
+  const openingMap = new Map<string, { quantity: number; avgCost: number }>();
 
-  const openingMap = new Map(openingEntries);
+  if (openingTargets.length > 0) {
+    const accountIds = [...new Set(openingTargets.map(([, target]) => target.accountId))];
+    const instrumentIds = [...new Set(openingTargets.map(([, target]) => target.instrumentId))];
+    const maxCutoff = new Date(Math.max(...openingTargets.map(([, target]) => target.openingCutoff.getTime())));
+
+    const snapshots = await prisma.positionSnapshot.findMany({
+      where: {
+        accountId: { in: accountIds },
+        instrumentId: { in: instrumentIds },
+        // Pull only snapshots prior to the latest opening cutoff; individual keys are filtered below.
+        date: { lt: maxCutoff },
+      },
+      orderBy: [{ accountId: "asc" }, { instrumentId: "asc" }, { date: "desc" }],
+    });
+
+    const snapshotsByKey = new Map<string, typeof snapshots>();
+    for (const snapshot of snapshots) {
+      const key = `${snapshot.accountId}:${snapshot.instrumentId}`;
+      const list = snapshotsByKey.get(key) ?? [];
+      list.push(snapshot);
+      snapshotsByKey.set(key, list);
+    }
+
+    for (const [key, target] of openingTargets) {
+      const snapshot = snapshotsByKey.get(key)?.find((row) => row.date < target.openingCutoff);
+      openingMap.set(key, {
+        quantity: snapshot?.quantity ?? 0,
+        avgCost: snapshot?.avgCost ?? 0,
+      });
+    }
+  }
 
   const filteredGroups = computeClosedTradeGroups(
     executions.map((exec) => ({
@@ -362,24 +385,38 @@ export async function getClosedTrades(filters: TradeFilters) {
 
   const groups = filteredGroups;
 
-  const dayNoteKeys = groups.map((group) => ({
-    accountId: group.accountId,
-    date: new Date(`${group.tradeDate}T00:00:00.000Z`),
-  }));
   const groupKeys = groups.map((group) => group.groupKey);
+  const dayNotePairs = new Map<string, { accountId: string; date: Date }>();
+  for (const group of groups) {
+    const key = `${group.accountId}:${group.tradeDate}`;
+    if (!dayNotePairs.has(key)) {
+      dayNotePairs.set(key, {
+        accountId: group.accountId,
+        date: new Date(`${group.tradeDate}T00:00:00.000Z`),
+      });
+    }
+  }
 
-  const [dayNotes, closedTradeNotes] = await Promise.all([
-    Promise.all(
-      dayNoteKeys.map((key) =>
-        prisma.dayNote.findUnique({
-          where: { accountId_date: key },
-        }),
-      ),
-    ),
-    prisma.closedTradeNote.findMany({
-      where: { groupKey: { in: groupKeys } },
-    }),
-  ]);
+  const uniqueDayNotePairs = [...dayNotePairs.values()];
+  const dayNoteAccountIds = [...new Set(uniqueDayNotePairs.map((pair) => pair.accountId))];
+  const dayNoteDates = [...new Set(uniqueDayNotePairs.map((pair) => pair.date.toISOString()))].map((iso) => new Date(iso));
+
+  const dayNotes =
+    dayNoteAccountIds.length > 0 && dayNoteDates.length > 0
+      ? await prisma.dayNote.findMany({
+          where: {
+            accountId: { in: dayNoteAccountIds },
+            date: { in: dayNoteDates },
+          },
+        })
+      : [];
+
+  const closedTradeNotes =
+    groupKeys.length > 0
+      ? await prisma.closedTradeNote.findMany({
+          where: { groupKey: { in: groupKeys } },
+        })
+      : [];
 
   const dayNoteMap = new Map(
     dayNotes
