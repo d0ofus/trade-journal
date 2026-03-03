@@ -278,11 +278,7 @@ function buildExecutionWhere(filters: TradeFilters) {
 }
 
 export async function getClosedTrades(filters: TradeFilters) {
-  const where = buildExecutionWhere({
-    ...filters,
-    from: undefined,
-    to: undefined,
-  });
+  const where = buildExecutionWhere(filters);
   const executions = await prisma.execution.findMany({
     where,
     include: {

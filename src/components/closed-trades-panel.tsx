@@ -38,6 +38,18 @@ const CHART_INTERVALS: Array<{ value: ChartInterval; label: string }> = [
   { value: "1d", label: "1 day" },
 ];
 
+const INTERVAL_SECONDS: Record<ChartInterval, number> = {
+  "5m": 5 * 60,
+  "1h": 60 * 60,
+  "1d": 24 * 60 * 60,
+};
+
+const STATIC_CONTEXT_BARS: Record<ChartInterval, { before: number; after: number }> = {
+  "5m": { before: 288, after: 288 },
+  "1h": { before: 168, after: 168 },
+  "1d": { before: 120, after: 120 },
+};
+
 function inferBarIntervalSeconds(candles: Candle[]) {
   let interval = Number.POSITIVE_INFINITY;
   for (let i = 1; i < candles.length; i += 1) {
@@ -173,28 +185,35 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
     setCandlesByKey((prev) => ({ ...prev, [cacheKey]: data.candles ?? [] }));
   }
 
-  async function ensureStaticDailyCandles(trade: ClosedTrade) {
-    const cacheKey = `${trade.groupKey}:static`;
+  async function ensureStaticCandles(trade: ClosedTrade, interval: ChartInterval) {
+    const cacheKey = `${trade.groupKey}:static:${interval}`;
     if (staticCandlesByKey[cacheKey]) return;
 
     const url = new URL("/api/market/candles", window.location.origin);
     url.searchParams.set("symbol", trade.symbol);
-    url.searchParams.set("timeframe", "1d");
-    url.searchParams.set("limit", "5000");
+    url.searchParams.set("timeframe", interval);
+    const intervalSeconds = INTERVAL_SECONDS[interval];
+    const contextBars = STATIC_CONTEXT_BARS[interval];
+    let limit = 1200;
+
     if (trade.executions.length > 0) {
       const execTimes = trade.executions.map((execution) => Math.floor(new Date(execution.executedAt).getTime() / 1000));
       const minExec = Math.min(...execTimes);
       const maxExec = Math.max(...execTimes);
-      const padding = 365 * 24 * 60 * 60;
-      url.searchParams.set("from", String(minExec - padding));
-      url.searchParams.set("to", String(maxExec + padding));
+      const from = minExec - contextBars.before * intervalSeconds;
+      const to = maxExec + contextBars.after * intervalSeconds;
+      const spanBars = Math.max(1, Math.ceil((to - from) / intervalSeconds));
+      limit = Math.min(5000, Math.max(300, spanBars + 20));
+      url.searchParams.set("from", String(from));
+      url.searchParams.set("to", String(to));
     }
+    url.searchParams.set("limit", String(limit));
 
     const res = await fetch(url.toString());
     if (!res.ok) {
       setChartStatus((prev) => ({
         ...prev,
-        [cacheKey]: "Unable to load static daily fallback candles from free data sources.",
+        [cacheKey]: `Unable to load static ${interval} fallback candles from free data sources.`,
       }));
       return;
     }
@@ -206,16 +225,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
       return;
     }
 
-    if (trade.executions.length === 0) {
-      setStaticCandlesByKey((prev) => ({ ...prev, [cacheKey]: candles.slice(-500) }));
-      return;
-    }
-
-    const execTimes = trade.executions.map((execution) => Math.floor(new Date(execution.executedAt).getTime() / 1000));
-    const center = Math.round((Math.min(...execTimes) + Math.max(...execTimes)) / 2);
-    const windowSeconds = 220 * 24 * 60 * 60;
-    const windowed = candles.filter((candle) => candle.time >= center - windowSeconds && candle.time <= center + windowSeconds);
-    setStaticCandlesByKey((prev) => ({ ...prev, [cacheKey]: windowed.length > 0 ? windowed : candles.slice(-500) }));
+    setStaticCandlesByKey((prev) => ({ ...prev, [cacheKey]: candles }));
   }
 
   function saveTradeNote(trade: ClosedTrade) {
@@ -243,8 +253,10 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
               const open = expanded === trade.groupKey;
               const interval = intervalByKey[trade.groupKey] ?? "1d";
               const allCandles = candlesByKey[`${trade.groupKey}:${interval}`] ?? [];
-              const staticDailyCandles = staticCandlesByKey[`${trade.groupKey}:static`] ?? [];
+              const staticFallbackCandles = staticCandlesByKey[`${trade.groupKey}:static:${interval}`] ?? [];
               const alignmentOffsetSeconds = interval === "1d" ? 0 : inferExecutionOffsetSeconds(trade.executions.map((exec) => exec.executedAt), allCandles);
+              const staticAlignmentOffsetSeconds =
+                interval === "1d" ? 0 : inferExecutionOffsetSeconds(trade.executions.map((exec) => exec.executedAt), staticFallbackCandles);
               const matchedExecutions = trade.executions.filter(
                 (exec) => alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds) !== null,
               ).length;
@@ -275,7 +287,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                 ];
               });
               const staticMarkersInRange = trade.executions.flatMap((exec) => {
-                const markerTime = alignExecutionToBarTime(exec.executedAt, staticDailyCandles, 0);
+                const markerTime = alignExecutionToBarTime(exec.executedAt, staticFallbackCandles, staticAlignmentOffsetSeconds);
                 if (markerTime === null) return [];
 
                 const isBuy = exec.side === "BUY";
@@ -301,7 +313,8 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                 ];
               });
               const staticMatchedExecutions = trade.executions.filter(
-                (exec) => alignExecutionToBarTime(exec.executedAt, staticDailyCandles, 0) !== null,
+                (exec) =>
+                  alignExecutionToBarTime(exec.executedAt, staticFallbackCandles, staticAlignmentOffsetSeconds) !== null,
               ).length;
 
               return (
@@ -313,7 +326,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                       const next = open ? null : trade.groupKey;
                       setExpanded(next);
                       if (!open) {
-                        await Promise.all([ensureCandles(trade, interval), ensureStaticDailyCandles(trade)]);
+                        await Promise.all([ensureCandles(trade, interval), ensureStaticCandles(trade, interval)]);
                       }
                     }}
                   >
@@ -340,7 +353,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                             variant={interval === option.value ? "default" : "outline"}
                             onClick={async () => {
                               setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
-                              await ensureCandles(trade, option.value);
+                              await Promise.all([ensureCandles(trade, option.value), ensureStaticCandles(trade, option.value)]);
                             }}
                           >
                             {option.label}
@@ -354,8 +367,8 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                         annotationStorageKey={`${trade.groupKey}:${interval}`}
                       />
                       <div className="space-y-2">
-                        <p className="text-sm font-medium text-slate-700">Static Daily Fallback (Free Data)</p>
-                        <CandlestickWithMarkers candles={staticDailyCandles} markers={staticMarkersInRange} height={360} readOnly />
+                        <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
+                        <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
                       </div>
                       {matchedExecutions < trade.executions.length && (
                         <p className="text-xs text-slate-500">
@@ -370,8 +383,8 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                       {chartStatus[`${trade.groupKey}:${interval}`] && (
                         <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:${interval}`]}</p>
                       )}
-                      {chartStatus[`${trade.groupKey}:static`] && (
-                        <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static`]}</p>
+                      {chartStatus[`${trade.groupKey}:static:${interval}`] && (
+                        <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
                       )}
 
                       <div>
