@@ -1,6 +1,7 @@
 # TODO
 
 ## 🔴 High Priority
+- Fix filter function on 'Trades' page
 - Rework calculation of Gross Cumulative P&L and Equity curve graphs 
 - Remove execution prices (intra-day) graph
 
