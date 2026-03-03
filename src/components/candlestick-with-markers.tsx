@@ -48,11 +48,13 @@ export function CandlestickWithMarkers({
   markers,
   height = 460,
   annotationStorageKey,
+  readOnly = false,
 }: {
   candles: Candle[];
   markers: Marker[];
   height?: number;
   annotationStorageKey?: string;
+  readOnly?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -143,6 +145,7 @@ export function CandlestickWithMarkers({
 
     const clickHandler = (param: MouseEventParams<Time>) => {
       if (!seriesRef.current) return;
+      if (readOnly) return;
       if (toolRef.current === "none") return;
       if (!param.point) return;
       const time = toUnixSeconds(param.time);
@@ -226,7 +229,7 @@ export function CandlestickWithMarkers({
       seriesRef.current = null;
       markerPluginRef.current = null;
     };
-  }, [height]);
+  }, [height, readOnly]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -294,36 +297,40 @@ export function CandlestickWithMarkers({
     <div className="space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant={tool === "none" ? "default" : "outline"} onClick={() => setTool("none")}>
-            Cursor
-          </Button>
-          <Button
-            size="sm"
-            variant={tool === "horizontal" ? "default" : "outline"}
-            onClick={() => {
-              setPendingTrendAnchor(null);
-              setTool("horizontal");
-            }}
-          >
-            Horizontal
-          </Button>
-          <Button
-            size="sm"
-            variant={tool === "trend" ? "default" : "outline"}
-            onClick={() => setTool("trend")}
-          >
-            Trend
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setPendingTrendAnchor(null);
-              setAnnotations([]);
-            }}
-          >
-            Clear Drawings
-          </Button>
+          {!readOnly && (
+            <>
+              <Button size="sm" variant={tool === "none" ? "default" : "outline"} onClick={() => setTool("none")}>
+                Cursor
+              </Button>
+              <Button
+                size="sm"
+                variant={tool === "horizontal" ? "default" : "outline"}
+                onClick={() => {
+                  setPendingTrendAnchor(null);
+                  setTool("horizontal");
+                }}
+              >
+                Horizontal
+              </Button>
+              <Button
+                size="sm"
+                variant={tool === "trend" ? "default" : "outline"}
+                onClick={() => setTool("trend")}
+              >
+                Trend
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setPendingTrendAnchor(null);
+                  setAnnotations([]);
+                }}
+              >
+                Clear Drawings
+              </Button>
+            </>
+          )}
           <Button size="sm" variant="outline" onClick={resetView}>
             Reset View (Alt+R)
           </Button>
@@ -332,7 +339,7 @@ export function CandlestickWithMarkers({
           {statusBar
             ? `O ${statusBar.open.toFixed(2)} H ${statusBar.high.toFixed(2)} L ${statusBar.low.toFixed(2)} C ${statusBar.close.toFixed(2)}`
             : "O - H - L - C -"}
-          {tool === "trend" && pendingTrendAnchor ? " | Select second point" : ""}
+          {!readOnly && tool === "trend" && pendingTrendAnchor ? " | Select second point" : ""}
         </div>
       </div>
       <div ref={containerRef} className="w-full" />

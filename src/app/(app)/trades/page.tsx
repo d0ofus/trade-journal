@@ -34,6 +34,13 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
     params.set("page", String(target));
     return `/trades?${params.toString()}`;
   };
+  const pageNumbers: number[] = [];
+  const pageWindow = 2;
+  const startPage = Math.max(1, trades.page - pageWindow);
+  const endPage = Math.min(trades.totalPages, trades.page + pageWindow);
+  for (let current = startPage; current <= endPage; current += 1) {
+    pageNumbers.push(current);
+  }
 
   return (
     <div className="space-y-4">
@@ -122,7 +129,14 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
             <p>
               Page {trades.page} of {trades.totalPages} | {trades.total} trades
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {trades.page > 1 ? (
+                <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(1)}>
+                  Go to first
+                </Link>
+              ) : (
+                <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Go to first</span>
+              )}
               {trades.page > 1 ? (
                 <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.page - 1)}>
                   Previous
@@ -130,12 +144,36 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
               ) : (
                 <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Previous</span>
               )}
+              {startPage > 1 && <span className="px-1 text-slate-400">...</span>}
+              {pageNumbers.map((pageNumber) =>
+                pageNumber === trades.page ? (
+                  <span key={pageNumber} className="rounded border border-slate-900 bg-slate-900 px-3 py-1 font-semibold text-white">
+                    {pageNumber}
+                  </span>
+                ) : (
+                  <Link
+                    key={pageNumber}
+                    className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50"
+                    href={pageHref(pageNumber)}
+                  >
+                    {pageNumber}
+                  </Link>
+                ),
+              )}
+              {endPage < trades.totalPages && <span className="px-1 text-slate-400">...</span>}
               {trades.page < trades.totalPages ? (
                 <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.page + 1)}>
                   Next
                 </Link>
               ) : (
                 <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Next</span>
+              )}
+              {trades.page < trades.totalPages ? (
+                <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.totalPages)}>
+                  Go to last
+                </Link>
+              ) : (
+                <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Go to last</span>
               )}
             </div>
           </div>
