@@ -254,9 +254,21 @@ type TradeFilters = {
   strategy?: string;
 };
 
-function buildExecutionWhere(filters: TradeFilters) {
+function accountInstrumentKey(accountId: string, instrumentId: string) {
+  return `${accountId}:${instrumentId}`;
+}
+
+function buildExecutionWhere(
+  filters: TradeFilters,
+  options?: {
+    applyDateRange?: boolean;
+    includeSide?: boolean;
+  },
+) {
+  const applyDateRange = options?.applyDateRange ?? true;
+  const includeSide = options?.includeSide ?? true;
   const where: Record<string, unknown> = {};
-  if (filters.from || filters.to) {
+  if (applyDateRange && (filters.from || filters.to)) {
     where.executedAt = {
       gte: filters.from ? startOfDay(new Date(filters.from)) : undefined,
       lte: filters.to ? endOfDay(new Date(filters.to)) : undefined,
@@ -265,7 +277,7 @@ function buildExecutionWhere(filters: TradeFilters) {
   if (filters.symbol) {
     where.instrument = { symbol: { equals: filters.symbol } };
   }
-  if (filters.side) {
+  if (includeSide && filters.side) {
     where.side = filters.side;
   }
   if (filters.tag) {
@@ -278,19 +290,52 @@ function buildExecutionWhere(filters: TradeFilters) {
 }
 
 export async function getClosedTrades(filters: TradeFilters) {
-  const where = buildExecutionWhere(filters);
+  const rangeStart = filters.from ? startOfDay(new Date(filters.from)) : undefined;
+  const rangeEnd = filters.to ? endOfDay(new Date(filters.to)) : undefined;
+  const where = buildExecutionWhere(filters, { applyDateRange: false, includeSide: false });
+  if (rangeEnd) {
+    where.executedAt = { lte: rangeEnd };
+  }
+
   const executions = await prisma.execution.findMany({
     where,
     include: {
       instrument: true,
       account: true,
-      tradeNote: true,
     },
     orderBy: { executedAt: "asc" },
   });
 
+  const executionsInRange = rangeStart ? executions.filter((exec) => exec.executedAt >= rangeStart) : executions;
+  const openingByAccountInstrument = new Map<string, { quantity: number; avgCost: number }>();
+  const firstExecutionAt = executionsInRange[0]?.executedAt;
+  const baselineDate = rangeStart ?? (firstExecutionAt ? startOfDay(firstExecutionAt) : undefined);
+
+  if (baselineDate && executionsInRange.length > 0) {
+    const candidateKeys = new Set(executionsInRange.map((exec) => accountInstrumentKey(exec.accountId, exec.instrumentId)));
+    const snapshots = await prisma.positionSnapshot.findMany({
+      where: {
+        accountId: { in: [...new Set(executionsInRange.map((exec) => exec.accountId))] },
+        instrumentId: { in: [...new Set(executionsInRange.map((exec) => exec.instrumentId))] },
+        date: { lt: baselineDate },
+      },
+      orderBy: { date: "desc" },
+    });
+
+    for (const snapshot of snapshots) {
+      const key = accountInstrumentKey(snapshot.accountId, snapshot.instrumentId);
+      if (!candidateKeys.has(key) || openingByAccountInstrument.has(key)) {
+        continue;
+      }
+      openingByAccountInstrument.set(key, {
+        quantity: snapshot.quantity,
+        avgCost: snapshot.avgCost,
+      });
+    }
+  }
+
   const filteredGroups = computeClosedTradeGroups(
-    executions.map((exec) => ({
+    executionsInRange.map((exec) => ({
       id: exec.id,
       accountId: exec.accountId,
       accountCode: exec.account.ibkrAccount,
@@ -306,7 +351,7 @@ export async function getClosedTrades(filters: TradeFilters) {
       commission: exec.commission,
       fees: exec.fees,
     })),
-    new Map(),
+    openingByAccountInstrument,
   ).filter((group) => {
     const tradeDate = new Date(`${group.tradeDate}T00:00:00.000Z`);
     if (filters.from && tradeDate < startOfDay(new Date(filters.from))) {
@@ -318,7 +363,9 @@ export async function getClosedTrades(filters: TradeFilters) {
     return true;
   });
 
-  const groups = filteredGroups;
+  const groups = filters.side
+    ? filteredGroups.filter((group) => group.executions.some((execution) => execution.side === filters.side))
+    : filteredGroups;
 
   const groupKeys = groups.map((group) => group.groupKey);
   const dayNotePairs = new Map<string, { accountId: string; date: Date }>();

@@ -62,4 +62,16 @@ describe("computeClosedTradeGroups", () => {
     expect(groups[0].executions[0].quantity).toBe(5);
     expect(groups[0].realizedPnl).toBe(49);
   });
+
+  it("detects a close inside a filtered range when the opening leg came from a prior snapshot", () => {
+    const groups = computeClosedTradeGroups(
+      [buildExec({ id: "range-close", executedAt: "2026-03-16T12:50:00.000Z", side: "SELL", quantity: 108, price: 91.03, commission: 1.02 })],
+      new Map([["a:i", { quantity: 108, avgCost: 94.08 }]]),
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].tradeDate).toBe("2026-03-16");
+    expect(groups[0].openingQuantity).toBe(108);
+    expect(groups[0].executions.map((execution) => `${execution.side} ${execution.quantity}`)).toEqual(["SELL 108"]);
+  });
 });
