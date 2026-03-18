@@ -74,4 +74,25 @@ describe("computeClosedTradeGroups", () => {
     expect(groups[0].openingQuantity).toBe(108);
     expect(groups[0].executions.map((execution) => `${execution.side} ${execution.quantity}`)).toEqual(["SELL 108"]);
   });
+
+  it("detects a round trip that returns to the starting carry position", () => {
+    const groups = computeClosedTradeGroups(
+      [
+        buildExec({ id: "carry-open-1", executedAt: "2026-03-17T09:41:00.000Z", side: "BUY", quantity: 27, price: 73.53 }),
+        buildExec({ id: "carry-open-2", executedAt: "2026-03-17T09:41:01.000Z", side: "BUY", quantity: 9, price: 73.53, commission: 1 }),
+        buildExec({ id: "carry-close", executedAt: "2026-03-17T17:17:00.000Z", side: "SELL", quantity: 36, price: 74.47, commission: 1.01 }),
+      ],
+      new Map([["a:i", { quantity: 1, avgCost: 70.16 }]]),
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].tradeDate).toBe("2026-03-17");
+    expect(groups[0].openingQuantity).toBe(1);
+    expect(groups[0].closingQuantity).toBe(1);
+    expect(groups[0].executions.map((execution) => `${execution.side} ${execution.quantity}`)).toEqual([
+      "BUY 27",
+      "BUY 9",
+      "SELL 36",
+    ]);
+  });
 });
