@@ -81,8 +81,16 @@ interface WorkingTrade {
 
 const EPSILON = 1e-8;
 
+function instrumentIdentity(input: {
+  symbol: string;
+  assetType?: string | null;
+  currency?: string | null;
+}) {
+  return [input.symbol, input.assetType ?? "", input.currency ?? ""].join("|");
+}
+
 function keyFor(exec: ExecutionForClosed) {
-  return `${exec.accountId}:${exec.instrumentId}`;
+  return `${exec.accountId}:${instrumentIdentity(exec)}`;
 }
 
 function signOf(value: number) {
@@ -189,13 +197,7 @@ export function computeClosedTradeGroups(
         result.push({
           tradeId,
           groupKey: tradeId,
-          instrumentKey: [
-            currentTrade.instrumentId,
-            currentTrade.symbol,
-            currentTrade.exchange ?? "",
-            currentTrade.assetType ?? "",
-            currentTrade.currency ?? "",
-          ].join("|"),
+          instrumentKey: instrumentIdentity(currentTrade),
           accountId: currentTrade.accountId,
           accountCode: currentTrade.accountCode,
           instrumentId: currentTrade.instrumentId,

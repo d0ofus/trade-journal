@@ -8,13 +8,20 @@ function buildExec(input: {
   price: number;
   commission?: number;
   fees?: number;
+  instrumentId?: string;
+  exchange?: string;
+  assetType?: "OTHER" | "STOCK";
+  currency?: string;
 }): ExecutionForClosed {
   return {
     id: input.id,
     accountId: "a",
     accountCode: "U10263280",
-    instrumentId: "i",
+    instrumentId: input.instrumentId ?? "i",
     symbol: "GEV",
+    exchange: input.exchange,
+    assetType: input.assetType ?? "OTHER",
+    currency: input.currency ?? "USD",
     executedAt: new Date(input.executedAt),
     side: input.side,
     quantity: input.quantity,
@@ -47,10 +54,48 @@ describe("computeClosedTradeGroups", () => {
     expect(groups[2].executions.map((execution) => `${execution.side} ${execution.quantity}`)).toEqual(["BUY 20", "SELL 20"]);
   });
 
+  it("matches FIFO closes across multiple exchange-specific instrument ids for the same symbol", () => {
+    const groups = computeClosedTradeGroups(
+      [
+        {
+          ...buildExec({
+            id: "buy-arca",
+            instrumentId: "arca-id",
+            exchange: "ARCA",
+            executedAt: "2026-03-13T09:34:00.000Z",
+            side: "BUY",
+            quantity: 108,
+            price: 94.08,
+            commission: 1,
+          }),
+          symbol: "VAL",
+        },
+        {
+          ...buildExec({
+            id: "sell-dark",
+            instrumentId: "dark-id",
+            exchange: "DARK",
+            executedAt: "2026-03-16T12:50:00.000Z",
+            side: "SELL",
+            quantity: 108,
+            price: 91.03,
+            commission: 1.02,
+          }),
+          symbol: "VAL",
+        },
+      ],
+      new Map(),
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].symbol).toBe("VAL");
+    expect(groups[0].executions.map((execution) => `${execution.side} ${execution.quantity}`)).toEqual(["BUY 108", "SELL 108"]);
+  });
+
   it("finalizes carry-in closures when opening quantity exists", () => {
     const groups = computeClosedTradeGroups(
       [buildExec({ id: "close-carry", executedAt: "2026-01-03T10:00:00.000Z", side: "SELL", quantity: 5, price: 110, commission: 1 })],
-      new Map([["a:i", { quantity: 5, avgCost: 100 }]]),
+      new Map([["a:GEV|OTHER|USD", { quantity: 5, avgCost: 100 }]]),
     );
 
     expect(groups).toHaveLength(1);
@@ -66,7 +111,7 @@ describe("computeClosedTradeGroups", () => {
   it("detects a close inside a filtered range when the opening leg came from a prior snapshot", () => {
     const groups = computeClosedTradeGroups(
       [buildExec({ id: "range-close", executedAt: "2026-03-16T12:50:00.000Z", side: "SELL", quantity: 108, price: 91.03, commission: 1.02 })],
-      new Map([["a:i", { quantity: 108, avgCost: 94.08 }]]),
+      new Map([["a:GEV|OTHER|USD", { quantity: 108, avgCost: 94.08 }]]),
     );
 
     expect(groups).toHaveLength(1);
@@ -82,7 +127,7 @@ describe("computeClosedTradeGroups", () => {
         buildExec({ id: "carry-open-2", executedAt: "2026-03-17T09:41:01.000Z", side: "BUY", quantity: 9, price: 73.53, commission: 1 }),
         buildExec({ id: "carry-close", executedAt: "2026-03-17T17:17:00.000Z", side: "SELL", quantity: 36, price: 74.47, commission: 1.01 }),
       ],
-      new Map([["a:i", { quantity: 1, avgCost: 70.16 }]]),
+      new Map([["a:GEV|OTHER|USD", { quantity: 1, avgCost: 70.16 }]]),
     );
 
     expect(groups).toHaveLength(1);
