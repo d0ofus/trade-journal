@@ -100,7 +100,7 @@ export async function GET(req: NextRequest) {
   } else {
     yahooUrl.searchParams.set("range", config.range);
   }
-  yahooUrl.searchParams.set("includePrePost", "false");
+  yahooUrl.searchParams.set("includePrePost", timeframe === "1d" ? "false" : "true");
   yahooUrl.searchParams.set("events", "div,splits");
 
   const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });

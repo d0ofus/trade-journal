@@ -166,15 +166,21 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
     const url = new URL("/api/market/candles", window.location.origin);
     url.searchParams.set("symbol", trade.symbol);
     url.searchParams.set("timeframe", interval);
-    url.searchParams.set("limit", "1200");
-    if (interval === "5m" && trade.executions.length > 0) {
+    let limit = 1200;
+    if (trade.executions.length > 0) {
+      const intervalSeconds = INTERVAL_SECONDS[interval];
+      const contextBars = STATIC_CONTEXT_BARS[interval];
       const execTimes = trade.executions.map((execution) => Math.floor(new Date(execution.executedAt).getTime() / 1000));
       const minExec = Math.min(...execTimes);
       const maxExec = Math.max(...execTimes);
-      const padding = 2 * 24 * 60 * 60;
-      url.searchParams.set("from", String(minExec - padding));
-      url.searchParams.set("to", String(maxExec + padding));
+      const from = minExec - contextBars.before * intervalSeconds;
+      const to = maxExec + contextBars.after * intervalSeconds;
+      const spanBars = Math.max(1, Math.ceil((to - from) / intervalSeconds));
+      limit = Math.min(5000, Math.max(300, spanBars + 20));
+      url.searchParams.set("from", String(from));
+      url.searchParams.set("to", String(to));
     }
+    url.searchParams.set("limit", String(limit));
 
     const res = await fetch(url.toString());
     if (!res.ok) {
@@ -276,6 +282,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                     color: circleColor,
                     shape: "circle" as const,
                     text: "",
+                    price: exec.price,
                   },
                   {
                     time: markerTime,
@@ -283,6 +290,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                     color,
                     shape: arrowShape,
                     text: `${isBuy ? "B" : "S"} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
+                    price: exec.price,
                   },
                 ];
               });
@@ -302,6 +310,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                     color: circleColor,
                     shape: "circle" as const,
                     text: "",
+                    price: exec.price,
                   },
                   {
                     time: markerTime,
@@ -309,6 +318,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                     color,
                     shape: arrowShape,
                     text: `${isBuy ? "B" : "S"} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
+                    price: exec.price,
                   },
                 ];
               });
