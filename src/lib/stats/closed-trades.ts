@@ -69,6 +69,7 @@ interface WorkingTrade {
   side: "LONG" | "SHORT";
   openTime: Date;
   openingQuantity: number;
+  openingAvgCost: number;
   entryQty: number;
   entryValue: number;
   exitQty: number;
@@ -92,6 +93,16 @@ function signOf(value: number) {
 
 function toSide(value: number): Side {
   return value > 0 ? "BUY" : "SELL";
+}
+
+function averageCostForLots(lots: Lot[]) {
+  let quantity = 0;
+  let value = 0;
+  for (const lot of lots) {
+    quantity += Math.abs(lot.qty);
+    value += Math.abs(lot.qty) * lot.price;
+  }
+  return quantity > EPSILON ? value / quantity : 0;
 }
 
 function stableTradeId(trade: WorkingTrade, closeTime: Date, closeCount: number) {
@@ -139,39 +150,84 @@ export function computeClosedTradeGroups(
     let currentTrade: WorkingTrade | null = null;
     let closeCount = 0;
 
-    if (Math.abs(positionQty) > EPSILON) {
-      const first = sorted[0];
-      if (first) {
-        currentTrade = {
-          accountId: first.accountId,
-          accountCode: first.accountCode,
-          instrumentId: first.instrumentId,
-          symbol: first.symbol,
-          exchange: first.exchange,
-          assetType: first.assetType,
-          currency: first.currency,
-          side: positionQty > 0 ? "LONG" : "SHORT",
-          openTime: first.executedAt,
-          openingQuantity: opening.quantity,
-          entryQty: Math.abs(opening.quantity),
-          entryValue: Math.abs(opening.quantity) * opening.avgCost,
-          exitQty: 0,
-          exitValue: 0,
-          grossPnl: 0,
-          totalCommission: 0,
-          executions: [],
-        };
-      }
-    }
-
     for (const exec of sorted) {
       const signedQty = exec.side === "BUY" ? exec.quantity : -exec.quantity;
       const execCharge = exec.commission + exec.fees;
       const execQty = Math.abs(exec.quantity);
       let remaining = signedQty;
 
+      const finalizeTrade = () => {
+        if (!currentTrade || currentTrade.exitQty <= EPSILON) {
+          return false;
+        }
+
+        const executionSignedQty = currentTrade.executions.reduce(
+          (sum, cycleExec) => sum + (cycleExec.side === "BUY" ? cycleExec.quantity : -cycleExec.quantity),
+          0,
+        );
+        const returnedToBaseline = Math.abs(positionQty - currentTrade.openingQuantity) <= EPSILON;
+        const fullyLiquidatedCarry =
+          Math.abs(positionQty) <= EPSILON &&
+          Math.abs(currentTrade.openingQuantity) > EPSILON &&
+          Math.abs(executionSignedQty + currentTrade.openingQuantity) <= EPSILON;
+
+        if (!returnedToBaseline && !fullyLiquidatedCarry) {
+          return false;
+        }
+
+        closeCount += 1;
+        const closeTime = exec.executedAt;
+        let effectiveEntryQty = currentTrade.entryQty;
+        let effectiveEntryValue = currentTrade.entryValue;
+
+        if (fullyLiquidatedCarry) {
+          effectiveEntryQty += Math.abs(currentTrade.openingQuantity);
+          effectiveEntryValue += Math.abs(currentTrade.openingQuantity) * currentTrade.openingAvgCost;
+        }
+
+        const tradeId = stableTradeId(currentTrade, closeTime, closeCount);
+        result.push({
+          tradeId,
+          groupKey: tradeId,
+          instrumentKey: [
+            currentTrade.instrumentId,
+            currentTrade.symbol,
+            currentTrade.exchange ?? "",
+            currentTrade.assetType ?? "",
+            currentTrade.currency ?? "",
+          ].join("|"),
+          accountId: currentTrade.accountId,
+          accountCode: currentTrade.accountCode,
+          instrumentId: currentTrade.instrumentId,
+          symbol: currentTrade.symbol,
+          side: currentTrade.side,
+          openTime: currentTrade.openTime.toISOString(),
+          closeTime: closeTime.toISOString(),
+          totalQuantity: currentTrade.exitQty,
+          avgEntryPrice: effectiveEntryQty > EPSILON ? effectiveEntryValue / effectiveEntryQty : 0,
+          avgExitPrice: currentTrade.exitQty > EPSILON ? currentTrade.exitValue / currentTrade.exitQty : 0,
+          grossRealizedPnl: currentTrade.grossPnl,
+          tradeDate: closeTime.toISOString().slice(0, 10),
+          openingQuantity: currentTrade.openingQuantity,
+          closingQuantity: returnedToBaseline ? currentTrade.openingQuantity : 0,
+          realizedPnl: currentTrade.grossPnl - currentTrade.totalCommission,
+          totalCommission: currentTrade.totalCommission,
+          executions: currentTrade.executions,
+        });
+        currentTrade = null;
+        positionQty = lots.reduce((sum, lot) => sum + lot.qty, 0);
+        if (Math.abs(positionQty) <= EPSILON) {
+          positionQty = 0;
+        }
+        if (lots.length === 1 && Math.abs(lots[0].qty) <= EPSILON) {
+          lots.length = 0;
+        }
+        return true;
+      };
+
       while (Math.abs(remaining) > EPSILON) {
         if (!currentTrade) {
+          const reducesExistingPosition = signOf(positionQty) !== 0 && signOf(remaining) !== signOf(positionQty);
           currentTrade = {
             accountId: exec.accountId,
             accountCode: exec.accountCode,
@@ -180,9 +236,10 @@ export function computeClosedTradeGroups(
             exchange: exec.exchange,
             assetType: exec.assetType,
             currency: exec.currency,
-            side: signOf(remaining) > 0 ? "LONG" : "SHORT",
+            side: reducesExistingPosition ? (positionQty > 0 ? "LONG" : "SHORT") : signOf(remaining) > 0 ? "LONG" : "SHORT",
             openTime: exec.executedAt,
             openingQuantity: positionQty,
+            openingAvgCost: averageCostForLots(lots),
             entryQty: 0,
             entryValue: 0,
             exitQty: 0,
@@ -212,6 +269,7 @@ export function computeClosedTradeGroups(
             fees: exec.fees * (openQty / execQty),
           });
           remaining = 0;
+          finalizeTrade();
           continue;
         }
 
@@ -253,57 +311,7 @@ export function computeClosedTradeGroups(
           fees: exec.fees * (closeQty / execQty),
         });
 
-        if (Math.abs(positionQty) <= EPSILON && currentTrade.exitQty > EPSILON) {
-          closeCount += 1;
-          const closeTime = exec.executedAt;
-          const executionSignedQty = currentTrade.executions.reduce(
-            (sum, cycleExec) => sum + (cycleExec.side === "BUY" ? cycleExec.quantity : -cycleExec.quantity),
-            0,
-          );
-          const expectedExecutionSignedQty = -currentTrade.openingQuantity;
-          if (Math.abs(executionSignedQty - expectedExecutionSignedQty) > EPSILON) {
-            currentTrade = null;
-            positionQty = lots.reduce((sum, lot) => sum + lot.qty, 0);
-            if (Math.abs(positionQty) <= EPSILON) {
-              positionQty = 0;
-            }
-            continue;
-          }
-          const tradeId = stableTradeId(currentTrade, closeTime, closeCount);
-          result.push({
-            tradeId,
-            groupKey: tradeId,
-            instrumentKey: [
-              currentTrade.instrumentId,
-              currentTrade.symbol,
-              currentTrade.exchange ?? "",
-              currentTrade.assetType ?? "",
-              currentTrade.currency ?? "",
-            ].join("|"),
-            accountId: currentTrade.accountId,
-            accountCode: currentTrade.accountCode,
-            instrumentId: currentTrade.instrumentId,
-            symbol: currentTrade.symbol,
-            side: currentTrade.side,
-            openTime: currentTrade.openTime.toISOString(),
-            closeTime: closeTime.toISOString(),
-            totalQuantity: currentTrade.exitQty,
-            avgEntryPrice: currentTrade.entryQty > EPSILON ? currentTrade.entryValue / currentTrade.entryQty : 0,
-            avgExitPrice: currentTrade.exitQty > EPSILON ? currentTrade.exitValue / currentTrade.exitQty : 0,
-            grossRealizedPnl: currentTrade.grossPnl,
-            tradeDate: closeTime.toISOString().slice(0, 10),
-            openingQuantity: currentTrade.openingQuantity,
-            closingQuantity: 0,
-            realizedPnl: currentTrade.grossPnl - currentTrade.totalCommission,
-            totalCommission: currentTrade.totalCommission,
-            executions: currentTrade.executions,
-          });
-          currentTrade = null;
-          positionQty = 0;
-          if (lots.length === 1 && Math.abs(lots[0].qty) <= EPSILON) {
-            lots.length = 0;
-          }
-        }
+        finalizeTrade();
       }
     }
   }
