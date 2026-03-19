@@ -1,7 +1,8 @@
 # TODO
 
 ## 🔴 High Priority
-- Fix filter function on 'Trades' page
+- Remove Account # before each ticker on closed trades
+- Increase date size for each day on closed trades
 - Rework calculation of Gross Cumulative P&L and Equity curve graphs 
 - Remove execution prices (intra-day) graph
 
