@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { CandlestickWithMarkers } from "@/components/candlestick-with-markers";
 import { RichTextEditor } from "@/components/rich-text-editor";
 import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   alignExecutionToBarTime,
   inferExecutionOffsetSeconds,
@@ -63,6 +64,10 @@ function toAlignmentInputs(
     executedAt: execution.executedAt,
     price: execution.price,
   }));
+}
+
+function formatExecutionDateTime(executedAt: string) {
+  return new Date(executedAt).toISOString().replace("T", " ").slice(0, 16);
 }
 
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
@@ -186,6 +191,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
             {rows.map((trade) => {
               const open = expanded === trade.groupKey;
               const interval = intervalByKey[trade.groupKey] ?? "1d";
+              const executionRows = [...trade.executions].sort((a, b) => (a.executedAt < b.executedAt ? 1 : -1));
               const allCandles = candlesByKey[`${trade.groupKey}:${interval}`] ?? [];
               const staticFallbackCandles = staticCandlesByKey[`${trade.groupKey}:static:${interval}`] ?? [];
               const alignmentInputs = toAlignmentInputs(trade.executions);
@@ -324,6 +330,40 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                       {chartStatus[`${trade.groupKey}:static:${interval}`] && (
                         <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
                       )}
+
+                      <details className="rounded-xl border border-slate-200 bg-slate-50">
+                        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-700">
+                          Execution Details ({trade.executions.length})
+                        </summary>
+                        <div className="border-t border-slate-200 bg-white p-2">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Date</TableHead>
+                                <TableHead>Account</TableHead>
+                                <TableHead>Symbol</TableHead>
+                                <TableHead>Side</TableHead>
+                                <TableHead>Qty</TableHead>
+                                <TableHead>Price</TableHead>
+                                <TableHead>Commission</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {executionRows.map((execution) => (
+                                <TableRow key={execution.id}>
+                                  <TableCell>{formatExecutionDateTime(execution.executedAt)}</TableCell>
+                                  <TableCell>{trade.accountCode}</TableCell>
+                                  <TableCell>{trade.symbol}</TableCell>
+                                  <TableCell>{execution.side}</TableCell>
+                                  <TableCell>{execution.quantity}</TableCell>
+                                  <TableCell>{execution.price.toFixed(2)}</TableCell>
+                                  <TableCell>{formatCurrency(execution.commission)}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </details>
 
                       <div>
                         <p className="mb-2 text-sm font-medium">Notes</p>
