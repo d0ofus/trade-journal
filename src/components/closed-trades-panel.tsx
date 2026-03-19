@@ -186,7 +186,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
 
       {groupedByDate.map(([date, rows]) => (
         <div key={date} className="rounded-xl border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-4 py-2 text-sm font-semibold">{date}</div>
+          <div className="border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900">{date}</div>
           <div className="divide-y divide-slate-200">
             {rows.map((trade) => {
               const open = expanded === trade.groupKey;
@@ -275,9 +275,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                     }}
                   >
                     <div>
-                      <p className="font-medium">
-                        {trade.accountCode} - {trade.symbol}
-                      </p>
+                      <p className="font-medium">{trade.symbol}</p>
                       <p className="text-xs text-slate-500">
                         {trade.executions.length} executions | Commissions {formatCurrency(trade.totalCommission)}
                       </p>
