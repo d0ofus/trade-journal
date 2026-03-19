@@ -13,20 +13,31 @@ import {
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type MouseEventParams,
+  type SeriesMarker,
+  type SeriesMarkerBarPosition,
+  type SeriesMarkerPricePosition,
+  type SeriesMarkerShape,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { Button } from "@/components/ui/button";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number };
-type Marker = {
+type BaseMarker = {
   time: number;
-  position: "aboveBar" | "belowBar" | "inBar";
   color: string;
-  shape: "arrowUp" | "arrowDown" | "circle";
+  shape: SeriesMarkerShape;
   text: string;
+};
+type BarMarker = BaseMarker & {
+  position: SeriesMarkerBarPosition;
   price?: number;
 };
+type PriceMarker = BaseMarker & {
+  position: SeriesMarkerPricePosition;
+  price: number;
+};
+type Marker = BarMarker | PriceMarker;
 type AnnotationTool = "none" | "horizontal" | "trend";
 type HorizontalAnnotation = { id: string; type: "horizontal"; price: number; color: string };
 type TrendAnnotation = { id: string; type: "trend"; fromTime: number; fromPrice: number; toTime: number; toPrice: number; color: string };
@@ -65,41 +76,14 @@ export function CandlestickWithMarkers({
   const trendSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
   const toolRef = useRef<AnnotationTool>("none");
   const pendingTrendAnchorRef = useRef<TrendAnchor | null>(null);
-  const markersRef = useRef<Marker[]>(markers);
   const [tool, setTool] = useState<AnnotationTool>("none");
   const [pendingTrendAnchor, setPendingTrendAnchor] = useState<TrendAnchor | null>(null);
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [hoverOhlc, setHoverOhlc] = useState<HoverOhlc | null>(null);
-  const [circleCoordinates, setCircleCoordinates] = useState<Array<Marker & { x: number; y: number }>>([]);
 
   function resetView() {
     seriesRef.current?.priceScale().applyOptions({ autoScale: true });
     chartRef.current?.timeScale().fitContent();
-  }
-
-  function refreshCircleCoordinates(nextMarkers = markersRef.current) {
-    const chart = chartRef.current;
-    const series = seriesRef.current;
-    if (!chart || !series) {
-      setCircleCoordinates([]);
-      return;
-    }
-
-    const nextCoordinates = nextMarkers.flatMap((marker) => {
-      if (marker.shape !== "circle" || typeof marker.price !== "number") {
-        return [];
-      }
-
-      const x = chart.timeScale().timeToCoordinate(marker.time as UTCTimestamp);
-      const y = series.priceToCoordinate(marker.price);
-      if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y)) {
-        return [];
-      }
-
-      return [{ ...marker, x, y }];
-    });
-
-    setCircleCoordinates(nextCoordinates);
   }
 
   useEffect(() => {
@@ -109,10 +93,6 @@ export function CandlestickWithMarkers({
   useEffect(() => {
     pendingTrendAnchorRef.current = pendingTrendAnchor;
   }, [pendingTrendAnchor]);
-
-  useEffect(() => {
-    markersRef.current = markers;
-  }, [markers]);
 
   useEffect(() => {
     if (!annotationStorageKey || typeof window === "undefined") {
@@ -248,21 +228,14 @@ export function CandlestickWithMarkers({
     const resizeObserver = new ResizeObserver(() => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth });
-        requestAnimationFrame(() => refreshCircleCoordinates());
       }
     });
     resizeObserver.observe(containerRef.current);
-
-    const handleVisibleLogicalRangeChange = () => {
-      requestAnimationFrame(() => refreshCircleCoordinates());
-    };
-    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
 
     return () => {
       resizeObserver.disconnect();
       chart.unsubscribeClick(clickHandler);
       chart.unsubscribeCrosshairMove(crosshairMoveHandler);
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -274,12 +247,11 @@ export function CandlestickWithMarkers({
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((candle) => ({ ...candle, time: candle.time as UTCTimestamp })));
     markerPluginRef.current?.setMarkers(
-      markers
-        .filter((marker) => marker.shape !== "circle" || typeof marker.price !== "number")
-        .map((marker) => ({ ...marker, time: marker.time as UTCTimestamp })),
+      markers.map(
+        (marker): SeriesMarker<Time> => ({ ...marker, time: marker.time as UTCTimestamp }),
+      ),
     );
     resetView();
-    requestAnimationFrame(() => refreshCircleCoordinates());
   }, [candles, markers]);
 
   useEffect(() => {
@@ -386,22 +358,7 @@ export function CandlestickWithMarkers({
           {!readOnly && tool === "trend" && pendingTrendAnchor ? " | Select second point" : ""}
         </div>
       </div>
-      <div className="relative">
-        <div ref={containerRef} className="w-full" />
-        <div className="pointer-events-none absolute inset-0 overflow-hidden">
-          {circleCoordinates.map((marker, index) => (
-            <div
-              key={`${marker.time}:${marker.price}:${index}`}
-              className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-sm"
-              style={{
-                left: `${marker.x}px`,
-                top: `${marker.y}px`,
-                backgroundColor: marker.color,
-              }}
-            />
-          ))}
-        </div>
-      </div>
+      <div ref={containerRef} className="w-full" />
     </div>
   );
 }

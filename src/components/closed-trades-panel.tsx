@@ -4,6 +4,12 @@ import { useMemo, useState, useTransition } from "react";
 import { CandlestickWithMarkers } from "@/components/candlestick-with-markers";
 import { RichTextEditor } from "@/components/rich-text-editor";
 import { Button } from "@/components/ui/button";
+import {
+  alignExecutionToBarTime,
+  inferExecutionOffsetSeconds,
+  type AlignmentCandle,
+  type ExecutionAlignmentInput,
+} from "@/lib/charts/execution-marker-alignment";
 import { formatCurrency } from "@/lib/utils";
 
 type ClosedTrade = {
@@ -29,7 +35,7 @@ type ClosedTrade = {
   tradeNote: string;
 };
 
-type Candle = { time: number; open: number; high: number; low: number; close: number };
+type Candle = AlignmentCandle;
 type ChartInterval = "5m" | "1h" | "1d";
 
 const CHART_INTERVALS: Array<{ value: ChartInterval; label: string }> = [
@@ -50,91 +56,13 @@ const STATIC_CONTEXT_BARS: Record<ChartInterval, { before: number; after: number
   "1d": { before: 120, after: 120 },
 };
 
-function inferBarIntervalSeconds(candles: Candle[]) {
-  let interval = Number.POSITIVE_INFINITY;
-  for (let i = 1; i < candles.length; i += 1) {
-    const delta = candles[i].time - candles[i - 1].time;
-    if (delta > 0 && delta < interval) {
-      interval = delta;
-    }
-  }
-  return Number.isFinite(interval) ? interval : 24 * 60 * 60;
-}
-
-function alignExecutionToBarTime(executedAt: string, candles: Candle[], offsetSeconds = 0) {
-  if (candles.length === 0) return null;
-
-  const targetTs = Math.floor(new Date(executedAt).getTime() / 1000) + offsetSeconds;
-  const interval = inferBarIntervalSeconds(candles);
-  const first = candles[0].time - interval;
-  const last = candles[candles.length - 1].time + interval;
-
-  if (targetTs < first || targetTs > last) {
-    return null;
-  }
-
-  let left = 0;
-  let right = candles.length - 1;
-  while (left <= right) {
-    const mid = Math.floor((left + right) / 2);
-    const barTime = candles[mid].time;
-    if (barTime === targetTs) return barTime;
-    if (barTime < targetTs) {
-      left = mid + 1;
-    } else {
-      right = mid - 1;
-    }
-  }
-
-  const prevIdx = Math.max(0, right);
-  const nextIdx = Math.min(candles.length - 1, left);
-
-  const prev = candles[prevIdx];
-  // Open-anchored bars: [bar, bar + interval)
-  if (targetTs >= prev.time && targetTs < prev.time + interval) {
-    return prev.time;
-  }
-
-  // Close-anchored bars: (bar - interval, bar]
-  if (targetTs > prev.time - interval && targetTs <= prev.time) {
-    return prev.time;
-  }
-
-  const next = candles[nextIdx];
-  if (targetTs >= next.time && targetTs < next.time + interval) {
-    return next.time;
-  }
-  if (targetTs > next.time - interval && targetTs <= next.time) {
-    return next.time;
-  }
-  return null;
-}
-
-function inferExecutionOffsetSeconds(executedAtValues: string[], candles: Candle[]) {
-  if (executedAtValues.length === 0 || candles.length === 0) return 0;
-
-  const candidates: number[] = [];
-  for (let seconds = -14 * 3600; seconds <= 14 * 3600; seconds += 30 * 60) {
-    candidates.push(seconds);
-  }
-
-  let bestOffset = 0;
-  let bestHits = -1;
-
-  for (const candidate of candidates) {
-    let hits = 0;
-    for (const executedAt of executedAtValues) {
-      if (alignExecutionToBarTime(executedAt, candles, candidate) !== null) {
-        hits += 1;
-      }
-    }
-    if (hits > bestHits || (hits === bestHits && Math.abs(candidate) < Math.abs(bestOffset))) {
-      bestHits = hits;
-      bestOffset = candidate;
-    }
-  }
-
-  return bestOffset;
+function toAlignmentInputs(
+  executions: ClosedTrade["executions"],
+): ExecutionAlignmentInput[] {
+  return executions.map((execution) => ({
+    executedAt: execution.executedAt,
+    price: execution.price,
+  }));
 }
 
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
@@ -260,9 +188,9 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
               const interval = intervalByKey[trade.groupKey] ?? "1d";
               const allCandles = candlesByKey[`${trade.groupKey}:${interval}`] ?? [];
               const staticFallbackCandles = staticCandlesByKey[`${trade.groupKey}:static:${interval}`] ?? [];
-              const alignmentOffsetSeconds = interval === "1d" ? 0 : inferExecutionOffsetSeconds(trade.executions.map((exec) => exec.executedAt), allCandles);
-              const staticAlignmentOffsetSeconds =
-                interval === "1d" ? 0 : inferExecutionOffsetSeconds(trade.executions.map((exec) => exec.executedAt), staticFallbackCandles);
+              const alignmentInputs = toAlignmentInputs(trade.executions);
+              const alignmentOffsetSeconds = inferExecutionOffsetSeconds(alignmentInputs, allCandles);
+              const staticAlignmentOffsetSeconds = inferExecutionOffsetSeconds(alignmentInputs, staticFallbackCandles);
               const matchedExecutions = trade.executions.filter(
                 (exec) => alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds) !== null,
               ).length;
@@ -278,7 +206,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                 return [
                   {
                     time: markerTime,
-                    position: "inBar" as const,
+                    position: "atPriceMiddle" as const,
                     color: circleColor,
                     shape: "circle" as const,
                     text: "",
@@ -306,7 +234,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                 return [
                   {
                     time: markerTime,
-                    position: "inBar" as const,
+                    position: "atPriceMiddle" as const,
                     color: circleColor,
                     shape: "circle" as const,
                     text: "",
