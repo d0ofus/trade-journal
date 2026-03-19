@@ -2,7 +2,7 @@
 
 import { endOfDay, format, startOfDay, subDays, subMonths, subWeeks, subYears } from "date-fns";
 import { usePathname, useRouter } from "next/navigation";
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -32,30 +32,39 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
   const formRef = useRef<HTMLFormElement | null>(null);
   const router = useRouter();
   const pathname = usePathname();
+  const [isPending, startTransition] = useTransition();
+  const [draftFrom, setDraftFrom] = useState(filters.from ?? "");
+  const [draftTo, setDraftTo] = useState(filters.to ?? "");
   const today = useMemo(() => toDateParam(endOfDay(new Date())), []);
+
+  useEffect(() => {
+    setDraftFrom(filters.from ?? "");
+    setDraftTo(filters.to ?? "");
+  }, [filters.from, filters.to]);
+
   const activeQuickRange = useMemo(() => {
-    if (!filters.from || !filters.to) {
+    if (!draftFrom || !draftTo) {
       return "all";
     }
 
-    if (filters.to !== today) {
+    if (draftTo !== today) {
       return null;
     }
 
     const fiveDaysFrom = toDateParam(startOfDay(subDays(new Date(), 4)));
-    if (filters.from === fiveDaysFrom) return "5d";
+    if (draftFrom === fiveDaysFrom) return "5d";
 
     const twoWeeksFrom = toDateParam(startOfDay(subWeeks(new Date(), 2)));
-    if (filters.from === twoWeeksFrom) return "2w";
+    if (draftFrom === twoWeeksFrom) return "2w";
 
     const oneMonthFrom = toDateParam(startOfDay(subMonths(new Date(), 1)));
-    if (filters.from === oneMonthFrom) return "1m";
+    if (draftFrom === oneMonthFrom) return "1m";
 
     const oneYearFrom = toDateParam(startOfDay(subYears(new Date(), 1)));
-    if (filters.from === oneYearFrom) return "1y";
+    if (draftFrom === oneYearFrom) return "1y";
 
     return null;
-  }, [filters.from, filters.to, today]);
+  }, [draftFrom, draftTo, today]);
 
   function applyFilters(overrides?: Partial<Record<keyof TradeFilters, string>>) {
     if (!formRef.current) return;
@@ -83,10 +92,15 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
 
     params.delete("page");
     const query = params.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname);
+    const href = query ? `${pathname}?${query}` : pathname;
+    startTransition(() => {
+      router.replace(href);
+    });
   }
 
-  function submitDateFilters() {
+  function submitDateFilters(nextFrom: string, nextTo: string) {
+    setDraftFrom(nextFrom);
+    setDraftTo(nextTo);
     applyFilters();
   }
 
@@ -101,8 +115,11 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
             ? startOfDay(subMonths(now, range.months))
             : startOfDay(subYears(now, range.years));
 
+    const nextFrom = toDateParam(from);
+    setDraftFrom(nextFrom);
+    setDraftTo(today);
     applyFilters({
-      from: toDateParam(from),
+      from: nextFrom,
       to: today,
     });
   }
@@ -114,14 +131,26 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
       </CardHeader>
       <CardContent className="space-y-3 px-4 pb-4 pt-0">
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={activeQuickRange === "all" ? "default" : "outline"} onClick={() => applyFilters({ from: "", to: "" })}>
+          <Button
+            type="button"
+            size="sm"
+            variant={activeQuickRange === "all" ? "default" : "outline"}
+            disabled={isPending}
+            onClick={() => {
+              setDraftFrom("");
+              setDraftTo("");
+              applyFilters({ from: "", to: "" });
+            }}
+          >
             All Time
           </Button>
           {QUICK_RANGES.map((range) => (
             <Button
               key={range.key}
+              type="button"
               size="sm"
               variant={activeQuickRange === range.key ? "default" : "outline"}
+              disabled={isPending}
               onClick={() => applyQuickRange(range)}
             >
               {range.label}
@@ -129,8 +158,24 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
           ))}
         </div>
         <form ref={formRef} className="grid gap-2 md:grid-cols-6" method="get">
-          <Input name="from" type="date" defaultValue={filters.from} onChange={submitDateFilters} />
-          <Input name="to" type="date" defaultValue={filters.to} onChange={submitDateFilters} />
+          <Input
+            name="from"
+            type="date"
+            value={draftFrom}
+            onChange={(event) => {
+              const nextFrom = event.target.value;
+              submitDateFilters(nextFrom, draftTo);
+            }}
+          />
+          <Input
+            name="to"
+            type="date"
+            value={draftTo}
+            onChange={(event) => {
+              const nextTo = event.target.value;
+              submitDateFilters(draftFrom, nextTo);
+            }}
+          />
           <Input name="symbol" placeholder="Symbol" defaultValue={filters.symbol} />
           <Select name="side" defaultValue={filters.side ?? ""}>
             <option value="">All sides</option>
