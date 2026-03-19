@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { ClosedTradesPanel } from "@/components/closed-trades-panel";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import { TradesFilters } from "@/components/trades-filters";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getClosedTrades, getTrades } from "@/lib/server/queries";
 import { formatCurrency } from "@/lib/utils";
@@ -54,29 +53,11 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
         </Link>
       </div>
 
+      <TradesFilters filters={filters} />
+
       <div id="closed-trades-section">
         <ClosedTradesPanel closedTrades={closedTrades} />
       </div>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Filters</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form className="grid gap-3 md:grid-cols-6" method="get">
-            <Input name="from" type="date" defaultValue={filters.from} />
-            <Input name="to" type="date" defaultValue={filters.to} />
-            <Input name="symbol" placeholder="Symbol" defaultValue={filters.symbol} />
-            <Select name="side" defaultValue={filters.side ?? ""}>
-              <option value="">All sides</option>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </Select>
-            <Input name="tag" placeholder="Tag" defaultValue={filters.tag} />
-            <Input name="strategy" placeholder="Strategy" defaultValue={filters.strategy} />
-            <button type="submit" className="hidden" aria-hidden />
-          </form>
-        </CardContent>
-      </Card>
 
       <Card id="trades-list-section">
         <CardContent className="pt-6">
