@@ -91,6 +91,7 @@ function resolveRange(searchParams: Record<string, string | string[] | undefined
 export default async function DashboardPage(props: { searchParams: SearchParams }) {
   const searchParams = await props.searchParams;
   const range = resolveRange(searchParams);
+  const rangeKey = `${range.preset}:${range.from ?? "none"}:${range.to ?? "none"}`;
 
   return (
     <div className="space-y-5">
@@ -120,15 +121,15 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
               Past 6 Months
             </Link>
           </div>
-          <form className="flex flex-wrap items-end gap-3" method="get">
+          <form key={rangeKey} className="flex flex-wrap items-end gap-3" method="get">
             <input name="preset" type="hidden" value="custom" />
             <div className="space-y-1">
               <p className="text-xs font-medium text-slate-600">From</p>
-              <Input name="from" type="date" defaultValue={range.preset === "custom" ? range.from : undefined} />
+              <Input name="from" type="date" defaultValue={range.from ?? ""} />
             </div>
             <div className="space-y-1">
               <p className="text-xs font-medium text-slate-600">To</p>
-              <Input name="to" type="date" defaultValue={range.preset === "custom" ? range.to : undefined} />
+              <Input name="to" type="date" defaultValue={range.to ?? ""} />
             </div>
             <Button size="sm" type="submit">
               Apply
@@ -137,7 +138,7 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
         </CardContent>
       </Card>
 
-      <Suspense fallback={<DashboardContentFallback />}>
+      <Suspense key={rangeKey} fallback={<DashboardContentFallback />}>
         <DashboardContent from={range.from} to={range.to} />
       </Suspense>
     </div>
