@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { format, startOfYear, subMonths } from "date-fns";
 import { DashboardCharts } from "@/components/dashboard-charts";
@@ -90,30 +91,6 @@ function resolveRange(searchParams: Record<string, string | string[] | undefined
 export default async function DashboardPage(props: { searchParams: SearchParams }) {
   const searchParams = await props.searchParams;
   const range = resolveRange(searchParams);
-  const data = await getDashboardData({ from: range.from, to: range.to });
-
-  const cards = [
-    { label: "Total Trades", value: data.cards.totalTrades.toLocaleString() },
-    {
-      label: "Largest Gain / Largest Loss",
-      value: `${formatCurrency(data.cards.largestGain)} / ${formatCurrency(data.cards.largestLoss)}`,
-    },
-    { label: "Avg Hold Time (Winning Trades)", value: formatDuration(data.cards.avgWinHoldMs) },
-    { label: "Avg Hold Time (Losing Trades)", value: formatDuration(data.cards.avgLossHoldMs) },
-    { label: "Avg Daily Traded Volume", value: formatVolume(data.cards.avgDailyVolume) },
-    { label: "Realized PnL (Day)", value: formatCurrency(data.cards.realizedDay) },
-    { label: "Realized PnL (Week)", value: formatCurrency(data.cards.realizedWeek) },
-    { label: "Realized PnL (Month)", value: formatCurrency(data.cards.realizedMonth) },
-    { label: "Win Rate", value: formatPercent(data.cards.winRate) },
-    {
-      label: "Profit Factor",
-      value: Number.isFinite(data.cards.profitFactor) ? data.cards.profitFactor.toFixed(2) : "Infinity",
-    },
-    { label: "Avg Win / Avg Loss", value: `${formatCurrency(data.cards.avgWin)} / ${formatCurrency(data.cards.avgLoss)}` },
-    { label: "Expectancy", value: formatCurrency(data.cards.expectancy) },
-    { label: "Max Drawdown", value: formatCurrency(data.cards.maxDrawdown) },
-    { label: "Commissions", value: formatCurrency(data.cards.commissions) },
-  ];
 
   return (
     <div className="space-y-5">
@@ -160,6 +137,40 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
         </CardContent>
       </Card>
 
+      <Suspense fallback={<DashboardContentFallback />}>
+        <DashboardContent from={range.from} to={range.to} />
+      </Suspense>
+    </div>
+  );
+}
+
+async function DashboardContent({ from, to }: { from?: string; to?: string }) {
+  const data = await getDashboardData({ from, to });
+  const cards = [
+    { label: "Total Trades", value: data.cards.totalTrades.toLocaleString() },
+    {
+      label: "Largest Gain / Largest Loss",
+      value: `${formatCurrency(data.cards.largestGain)} / ${formatCurrency(data.cards.largestLoss)}`,
+    },
+    { label: "Avg Hold Time (Winning Trades)", value: formatDuration(data.cards.avgWinHoldMs) },
+    { label: "Avg Hold Time (Losing Trades)", value: formatDuration(data.cards.avgLossHoldMs) },
+    { label: "Avg Daily Traded Volume", value: formatVolume(data.cards.avgDailyVolume) },
+    { label: "Realized PnL (Day)", value: formatCurrency(data.cards.realizedDay) },
+    { label: "Realized PnL (Week)", value: formatCurrency(data.cards.realizedWeek) },
+    { label: "Realized PnL (Month)", value: formatCurrency(data.cards.realizedMonth) },
+    { label: "Win Rate", value: formatPercent(data.cards.winRate) },
+    {
+      label: "Profit Factor",
+      value: Number.isFinite(data.cards.profitFactor) ? data.cards.profitFactor.toFixed(2) : "Infinity",
+    },
+    { label: "Avg Win / Avg Loss", value: `${formatCurrency(data.cards.avgWin)} / ${formatCurrency(data.cards.avgLoss)}` },
+    { label: "Expectancy", value: formatCurrency(data.cards.expectancy) },
+    { label: "Max Drawdown", value: formatCurrency(data.cards.maxDrawdown) },
+    { label: "Commissions", value: formatCurrency(data.cards.commissions) },
+  ];
+
+  return (
+    <>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {cards.map((card) => (
           <Card key={card.label}>
@@ -174,6 +185,22 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
       </div>
 
       <DashboardCharts {...data.charts} />
-    </div>
+    </>
+  );
+}
+
+function DashboardContentFallback() {
+  return (
+    <>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 6 }, (_, index) => (
+          <div key={index} className="h-32 animate-pulse rounded-xl border border-slate-200 bg-white" />
+        ))}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
+        <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
+      </div>
+    </>
   );
 }

@@ -2,7 +2,7 @@
 
 import { endOfDay, format, startOfDay, subDays, subMonths, subWeeks, subYears } from "date-fns";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -98,12 +98,6 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
     });
   }
 
-  function submitDateFilters(nextFrom: string, nextTo: string) {
-    setDraftFrom(nextFrom);
-    setDraftTo(nextTo);
-    applyFilters();
-  }
-
   function applyQuickRange(range: (typeof QUICK_RANGES)[number]) {
     const now = new Date();
     const from =
@@ -121,6 +115,55 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
     applyFilters({
       from: nextFrom,
       to: today,
+    });
+  }
+
+  useEffect(() => {
+    if (draftFrom === (filters.from ?? "") && draftTo === (filters.to ?? "")) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (!formRef.current) return;
+
+      const formData = new FormData(formRef.current);
+      const params = new URLSearchParams();
+
+      for (const [key, rawValue] of formData.entries()) {
+        const value = String(rawValue).trim();
+        if (value) {
+          params.set(key, value);
+        }
+      }
+
+      if (draftFrom) {
+        params.set("from", draftFrom);
+      } else {
+        params.delete("from");
+      }
+
+      if (draftTo) {
+        params.set("to", draftTo);
+      } else {
+        params.delete("to");
+      }
+
+      params.delete("page");
+      const query = params.toString();
+      const href = query ? `${pathname}?${query}` : pathname;
+      startTransition(() => {
+        router.replace(href);
+      });
+    }, 350);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [draftFrom, draftTo, filters.from, filters.to, pathname, router]);
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    applyFilters({
+      from: draftFrom,
+      to: draftTo,
     });
   }
 
@@ -157,14 +200,13 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
             </Button>
           ))}
         </div>
-        <form ref={formRef} className="grid gap-2 md:grid-cols-6" method="get">
+        <form ref={formRef} className="grid gap-2 md:grid-cols-6" method="get" onSubmit={handleSubmit}>
           <Input
             name="from"
             type="date"
             value={draftFrom}
             onChange={(event) => {
-              const nextFrom = event.target.value;
-              submitDateFilters(nextFrom, draftTo);
+              setDraftFrom(event.target.value);
             }}
           />
           <Input
@@ -172,8 +214,7 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
             type="date"
             value={draftTo}
             onChange={(event) => {
-              const nextTo = event.target.value;
-              submitDateFilters(draftFrom, nextTo);
+              setDraftTo(event.target.value);
             }}
           />
           <Input name="symbol" placeholder="Symbol" defaultValue={filters.symbol} />
@@ -184,7 +225,9 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
           </Select>
           <Input name="tag" placeholder="Tag" defaultValue={filters.tag} />
           <Input name="strategy" placeholder="Strategy" defaultValue={filters.strategy} />
-          <button type="submit" className="hidden" aria-hidden />
+          <Button type="submit" size="sm" disabled={isPending} className="md:col-span-6 md:justify-self-start">
+            Apply Filters
+          </Button>
         </form>
       </CardContent>
     </Card>

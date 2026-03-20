@@ -191,75 +191,89 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
             {rows.map((trade) => {
               const open = expanded === trade.groupKey;
               const interval = intervalByKey[trade.groupKey] ?? "1d";
-              const executionRows = [...trade.executions].sort((a, b) => (a.executedAt < b.executedAt ? 1 : -1));
-              const allCandles = candlesByKey[`${trade.groupKey}:${interval}`] ?? [];
-              const staticFallbackCandles = staticCandlesByKey[`${trade.groupKey}:static:${interval}`] ?? [];
-              const alignmentInputs = toAlignmentInputs(trade.executions);
-              const alignmentOffsetSeconds = inferExecutionOffsetSeconds(alignmentInputs, allCandles);
-              const staticAlignmentOffsetSeconds = inferExecutionOffsetSeconds(alignmentInputs, staticFallbackCandles);
-              const matchedExecutions = trade.executions.filter(
-                (exec) => alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds) !== null,
-              ).length;
-              const markersInRange = trade.executions.flatMap((exec) => {
-                const markerTime = alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds);
-                if (markerTime === null) return [];
+              const executionRows = open ? [...trade.executions].sort((a, b) => (a.executedAt < b.executedAt ? 1 : -1)) : [];
+              const allCandles = open ? candlesByKey[`${trade.groupKey}:${interval}`] ?? [] : [];
+              const staticFallbackCandles = open ? staticCandlesByKey[`${trade.groupKey}:static:${interval}`] ?? [] : [];
+              const alignmentInputs = open ? toAlignmentInputs(trade.executions) : [];
+              const alignmentOffsetSeconds = open ? inferExecutionOffsetSeconds(alignmentInputs, allCandles) : 0;
+              const staticAlignmentOffsetSeconds = open
+                ? inferExecutionOffsetSeconds(alignmentInputs, staticFallbackCandles)
+                : 0;
+              const matchedExecutions = open
+                ? trade.executions.filter(
+                    (exec) => alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds) !== null,
+                  ).length
+                : 0;
+              const markersInRange = open
+                ? trade.executions.flatMap((exec) => {
+                    const markerTime = alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds);
+                    if (markerTime === null) return [];
 
-                const isBuy = exec.side === "BUY";
-                const color = isBuy ? "#16a34a" : "#dc2626";
-                const circleColor = isBuy ? "#0284c7" : "#ea580c";
-                const arrowPosition: "belowBar" | "aboveBar" = isBuy ? "belowBar" : "aboveBar";
-                const arrowShape: "arrowUp" | "arrowDown" = isBuy ? "arrowUp" : "arrowDown";
-                return [
-                  {
-                    time: markerTime,
-                    position: "atPriceMiddle" as const,
-                    color: circleColor,
-                    shape: "circle" as const,
-                    text: "",
-                    price: exec.price,
-                  },
-                  {
-                    time: markerTime,
-                    position: arrowPosition,
-                    color,
-                    shape: arrowShape,
-                    text: `${isBuy ? "B" : "S"} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
-                    price: exec.price,
-                  },
-                ];
-              });
-              const staticMarkersInRange = trade.executions.flatMap((exec) => {
-                const markerTime = alignExecutionToBarTime(exec.executedAt, staticFallbackCandles, staticAlignmentOffsetSeconds);
-                if (markerTime === null) return [];
+                    const isBuy = exec.side === "BUY";
+                    const color = isBuy ? "#16a34a" : "#dc2626";
+                    const circleColor = isBuy ? "#0284c7" : "#ea580c";
+                    const arrowPosition: "belowBar" | "aboveBar" = isBuy ? "belowBar" : "aboveBar";
+                    const arrowShape: "arrowUp" | "arrowDown" = isBuy ? "arrowUp" : "arrowDown";
+                    return [
+                      {
+                        time: markerTime,
+                        position: "atPriceMiddle" as const,
+                        color: circleColor,
+                        shape: "circle" as const,
+                        text: "",
+                        price: exec.price,
+                      },
+                      {
+                        time: markerTime,
+                        position: arrowPosition,
+                        color,
+                        shape: arrowShape,
+                        text: `${isBuy ? "B" : "S"} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
+                        price: exec.price,
+                      },
+                    ];
+                  })
+                : [];
+              const staticMarkersInRange = open
+                ? trade.executions.flatMap((exec) => {
+                    const markerTime = alignExecutionToBarTime(
+                      exec.executedAt,
+                      staticFallbackCandles,
+                      staticAlignmentOffsetSeconds,
+                    );
+                    if (markerTime === null) return [];
 
-                const isBuy = exec.side === "BUY";
-                const color = isBuy ? "#16a34a" : "#dc2626";
-                const circleColor = isBuy ? "#0284c7" : "#ea580c";
-                const arrowPosition: "belowBar" | "aboveBar" = isBuy ? "belowBar" : "aboveBar";
-                const arrowShape: "arrowUp" | "arrowDown" = isBuy ? "arrowUp" : "arrowDown";
-                return [
-                  {
-                    time: markerTime,
-                    position: "atPriceMiddle" as const,
-                    color: circleColor,
-                    shape: "circle" as const,
-                    text: "",
-                    price: exec.price,
-                  },
-                  {
-                    time: markerTime,
-                    position: arrowPosition,
-                    color,
-                    shape: arrowShape,
-                    text: `${isBuy ? "B" : "S"} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
-                    price: exec.price,
-                  },
-                ];
-              });
-              const staticMatchedExecutions = trade.executions.filter(
-                (exec) =>
-                  alignExecutionToBarTime(exec.executedAt, staticFallbackCandles, staticAlignmentOffsetSeconds) !== null,
-              ).length;
+                    const isBuy = exec.side === "BUY";
+                    const color = isBuy ? "#16a34a" : "#dc2626";
+                    const circleColor = isBuy ? "#0284c7" : "#ea580c";
+                    const arrowPosition: "belowBar" | "aboveBar" = isBuy ? "belowBar" : "aboveBar";
+                    const arrowShape: "arrowUp" | "arrowDown" = isBuy ? "arrowUp" : "arrowDown";
+                    return [
+                      {
+                        time: markerTime,
+                        position: "atPriceMiddle" as const,
+                        color: circleColor,
+                        shape: "circle" as const,
+                        text: "",
+                        price: exec.price,
+                      },
+                      {
+                        time: markerTime,
+                        position: arrowPosition,
+                        color,
+                        shape: arrowShape,
+                        text: `${isBuy ? "B" : "S"} ${exec.quantity} @ ${exec.price.toFixed(2)}`,
+                        price: exec.price,
+                      },
+                    ];
+                  })
+                : [];
+              const staticMatchedExecutions = open
+                ? trade.executions.filter(
+                    (exec) =>
+                      alignExecutionToBarTime(exec.executedAt, staticFallbackCandles, staticAlignmentOffsetSeconds) !== null,
+                  ).length
+                : 0;
 
               return (
                 <div key={trade.groupKey} className="p-4">
