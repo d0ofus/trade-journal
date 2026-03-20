@@ -91,6 +91,7 @@ model Execution {
 
   @@index([executedAt])
   @@index([accountId, executedAt])
+  @@index([accountId, instrumentId, executedAt])
 }
 
 model Position {
