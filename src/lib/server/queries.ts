@@ -159,7 +159,7 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
 
       return {
         cards: {
-          totalTrades: executions.length,
+          totalTrades: filteredExecutions.length,
           largestGain: returnValues.length > 0 ? largestGain : 0,
           largestLoss: returnValues.length > 0 ? largestLoss : 0,
           avgWinHoldMs: winningRowsCount > 0 ? winningHoldMsTotal / winningRowsCount : 0,
