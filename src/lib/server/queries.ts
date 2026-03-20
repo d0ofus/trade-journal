@@ -67,8 +67,6 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
       let realizedDay = 0;
       let realizedWeek = 0;
       let realizedMonth = 0;
-      let largestGain = 0;
-      let largestLoss = 0;
       let winningHoldMsTotal = 0;
       let losingHoldMsTotal = 0;
       let winningRowsCount = 0;
@@ -109,8 +107,6 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
 
         if (pnl.matchedQuantity > 0) {
           returnValues.push(pnl.realizedPnl);
-          largestGain = returnValues.length === 1 ? pnl.realizedPnl : Math.max(largestGain, pnl.realizedPnl);
-          largestLoss = returnValues.length === 1 ? pnl.realizedPnl : Math.min(largestLoss, pnl.realizedPnl);
           grossDailyMap.set(dayKey, (grossDailyMap.get(dayKey) ?? 0) + pnl.grossRealizedPnl);
 
           if (pnl.realizedPnl > 0) {
@@ -148,6 +144,9 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
       const avgDailyVolume =
         volumeDays.length > 0 ? volumeDays.reduce((sum, value) => sum + value, 0) / volumeDays.length : 0;
       const metrics = buildMetrics(filteredPnlRows, filteredCommissions);
+      const closedRows = filteredPnlRows.filter((row) => row.matchedQuantity > 0);
+      const largestGain = closedRows.length > 0 ? Math.max(...closedRows.map((row) => row.realizedPnl)) : 0;
+      const largestLoss = closedRows.length > 0 ? Math.min(...closedRows.map((row) => row.realizedPnl)) : 0;
       const histogram = bucketHistogram(returnValues, 12);
       const equityCurve = filteredPnlRows.map((row) => {
         const exec = executionById.get(row.executionId)!;
