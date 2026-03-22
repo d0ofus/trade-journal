@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { CandlestickWithMarkers } from "@/components/candlestick-with-markers";
 import { RichTextEditor } from "@/components/rich-text-editor";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -11,7 +12,7 @@ import {
   type AlignmentCandle,
   type ExecutionAlignmentInput,
 } from "@/lib/charts/execution-marker-alignment";
-import { formatCurrency, formatSignedNotional } from "@/lib/utils";
+import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
 
 type ClosedTrade = {
   groupKey: string;
@@ -68,6 +69,16 @@ function toAlignmentInputs(
 
 function formatExecutionDateTime(executedAt: string) {
   return new Date(executedAt).toISOString().replace("T", " ").slice(0, 16);
+}
+
+function sideBadgeVariant(side: "BUY" | "SELL") {
+  return side === "BUY" ? "success" : "danger";
+}
+
+function sideRowClassName(side: "BUY" | "SELL") {
+  return side === "BUY"
+    ? "border-l-4 border-l-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/70"
+    : "border-l-4 border-l-red-500 bg-red-50/40 hover:bg-red-50/70";
 }
 
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
@@ -363,14 +374,25 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                             </TableHeader>
                             <TableBody>
                               {executionRows.map((execution) => (
-                                <TableRow key={execution.id}>
+                                <TableRow key={execution.id} className={sideRowClassName(execution.side)}>
                                   <TableCell>{formatExecutionDateTime(execution.executedAt)}</TableCell>
                                   <TableCell>{trade.accountCode}</TableCell>
                                   <TableCell>{trade.symbol}</TableCell>
-                                  <TableCell>{execution.side}</TableCell>
+                                  <TableCell>
+                                    <Badge variant={sideBadgeVariant(execution.side)} className="min-w-16 justify-center">
+                                      {execution.side}
+                                    </Badge>
+                                  </TableCell>
                                   <TableCell>{execution.quantity}</TableCell>
                                   <TableCell>{execution.price.toFixed(2)}</TableCell>
-                                  <TableCell>{formatSignedNotional(execution.quantity, execution.price, execution.side)}</TableCell>
+                                  <TableCell
+                                    className={cn(
+                                      "font-medium",
+                                      execution.side === "BUY" ? "text-emerald-700" : "text-red-700",
+                                    )}
+                                  >
+                                    {formatSignedNotional(execution.quantity, execution.price, execution.side)}
+                                  </TableCell>
                                   <TableCell>{formatCurrency(execution.commission)}</TableCell>
                                 </TableRow>
                               ))}

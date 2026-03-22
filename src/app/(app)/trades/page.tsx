@@ -2,12 +2,23 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { ClosedTradesPanel } from "@/components/closed-trades-panel";
 import { TradesFilters } from "@/components/trades-filters";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getClosedTrades, getTrades } from "@/lib/server/queries";
-import { formatCurrency, formatSignedNotional } from "@/lib/utils";
+import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+function sideBadgeVariant(side: "BUY" | "SELL") {
+  return side === "BUY" ? "success" : "danger";
+}
+
+function sideRowClassName(side: "BUY" | "SELL") {
+  return side === "BUY"
+    ? "border-l-4 border-l-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/70"
+    : "border-l-4 border-l-red-500 bg-red-50/40 hover:bg-red-50/70";
+}
 
 export default async function TradesPage(props: { searchParams: SearchParams }) {
   const searchParams = await props.searchParams;
@@ -125,14 +136,20 @@ async function TradesTableSection({
           </TableHeader>
           <TableBody>
             {trades.rows.map((trade) => (
-              <TableRow key={trade.id}>
+              <TableRow key={trade.id} className={sideRowClassName(trade.side)}>
                 <TableCell>{trade.executedAt.toISOString().replace("T", " ").slice(0, 16)}</TableCell>
                 <TableCell>{trade.account.ibkrAccount}</TableCell>
                 <TableCell>{trade.instrument.symbol}</TableCell>
-                <TableCell>{trade.side}</TableCell>
+                <TableCell>
+                  <Badge variant={sideBadgeVariant(trade.side)} className="min-w-16 justify-center">
+                    {trade.side}
+                  </Badge>
+                </TableCell>
                 <TableCell>{trade.quantity}</TableCell>
                 <TableCell>{trade.price.toFixed(2)}</TableCell>
-                <TableCell>{formatSignedNotional(trade.quantity, trade.price, trade.side)}</TableCell>
+                <TableCell className={cn("font-medium", trade.side === "BUY" ? "text-emerald-700" : "text-red-700")}>
+                  {formatSignedNotional(trade.quantity, trade.price, trade.side)}
+                </TableCell>
                 <TableCell>{formatCurrency(trade.commission)}</TableCell>
                 <TableCell>{formatCurrency(trade.fees)}</TableCell>
                 <TableCell>{formatCurrency(trade.commissionTotal)}</TableCell>
