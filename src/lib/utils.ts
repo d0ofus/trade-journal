@@ -13,6 +13,11 @@ export function formatCurrency(value: number, currency = "USD") {
   }).format(value);
 }
 
+export function formatSignedNotional(quantity: number, price: number, side: "BUY" | "SELL", currency = "USD") {
+  const notional = quantity * price * (side === "SELL" ? -1 : 1);
+  return formatCurrency(notional, currency);
+}
+
 export function formatPercent(value: number) {
   return `${value.toFixed(2)}%`;
 }
