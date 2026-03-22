@@ -71,6 +71,18 @@ function formatExecutionDateTime(executedAt: string) {
   return new Date(executedAt).toISOString().replace("T", " ").slice(0, 16);
 }
 
+function monthKeyFromTradeDate(tradeDate: string) {
+  return tradeDate.slice(0, 7);
+}
+
+function formatMonthLabel(tradeDate: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${tradeDate}T00:00:00.000Z`));
+}
+
 function sideBadgeVariant(side: "BUY" | "SELL") {
   return side === "BUY" ? "success" : "danger";
 }
@@ -100,7 +112,22 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
       list.push(row);
       map.set(row.tradeDate, list);
     }
-    return [...map.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    let previousMonthKey: string | null = null;
+
+    return [...map.entries()]
+      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+      .map(([date, rows]) => {
+        const currentMonthKey = monthKeyFromTradeDate(date);
+        const startsNewMonth = currentMonthKey !== previousMonthKey;
+        previousMonthKey = currentMonthKey;
+
+        return {
+          date,
+          rows,
+          monthLabel: formatMonthLabel(date),
+          startsNewMonth,
+        };
+      });
   }, [closedTrades]);
 
   async function ensureCandles(trade: ClosedTrade, interval: ChartInterval) {
@@ -195,11 +222,21 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
       <h3 className="text-lg font-semibold">Closed Trades</h3>
       {groupedByDate.length === 0 && <p className="text-sm text-slate-500">No closed trades found in filter range.</p>}
 
-      {groupedByDate.map(([date, rows]) => (
-        <div key={date} className="rounded-xl border border-slate-200 bg-white">
-          <div className="border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900">{date}</div>
-          <div className="divide-y divide-slate-200">
-            {rows.map((trade) => {
+      {groupedByDate.map(({ date, rows, monthLabel, startsNewMonth }) => (
+        <div key={date} className="space-y-3">
+          {startsNewMonth && (
+            <div className="sticky top-0 z-10 flex items-center gap-3 bg-slate-100/95 px-1 py-1 backdrop-blur">
+              <div className="h-px flex-1 bg-slate-300" />
+              <p className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700">
+                {monthLabel}
+              </p>
+              <div className="h-px flex-1 bg-slate-300" />
+            </div>
+          )}
+          <div className="rounded-xl border border-slate-200 bg-white">
+            <div className="border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900">{date}</div>
+            <div className="divide-y divide-slate-200">
+              {rows.map((trade) => {
               const open = expanded === trade.groupKey;
               const interval = intervalByKey[trade.groupKey] ?? "1d";
               const executionRows = open ? [...trade.executions].sort((a, b) => (a.executedAt < b.executedAt ? 1 : -1)) : [];
@@ -286,144 +323,145 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                   ).length
                 : 0;
 
-              return (
-                <div key={trade.groupKey} className="p-4">
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between text-left"
-                    onClick={async () => {
-                      const next = open ? null : trade.groupKey;
-                      setExpanded(next);
-                      if (!open) {
-                        await Promise.all([ensureCandles(trade, interval), ensureStaticCandles(trade, interval)]);
-                      }
-                    }}
-                  >
-                    <div>
-                      <p className="font-medium">{trade.symbol}</p>
-                      <p className="text-xs text-slate-500">
-                        {trade.executions.length} executions | Commissions {formatCurrency(trade.totalCommission)}
-                      </p>
-                    </div>
-                    <p className={trade.realizedPnl >= 0 ? "font-semibold text-emerald-600" : "font-semibold text-red-600"}>
-                      {formatCurrency(trade.realizedPnl)}
-                    </p>
-                  </button>
-
-                  {open && (
-                    <div className="mt-4 space-y-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {CHART_INTERVALS.map((option) => (
-                          <Button
-                            key={option.value}
-                            size="sm"
-                            variant={interval === option.value ? "default" : "outline"}
-                            onClick={async () => {
-                              setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
-                              await Promise.all([ensureCandles(trade, option.value), ensureStaticCandles(trade, option.value)]);
-                            }}
-                          >
-                            {option.label}
-                          </Button>
-                        ))}
-                      </div>
-                      <CandlestickWithMarkers
-                        candles={allCandles}
-                        markers={markersInRange}
-                        height={620}
-                        annotationStorageKey={`${trade.groupKey}:${interval}`}
-                      />
-                      <div className="space-y-2">
-                        <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
-                        <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
-                      </div>
-                      {matchedExecutions < trade.executions.length && (
-                        <p className="text-xs text-slate-500">
-                          Some execution markers are outside the currently loaded {interval} candle range.
-                        </p>
-                      )}
-                      {staticMatchedExecutions < trade.executions.length && (
-                        <p className="text-xs text-slate-500">
-                          Some execution markers are outside the static daily fallback candle range.
-                        </p>
-                      )}
-                      {chartStatus[`${trade.groupKey}:${interval}`] && (
-                        <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:${interval}`]}</p>
-                      )}
-                      {chartStatus[`${trade.groupKey}:static:${interval}`] && (
-                        <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
-                      )}
-
-                      <details className="rounded-xl border border-slate-200 bg-slate-50">
-                        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-700">
-                          Execution Details ({trade.executions.length})
-                        </summary>
-                        <div className="border-t border-slate-200 bg-white p-2">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Date</TableHead>
-                                <TableHead>Account</TableHead>
-                                <TableHead>Symbol</TableHead>
-                                <TableHead>Side</TableHead>
-                                <TableHead>Qty</TableHead>
-                                <TableHead>Price</TableHead>
-                                <TableHead>Notional</TableHead>
-                                <TableHead>Commission</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {executionRows.map((execution) => (
-                                <TableRow key={execution.id} className={sideRowClassName(execution.side)}>
-                                  <TableCell>{formatExecutionDateTime(execution.executedAt)}</TableCell>
-                                  <TableCell>{trade.accountCode}</TableCell>
-                                  <TableCell>{trade.symbol}</TableCell>
-                                  <TableCell>
-                                    <Badge variant={sideBadgeVariant(execution.side)} className="min-w-16 justify-center">
-                                      {execution.side}
-                                    </Badge>
-                                  </TableCell>
-                                  <TableCell>{execution.quantity}</TableCell>
-                                  <TableCell>{execution.price.toFixed(2)}</TableCell>
-                                  <TableCell
-                                    className={cn(
-                                      "font-medium",
-                                      execution.side === "BUY" ? "text-emerald-700" : "text-red-700",
-                                    )}
-                                  >
-                                    {formatSignedNotional(execution.quantity, execution.price, execution.side)}
-                                  </TableCell>
-                                  <TableCell>{formatCurrency(execution.commission)}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-                      </details>
-
+                return (
+                  <div key={trade.groupKey} className="p-4">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between text-left"
+                      onClick={async () => {
+                        const next = open ? null : trade.groupKey;
+                        setExpanded(next);
+                        if (!open) {
+                          await Promise.all([ensureCandles(trade, interval), ensureStaticCandles(trade, interval)]);
+                        }
+                      }}
+                    >
                       <div>
-                        <p className="mb-2 text-sm font-medium">Notes</p>
-                        <RichTextEditor
-                          value={tradeNotes[trade.groupKey] ?? ""}
-                          onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
-                          placeholder="Add setup quality, entry/exit rationale, and improvements."
-                        />
-                        <Button
-                          size="sm"
-                          className="mt-2"
-                          disabled={pending}
-                          onClick={() => saveTradeNote(trade)}
-                        >
-                          Save Notes
-                        </Button>
+                        <p className="font-medium">{trade.symbol}</p>
+                        <p className="text-xs text-slate-500">
+                          {trade.executions.length} executions | Commissions {formatCurrency(trade.totalCommission)}
+                        </p>
                       </div>
+                      <p className={trade.realizedPnl >= 0 ? "font-semibold text-emerald-600" : "font-semibold text-red-600"}>
+                        {formatCurrency(trade.realizedPnl)}
+                      </p>
+                    </button>
 
-                      {status[trade.groupKey] && <p className="text-xs text-slate-600">{status[trade.groupKey]}</p>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                    {open && (
+                      <div className="mt-4 space-y-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {CHART_INTERVALS.map((option) => (
+                            <Button
+                              key={option.value}
+                              size="sm"
+                              variant={interval === option.value ? "default" : "outline"}
+                              onClick={async () => {
+                                setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
+                                await Promise.all([ensureCandles(trade, option.value), ensureStaticCandles(trade, option.value)]);
+                              }}
+                            >
+                              {option.label}
+                            </Button>
+                          ))}
+                        </div>
+                        <CandlestickWithMarkers
+                          candles={allCandles}
+                          markers={markersInRange}
+                          height={620}
+                          annotationStorageKey={`${trade.groupKey}:${interval}`}
+                        />
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
+                          <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
+                        </div>
+                        {matchedExecutions < trade.executions.length && (
+                          <p className="text-xs text-slate-500">
+                            Some execution markers are outside the currently loaded {interval} candle range.
+                          </p>
+                        )}
+                        {staticMatchedExecutions < trade.executions.length && (
+                          <p className="text-xs text-slate-500">
+                            Some execution markers are outside the static daily fallback candle range.
+                          </p>
+                        )}
+                        {chartStatus[`${trade.groupKey}:${interval}`] && (
+                          <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:${interval}`]}</p>
+                        )}
+                        {chartStatus[`${trade.groupKey}:static:${interval}`] && (
+                          <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
+                        )}
+
+                        <details className="rounded-xl border border-slate-200 bg-slate-50">
+                          <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-700">
+                            Execution Details ({trade.executions.length})
+                          </summary>
+                          <div className="border-t border-slate-200 bg-white p-2">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Date</TableHead>
+                                  <TableHead>Account</TableHead>
+                                  <TableHead>Symbol</TableHead>
+                                  <TableHead>Side</TableHead>
+                                  <TableHead>Qty</TableHead>
+                                  <TableHead>Price</TableHead>
+                                  <TableHead>Notional</TableHead>
+                                  <TableHead>Commission</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {executionRows.map((execution) => (
+                                  <TableRow key={execution.id} className={sideRowClassName(execution.side)}>
+                                    <TableCell>{formatExecutionDateTime(execution.executedAt)}</TableCell>
+                                    <TableCell>{trade.accountCode}</TableCell>
+                                    <TableCell>{trade.symbol}</TableCell>
+                                    <TableCell>
+                                      <Badge variant={sideBadgeVariant(execution.side)} className="min-w-16 justify-center">
+                                        {execution.side}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell>{execution.quantity}</TableCell>
+                                    <TableCell>{execution.price.toFixed(2)}</TableCell>
+                                    <TableCell
+                                      className={cn(
+                                        "font-medium",
+                                        execution.side === "BUY" ? "text-emerald-700" : "text-red-700",
+                                      )}
+                                    >
+                                      {formatSignedNotional(execution.quantity, execution.price, execution.side)}
+                                    </TableCell>
+                                    <TableCell>{formatCurrency(execution.commission)}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </details>
+
+                        <div>
+                          <p className="mb-2 text-sm font-medium">Notes</p>
+                          <RichTextEditor
+                            value={tradeNotes[trade.groupKey] ?? ""}
+                            onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
+                            placeholder="Add setup quality, entry/exit rationale, and improvements."
+                          />
+                          <Button
+                            size="sm"
+                            className="mt-2"
+                            disabled={pending}
+                            onClick={() => saveTradeNote(trade)}
+                          >
+                            Save Notes
+                          </Button>
+                        </div>
+
+                        {status[trade.groupKey] && <p className="text-xs text-slate-600">{status[trade.groupKey]}</p>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       ))}
