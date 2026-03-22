@@ -5,7 +5,7 @@ import { TradesFilters } from "@/components/trades-filters";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getClosedTrades, getTrades } from "@/lib/server/queries";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatSignedNotional } from "@/lib/utils";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -115,6 +115,7 @@ async function TradesTableSection({
               <TableHead>Side</TableHead>
               <TableHead>Qty</TableHead>
               <TableHead>Price</TableHead>
+              <TableHead>Notional</TableHead>
               <TableHead>Commission</TableHead>
               <TableHead>Fees</TableHead>
               <TableHead>Total Cost</TableHead>
@@ -131,6 +132,7 @@ async function TradesTableSection({
                 <TableCell>{trade.side}</TableCell>
                 <TableCell>{trade.quantity}</TableCell>
                 <TableCell>{trade.price.toFixed(2)}</TableCell>
+                <TableCell>{formatSignedNotional(trade.quantity, trade.price, trade.side)}</TableCell>
                 <TableCell>{formatCurrency(trade.commission)}</TableCell>
                 <TableCell>{formatCurrency(trade.fees)}</TableCell>
                 <TableCell>{formatCurrency(trade.commissionTotal)}</TableCell>

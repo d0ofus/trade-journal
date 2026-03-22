@@ -11,7 +11,7 @@ import {
   type AlignmentCandle,
   type ExecutionAlignmentInput,
 } from "@/lib/charts/execution-marker-alignment";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatSignedNotional } from "@/lib/utils";
 
 type ClosedTrade = {
   groupKey: string;
@@ -357,6 +357,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                                 <TableHead>Side</TableHead>
                                 <TableHead>Qty</TableHead>
                                 <TableHead>Price</TableHead>
+                                <TableHead>Notional</TableHead>
                                 <TableHead>Commission</TableHead>
                               </TableRow>
                             </TableHeader>
@@ -369,6 +370,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                                   <TableCell>{execution.side}</TableCell>
                                   <TableCell>{execution.quantity}</TableCell>
                                   <TableCell>{execution.price.toFixed(2)}</TableCell>
+                                  <TableCell>{formatSignedNotional(execution.quantity, execution.price, execution.side)}</TableCell>
                                   <TableCell>{formatCurrency(execution.commission)}</TableCell>
                                 </TableRow>
                               ))}
