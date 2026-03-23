@@ -46,6 +46,39 @@ type TrendAnnotation = { id: string; type: "trend"; fromTime: number; fromPrice:
 type ChartAnnotation = HorizontalAnnotation | TrendAnnotation;
 type HoverOhlc = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type TrendAnchor = { time: number; price: number };
+type SmaPeriod = 10 | 20 | 50 | 200;
+
+const SMA_SERIES_CONFIG: Array<{ period: SmaPeriod; color: string }> = [
+  { period: 10, color: "#2563eb" },
+  { period: 20, color: "#7c3aed" },
+  { period: 50, color: "#d97706" },
+  { period: 200, color: "#475569" },
+];
+
+function buildSimpleMovingAverage(
+  candles: Candle[],
+  period: SmaPeriod,
+): Array<{ time: UTCTimestamp; value: number }> {
+  const points: Array<{ time: UTCTimestamp; value: number }> = [];
+  let rollingSum = 0;
+
+  for (let index = 0; index < candles.length; index += 1) {
+    rollingSum += candles[index].close;
+
+    if (index >= period) {
+      rollingSum -= candles[index - period].close;
+    }
+
+    if (index >= period - 1) {
+      points.push({
+        time: candles[index].time as UTCTimestamp,
+        value: rollingSum / period,
+      });
+    }
+  }
+
+  return points;
+}
 
 function toUnixSeconds(time?: Time): number | null {
   if (typeof time === "number") return time;
@@ -74,6 +107,7 @@ export function CandlestickWithMarkers({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const smaSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
   const markerPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLineRef = useRef<IPriceLine[]>([]);
   const trendSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
@@ -145,6 +179,15 @@ export function CandlestickWithMarkers({
           };
         })
         .filter((bar): bar is HistogramData<Time> => bar !== null),
+    [candles],
+  );
+  const simpleMovingAverages = useMemo(
+    () =>
+      SMA_SERIES_CONFIG.map(({ period, color }) => ({
+        period,
+        color,
+        data: buildSimpleMovingAverage(candles, period),
+      })),
     [candles],
   );
 
@@ -220,10 +263,20 @@ export function CandlestickWithMarkers({
     volumeSeries.priceScale().applyOptions({
       scaleMargins: { top: 0.75, bottom: 0 },
     });
+    const smaSeries = SMA_SERIES_CONFIG.map(({ color }) =>
+      chart.addSeries(LineSeries, {
+        color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      }),
+    );
 
     chartRef.current = chart;
     seriesRef.current = series;
     volumeSeriesRef.current = volumeSeries;
+    smaSeriesRef.current = smaSeries;
     markerPluginRef.current = createSeriesMarkers(series);
 
     const clickHandler = (param: MouseEventParams<Time>) => {
@@ -312,6 +365,7 @@ export function CandlestickWithMarkers({
       chartRef.current = null;
       seriesRef.current = null;
       volumeSeriesRef.current = null;
+      smaSeriesRef.current = [];
       markerPluginRef.current = null;
     };
   }, [candleByTime, height, readOnly]);
@@ -320,13 +374,16 @@ export function CandlestickWithMarkers({
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((candle) => ({ ...candle, time: candle.time as UTCTimestamp })));
     volumeSeriesRef.current?.setData(volumeBars);
+    simpleMovingAverages.forEach((movingAverage, index) => {
+      smaSeriesRef.current[index]?.setData(movingAverage.data);
+    });
     markerPluginRef.current?.setMarkers(
       markers.map(
         (marker): SeriesMarker<Time> => ({ ...marker, time: marker.time as UTCTimestamp }),
       ),
     );
     resetView();
-  }, [candles, markers, volumeBars]);
+  }, [candles, markers, simpleMovingAverages, volumeBars]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -437,6 +494,17 @@ export function CandlestickWithMarkers({
             "O - H - L - C - V -"
           )}
           {!readOnly && tool === "trend" && pendingTrendAnchor ? " | Select second point" : ""}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-slate-600">
+          {SMA_SERIES_CONFIG.map((average) => (
+            <span
+              key={average.period}
+              className="rounded-full border border-slate-200 bg-white px-2 py-1 shadow-sm"
+              style={{ color: average.color }}
+            >
+              SMA {average.period}
+            </span>
+          ))}
         </div>
       </div>
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(241,245,249,0.96))] p-2 shadow-sm">
