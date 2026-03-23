@@ -129,26 +129,59 @@ export function CandlestickWithMarkers({
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { type: ColorType.Solid, color: "#ffffff" },
-        textColor: "#334155",
+        background: { type: ColorType.Solid, color: "#f8fafc" },
+        textColor: "#1e293b",
       },
       width: containerRef.current.clientWidth,
       height,
-      crosshair: { mode: CrosshairMode.Normal },
-      grid: {
-        vertLines: { color: "transparent" },
-        horzLines: { color: "transparent" },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: {
+          color: "#94a3b8",
+          width: 1,
+          style: 3,
+          labelBackgroundColor: "#0f172a",
+        },
+        horzLine: {
+          color: "#94a3b8",
+          width: 1,
+          style: 3,
+          labelBackgroundColor: "#0f172a",
+        },
       },
-      rightPriceScale: { borderColor: "#cbd5e1" },
-      timeScale: { borderColor: "#cbd5e1" },
+      grid: {
+        vertLines: { color: "rgba(148, 163, 184, 0.10)" },
+        horzLines: { color: "rgba(148, 163, 184, 0.14)" },
+      },
+      rightPriceScale: {
+        borderColor: "#cbd5e1",
+        scaleMargins: { top: 0.12, bottom: 0.08 },
+      },
+      timeScale: {
+        borderColor: "#cbd5e1",
+        rightOffset: 6,
+        barSpacing: 10,
+        minBarSpacing: 0.5,
+        timeVisible: true,
+        secondsVisible: false,
+      },
     });
 
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: "#16a34a",
-      downColor: "#dc2626",
-      borderVisible: false,
-      wickUpColor: "#16a34a",
+      upColor: "#10b981",
+      downColor: "#ef4444",
+      borderUpColor: "#059669",
+      borderDownColor: "#dc2626",
+      borderVisible: true,
+      wickUpColor: "#059669",
       wickDownColor: "#dc2626",
+      priceLineVisible: true,
+      lastValueVisible: true,
+      priceFormat: {
+        type: "price",
+        precision: 2,
+        minMove: 0.01,
+      },
     });
 
     chartRef.current = chart;
@@ -311,16 +344,17 @@ export function CandlestickWithMarkers({
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
         <div className="flex flex-wrap items-center gap-2">
           {!readOnly && (
             <>
-              <Button size="sm" variant={tool === "none" ? "default" : "outline"} onClick={() => setTool("none")}>
+              <Button size="sm" variant={tool === "none" ? "default" : "outline"} className="h-8" onClick={() => setTool("none")}>
                 Cursor
               </Button>
               <Button
                 size="sm"
                 variant={tool === "horizontal" ? "default" : "outline"}
+                className="h-8"
                 onClick={() => {
                   setPendingTrendAnchor(null);
                   setTool("horizontal");
@@ -331,6 +365,7 @@ export function CandlestickWithMarkers({
               <Button
                 size="sm"
                 variant={tool === "trend" ? "default" : "outline"}
+                className="h-8"
                 onClick={() => setTool("trend")}
               >
                 Trend
@@ -338,6 +373,7 @@ export function CandlestickWithMarkers({
               <Button
                 size="sm"
                 variant="outline"
+                className="h-8"
                 onClick={() => {
                   setPendingTrendAnchor(null);
                   setAnnotations([]);
@@ -347,18 +383,22 @@ export function CandlestickWithMarkers({
               </Button>
             </>
           )}
-          <Button size="sm" variant="outline" onClick={resetView}>
+          <Button size="sm" variant="outline" className="h-8" onClick={resetView}>
             Reset View (Alt+R)
           </Button>
         </div>
-        <div>
-          {statusBar
-            ? `O ${statusBar.open.toFixed(2)} H ${statusBar.high.toFixed(2)} L ${statusBar.low.toFixed(2)} C ${statusBar.close.toFixed(2)}`
-            : "O - H - L - C -"}
+        <div className="rounded-full border border-slate-200 bg-white px-3 py-1 font-medium text-slate-700 shadow-sm">
+          {statusBar ? (
+            `O ${statusBar.open.toFixed(2)} H ${statusBar.high.toFixed(2)} L ${statusBar.low.toFixed(2)} C ${statusBar.close.toFixed(2)}`
+          ) : (
+            "O - H - L - C -"
+          )}
           {!readOnly && tool === "trend" && pendingTrendAnchor ? " | Select second point" : ""}
         </div>
       </div>
-      <div ref={containerRef} className="w-full" />
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(241,245,249,0.96))] p-2 shadow-sm">
+        <div ref={containerRef} className="w-full rounded-xl" />
+      </div>
     </div>
   );
 }
