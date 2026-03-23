@@ -2,10 +2,36 @@ import { endOfDay, endOfMonth, endOfYear, format, startOfDay, startOfMonth, star
 import { withDiagnostics } from "@/lib/server/diagnostics";
 import { prisma } from "@/lib/prisma";
 import { ensureMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
-import { bucketHistogram, buildMetrics, computeExecutionPnl } from "@/lib/stats/pnl";
+import { ensureMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
+import { bucketHistogram, buildMetrics } from "@/lib/stats/pnl";
+
+function analyticsOrZero(
+  executionId: string,
+  analytics?: {
+    executionId: string;
+    realizedPnl: number;
+    grossRealizedPnl: number;
+    cumulativePnl: number;
+    matchedQuantity: number;
+    avgHoldTimeMs: number;
+  } | null,
+) {
+  return (
+    analytics ?? {
+      executionId,
+      realizedPnl: 0,
+      grossRealizedPnl: 0,
+      cumulativePnl: 0,
+      matchedQuantity: 0,
+      avgHoldTimeMs: 0,
+    }
+  );
+}
 
 export async function getDashboardData(filters?: { from?: string; to?: string }) {
   return withDiagnostics("getDashboardData", async (step) => {
+    await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
+
     const dashboardTo = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
     const rangeStart = filters?.from ? startOfDay(new Date(filters.from)) : undefined;
     const rangeEnd = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
@@ -29,26 +55,23 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
               symbol: true,
             },
           },
+          analytics: {
+            select: {
+              executionId: true,
+              realizedPnl: true,
+              grossRealizedPnl: true,
+              cumulativePnl: true,
+              matchedQuantity: true,
+              avgHoldTimeMs: true,
+            },
+          },
         },
         orderBy: { executedAt: "asc" },
       }),
     );
 
-    const pnlRows = await step("compute pnl", () =>
-      computeExecutionPnl(
-        executions.map((exec) => ({
-          id: exec.id,
-          accountId: exec.accountId,
-          instrumentId: exec.instrumentId,
-          symbol: exec.instrument.symbol,
-          executedAt: exec.executedAt,
-          side: exec.side,
-          quantity: exec.quantity,
-          price: exec.price,
-          commission: exec.commission,
-          fees: exec.fees,
-        })),
-      ),
+    const pnlRows = await step("load analytics", () =>
+      executions.map((exec) => analyticsOrZero(exec.id, exec.analytics)),
     );
 
     return step("aggregate dashboard", () => {
@@ -194,6 +217,8 @@ export async function getTrades(filters: {
   pageSize?: number;
 }) {
   return withDiagnostics("getTrades", async (step) => {
+    await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
+
     const where: Record<string, unknown> = {};
     const pageSize = Math.max(1, Math.min(200, Math.floor(filters.pageSize ?? 50)));
     const page = Math.max(1, Math.floor(filters.page ?? 1));
@@ -246,6 +271,12 @@ export async function getTrades(filters: {
                 symbol: true,
               },
             },
+            analytics: {
+              select: {
+                executionId: true,
+                realizedPnl: true,
+              },
+            },
           },
           orderBy: { executedAt: "desc" },
           skip,
@@ -255,27 +286,9 @@ export async function getTrades(filters: {
       step("count page", () => prisma.execution.count({ where })),
     ]);
 
-    const pnlRows = await step("compute page pnl", () =>
-      computeExecutionPnl(
-        executions.map((exec) => ({
-          id: exec.id,
-          accountId: exec.accountId,
-          instrumentId: exec.instrumentId,
-          symbol: exec.instrument.symbol,
-          executedAt: exec.executedAt,
-          side: exec.side,
-          quantity: exec.quantity,
-          price: exec.price,
-          commission: exec.commission,
-          fees: exec.fees,
-        })),
-      ),
-    );
-    const pnlMap = new Map(pnlRows.map((row) => [row.executionId, row]));
-
     const rows = executions.map((exec) => ({
       ...exec,
-      realizedPnl: pnlMap.get(exec.id)?.realizedPnl ?? 0,
+      realizedPnl: exec.analytics?.realizedPnl ?? 0,
       commissionTotal: exec.commission + exec.fees,
     }));
 
@@ -481,6 +494,8 @@ export async function getClosedTrades(filters: TradeFilters) {
 
 export async function getTradeDetail(id: string) {
   return withDiagnostics("getTradeDetail", async (step) => {
+    await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
+
     const execution = await step("query execution", () =>
       prisma.execution.findUnique({
         where: { id },
@@ -519,6 +534,16 @@ export async function getTradeDetail(id: string) {
               content: true,
             },
           },
+          analytics: {
+            select: {
+              executionId: true,
+              realizedPnl: true,
+              grossRealizedPnl: true,
+              cumulativePnl: true,
+              matchedQuantity: true,
+              avgHoldTimeMs: true,
+            },
+          },
         },
       }),
     );
@@ -543,27 +568,10 @@ export async function getTradeDetail(id: string) {
       }),
     );
 
-    const pnlRows = await step("compute detail pnl", () =>
-      computeExecutionPnl(
-        accountExecutions.map((exec) => ({
-          id: exec.id,
-          accountId: exec.accountId,
-          instrumentId: exec.instrumentId,
-          symbol: execution.instrument.symbol,
-          executedAt: exec.executedAt,
-          side: exec.side,
-          quantity: exec.quantity,
-          price: exec.price,
-          commission: exec.commission,
-          fees: exec.fees,
-        })),
-      ),
-    );
-
     return {
       execution,
       relatedExecutions: accountExecutions,
-      pnl: pnlRows.find((row) => row.executionId === id),
+      pnl: analyticsOrZero(execution.id, execution.analytics),
     };
   });
 }
@@ -598,6 +606,7 @@ export async function getPositions() {
 }
 
 export async function getCalendarNotes(month?: Date) {
+  await ensureMaterializedExecutionAnalytics();
   const target = month ?? new Date();
   const from = startOfMonth(target);
   const to = endOfMonth(target);
@@ -629,26 +638,18 @@ export async function getCalendarNotes(month?: Date) {
             symbol: true,
           },
         },
+        analytics: {
+          select: {
+            executionId: true,
+            realizedPnl: true,
+          },
+        },
       },
       orderBy: { executedAt: "asc" },
     }),
   ]);
 
-  const pnlRows = computeExecutionPnl(
-    executions.map((exec) => ({
-      id: exec.id,
-      accountId: exec.accountId,
-      instrumentId: exec.instrumentId,
-      symbol: exec.instrument.symbol,
-      executedAt: exec.executedAt,
-      side: exec.side,
-      quantity: exec.quantity,
-      price: exec.price,
-      commission: exec.commission,
-      fees: exec.fees,
-    })),
-  );
-  const pnlByExecution = new Map(pnlRows.map((row) => [row.executionId, row.realizedPnl]));
+  const pnlByExecution = new Map(executions.map((execution) => [execution.id, execution.analytics?.realizedPnl ?? 0]));
   const dailyPnlByAccountDate = new Map<string, number>();
   const accountById = new Map(executions.map((execution) => [execution.accountId, execution.account]));
 
@@ -683,6 +684,8 @@ export async function getCalendarNotes(month?: Date) {
 
 export async function getCalendarPerformance(target?: Date) {
   return withDiagnostics("getCalendarPerformance", async (step) => {
+    await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
+
     const focus = target ?? new Date();
     const from = startOfYear(focus);
     const to = endOfYear(focus);
@@ -704,6 +707,16 @@ export async function getCalendarPerformance(target?: Date) {
             instrument: {
               select: {
                 symbol: true,
+              },
+            },
+            analytics: {
+              select: {
+                executionId: true,
+                realizedPnl: true,
+                grossRealizedPnl: true,
+                cumulativePnl: true,
+                matchedQuantity: true,
+                avgHoldTimeMs: true,
               },
             },
           },
@@ -754,21 +767,8 @@ export async function getCalendarPerformance(target?: Date) {
       ),
     ]);
 
-    const pnlRows = await step("compute pnl", () =>
-      computeExecutionPnl(
-        executions.map((exec) => ({
-          id: exec.id,
-          accountId: exec.accountId,
-          instrumentId: exec.instrumentId,
-          symbol: exec.instrument.symbol,
-          executedAt: exec.executedAt,
-          side: exec.side,
-          quantity: exec.quantity,
-          price: exec.price,
-          commission: exec.commission,
-          fees: exec.fees,
-        })),
-      ),
+    const pnlRows = await step("load analytics", () =>
+      executions.map((exec) => analyticsOrZero(exec.id, exec.analytics)),
     );
 
     return step("aggregate calendar", () => {
