@@ -44,7 +44,7 @@ type AnnotationTool = "none" | "horizontal" | "trend";
 type HorizontalAnnotation = { id: string; type: "horizontal"; price: number; color: string };
 type TrendAnnotation = { id: string; type: "trend"; fromTime: number; fromPrice: number; toTime: number; toPrice: number; color: string };
 type ChartAnnotation = HorizontalAnnotation | TrendAnnotation;
-type HoverOhlc = { time: number; open: number; high: number; low: number; close: number };
+type HoverOhlc = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type TrendAnchor = { time: number; price: number };
 
 function toUnixSeconds(time?: Time): number | null {
@@ -126,6 +126,7 @@ export function CandlestickWithMarkers({
 
   const latestBar = useMemo(() => candles.at(-1) ?? null, [candles]);
   const statusBar = hoverOhlc ?? latestBar;
+  const candleByTime = useMemo(() => new Map(candles.map((candle) => [candle.time, candle])), [candles]);
   const volumeBars = useMemo(
     () =>
       candles
@@ -289,6 +290,7 @@ export function CandlestickWithMarkers({
         high: Number(typed.high),
         low: Number(typed.low),
         close: Number(typed.close),
+        volume: candleByTime.get(time)?.volume,
       });
     };
 
@@ -312,7 +314,7 @@ export function CandlestickWithMarkers({
       volumeSeriesRef.current = null;
       markerPluginRef.current = null;
     };
-  }, [height, readOnly]);
+  }, [candleByTime, height, readOnly]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -428,9 +430,11 @@ export function CandlestickWithMarkers({
         </div>
         <div className="rounded-full border border-slate-200 bg-white px-3 py-1 font-medium text-slate-700 shadow-sm">
           {statusBar ? (
-            `O ${statusBar.open.toFixed(2)} H ${statusBar.high.toFixed(2)} L ${statusBar.low.toFixed(2)} C ${statusBar.close.toFixed(2)}`
+            `O ${statusBar.open.toFixed(2)} H ${statusBar.high.toFixed(2)} L ${statusBar.low.toFixed(2)} C ${statusBar.close.toFixed(2)} V ${
+              Number.isFinite(statusBar.volume) ? Number(statusBar.volume).toLocaleString() : "-"
+            }`
           ) : (
-            "O - H - L - C -"
+            "O - H - L - C - V -"
           )}
           {!readOnly && tool === "trend" && pendingTrendAnchor ? " | Select second point" : ""}
         </div>

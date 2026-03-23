@@ -9,6 +9,14 @@ const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: strin
   "1d": { interval: "1d", range: "10y" },
 };
 
+function dedupeCandles(rows: Candle[]) {
+  const byTime = new Map<number, Candle>();
+  for (const row of rows) {
+    byTime.set(row.time, row);
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
 function parseCsvRows(csvText: string) {
   const lines = csvText.split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [] as Candle[];
@@ -80,7 +88,7 @@ function parseYahooRows(payload: unknown) {
     }
   }
 
-  return rows;
+  return dedupeCandles(rows);
 }
 
 export async function GET(req: NextRequest) {
@@ -105,13 +113,13 @@ export async function GET(req: NextRequest) {
   } else {
     yahooUrl.searchParams.set("range", config.range);
   }
-  yahooUrl.searchParams.set("includePrePost", timeframe === "1d" ? "false" : "true");
+  yahooUrl.searchParams.set("includePrePost", "false");
   yahooUrl.searchParams.set("events", "div,splits");
 
   const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
   if (yahooRes.ok) {
     const payload = await yahooRes.json();
-    const rows = parseYahooRows(payload);
+    const rows = dedupeCandles(parseYahooRows(payload));
     if (rows.length > 0) {
       return NextResponse.json({ symbol, timeframe, candles: rows.slice(-limit) });
     }
@@ -125,7 +133,7 @@ export async function GET(req: NextRequest) {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) continue;
       const csvText = await res.text();
-      const rows = parseCsvRows(csvText);
+      const rows = dedupeCandles(parseCsvRows(csvText));
       if (rows.length > 0) {
         return NextResponse.json({ symbol: candidate.toUpperCase(), timeframe, candles: rows.slice(-limit) });
       }
