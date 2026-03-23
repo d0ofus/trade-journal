@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { parse as parseSync } from "csv-parse/sync";
 import { parseCsvWithMapping, previewCsv } from "@/lib/import/ibkr-parser";
 import { filterOutIdealFxCommissionRows, parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
+import { refreshMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { importParsedFile } from "@/lib/server/import-service";
 
 async function readFiles(formData: FormData) {
@@ -171,6 +172,7 @@ export async function POST(req: NextRequest) {
         durationMs: number;
         rowsPerSecond: number;
       }>;
+      let shouldRefreshClosedTrades = false;
 
       for (const file of files) {
         const sections = splitFlexSections(file.content);
@@ -188,6 +190,7 @@ export async function POST(req: NextRequest) {
           });
           results.push({ filename: `${file.filename} :: Trades`, ...tradeResult });
           results.push({ filename: `${file.filename} :: Positions`, ...positionResult });
+          shouldRefreshClosedTrades = true;
           continue;
         }
 
@@ -200,6 +203,13 @@ export async function POST(req: NextRequest) {
           fileType: kind,
         });
         results.push({ filename: file.filename, ...result });
+        if (kind === "executions" || kind === "positions") {
+          shouldRefreshClosedTrades = true;
+        }
+      }
+
+      if (shouldRefreshClosedTrades) {
+        await refreshMaterializedClosedTrades();
       }
 
       const totalDurationMs = Math.max(1, Date.now() - commitStartedAtMs);

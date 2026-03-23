@@ -1,4 +1,5 @@
 import { importParsedFile } from "@/lib/server/import-service";
+import { refreshMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { parseFlexStatementCsv } from "@/lib/import/ibkr-flex";
 
 const DEFAULT_BASE = "https://gdcdyn.interactivebrokers.com/Universal/servlet";
@@ -112,6 +113,8 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
     parsed: parsed.positions,
     fileType: "flex-positions",
   });
+
+  await refreshMaterializedClosedTrades();
 
   return {
     trades: tradesResult,
