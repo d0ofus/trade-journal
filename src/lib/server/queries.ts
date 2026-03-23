@@ -1,7 +1,7 @@
 import { endOfDay, endOfMonth, endOfYear, format, startOfDay, startOfMonth, startOfWeek, startOfYear, subDays } from "date-fns";
 import { withDiagnostics } from "@/lib/server/diagnostics";
 import { prisma } from "@/lib/prisma";
-import { computeClosedTradeGroups } from "@/lib/stats/closed-trades";
+import { ensureMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { bucketHistogram, buildMetrics, computeExecutionPnl } from "@/lib/stats/pnl";
 
 export async function getDashboardData(filters?: { from?: string; to?: string }) {
@@ -298,25 +298,6 @@ type TradeFilters = {
   strategy?: string;
 };
 
-function normalizedInstrumentIdentity(input: {
-  symbol: string;
-  assetType?: string | null;
-  currency?: string | null;
-}) {
-  return [input.symbol, input.assetType ?? "", input.currency ?? ""].join("|");
-}
-
-function accountInstrumentGroupKey(
-  accountId: string,
-  instrument: {
-    symbol: string;
-    assetType?: string | null;
-    currency?: string | null;
-  },
-) {
-  return `${accountId}:${normalizedInstrumentIdentity(instrument)}`;
-}
-
 function buildExecutionWhere(
   filters: TradeFilters,
   options?: {
@@ -350,151 +331,89 @@ function buildExecutionWhere(
 
 export async function getClosedTrades(filters: TradeFilters) {
   return withDiagnostics("getClosedTrades", async (step) => {
-    const rangeStart = filters.from ? startOfDay(new Date(filters.from)) : undefined;
-    const rangeEnd = filters.to ? endOfDay(new Date(filters.to)) : undefined;
-    const where = buildExecutionWhere(filters, { applyDateRange: false, includeSide: false });
-    if (rangeEnd) {
-      where.executedAt = { lte: rangeEnd };
+    await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
+
+    const where: Record<string, unknown> = {};
+    if (filters.from || filters.to) {
+      where.tradeDate = {
+        gte: filters.from ? startOfDay(new Date(filters.from)) : undefined,
+        lte: filters.to ? endOfDay(new Date(filters.to)) : undefined,
+      };
+    }
+    if (filters.symbol) {
+      where.symbol = { equals: filters.symbol };
     }
 
-    const executions = await step("query executions", () =>
-      prisma.execution.findMany({
+    const executionFilters: Record<string, unknown> = {};
+    if (filters.side) {
+      executionFilters.side = filters.side;
+    }
+    if (filters.tag) {
+      executionFilters.execution = {
+        ...(executionFilters.execution as Record<string, unknown> | undefined),
+        tags: { some: { tag: { name: { equals: filters.tag } } } },
+      };
+    }
+    if (filters.strategy) {
+      executionFilters.execution = {
+        ...(executionFilters.execution as Record<string, unknown> | undefined),
+        strategy: { equals: filters.strategy },
+      };
+    }
+    if (Object.keys(executionFilters).length > 0) {
+      where.executions = { some: executionFilters };
+    }
+
+    const groups = await step("query materialized groups", () =>
+      prisma.closedTrade.findMany({
         where,
         select: {
-          id: true,
+          groupKey: true,
           accountId: true,
-          instrumentId: true,
-          executedAt: true,
-          side: true,
-          quantity: true,
-          price: true,
-          commission: true,
-          fees: true,
-          currency: true,
-          instrument: {
-            select: {
-              symbol: true,
-              exchange: true,
-              assetType: true,
-              currency: true,
-            },
-          },
+          symbol: true,
+          direction: true,
+          openTime: true,
+          closeTime: true,
+          tradeDate: true,
+          totalQuantity: true,
+          avgEntryPrice: true,
+          avgExitPrice: true,
+          grossRealizedPnl: true,
+          openingQuantity: true,
+          closingQuantity: true,
+          realizedPnl: true,
+          totalCommission: true,
           account: {
             select: {
               ibkrAccount: true,
             },
           },
+          executions: {
+            select: {
+              executionId: true,
+              executedAt: true,
+              side: true,
+              quantity: true,
+              price: true,
+              commission: true,
+              fees: true,
+            },
+            orderBy: { sortOrder: "asc" },
+          },
         },
-        orderBy: { executedAt: "asc" },
+        orderBy: [{ closeTime: "desc" }, { groupKey: "asc" }],
       }),
     );
-
-    const executionsInRange = rangeStart ? executions.filter((exec) => exec.executedAt >= rangeStart) : executions;
-    const openingByAccountInstrument = new Map<string, { quantity: number; avgCost: number }>();
-    const firstExecutionAt = executionsInRange[0]?.executedAt;
-    const baselineDate = rangeStart ?? (firstExecutionAt ? startOfDay(firstExecutionAt) : undefined);
-
-    if (baselineDate && executionsInRange.length > 0) {
-      const candidateKeys = new Set(
-        executionsInRange.map((exec) =>
-          accountInstrumentGroupKey(exec.accountId, {
-            symbol: exec.instrument.symbol,
-            assetType: exec.instrument.assetType,
-            currency: exec.currency ?? exec.instrument.currency,
-          }),
-        ),
-      );
-      const snapshots = await step("query opening snapshots", () =>
-        prisma.positionSnapshot.findMany({
-          where: {
-            accountId: { in: [...new Set(executionsInRange.map((exec) => exec.accountId))] },
-            date: { lt: baselineDate },
-            instrument: {
-              symbol: { in: [...new Set(executionsInRange.map((exec) => exec.instrument.symbol))] },
-            },
-          },
-          select: {
-            accountId: true,
-            date: true,
-            quantity: true,
-            avgCost: true,
-            currency: true,
-            instrument: {
-              select: {
-                symbol: true,
-                assetType: true,
-                currency: true,
-              },
-            },
-          },
-          orderBy: { date: "desc" },
-        }),
-      );
-
-      const aggregatedSnapshots = new Map<string, { date: number; quantity: number; costValue: number }>();
-      for (const snapshot of snapshots) {
-        const key = accountInstrumentGroupKey(snapshot.accountId, {
-          symbol: snapshot.instrument.symbol,
-          assetType: snapshot.instrument.assetType,
-          currency: snapshot.currency ?? snapshot.instrument.currency,
-        });
-        if (!candidateKeys.has(key)) continue;
-        const snapshotDate = snapshot.date.getTime();
-        const existing = aggregatedSnapshots.get(key);
-        if (existing && existing.date !== snapshotDate) continue;
-        const next = existing ?? { date: snapshotDate, quantity: 0, costValue: 0 };
-        next.quantity += snapshot.quantity;
-        next.costValue += snapshot.quantity * snapshot.avgCost;
-        aggregatedSnapshots.set(key, next);
-      }
-
-      for (const [key, snapshot] of aggregatedSnapshots.entries()) {
-        openingByAccountInstrument.set(key, {
-          quantity: snapshot.quantity,
-          avgCost: Math.abs(snapshot.quantity) > 0 ? snapshot.costValue / snapshot.quantity : 0,
-        });
-      }
-    }
-
-    const filteredGroups = await step("compute groups", () =>
-      computeClosedTradeGroups(
-        executionsInRange.map((exec) => ({
-          id: exec.id,
-          accountId: exec.accountId,
-          accountCode: exec.account.ibkrAccount,
-          instrumentId: exec.instrumentId,
-          symbol: exec.instrument.symbol,
-          exchange: exec.instrument.exchange,
-          assetType: exec.instrument.assetType,
-          currency: exec.currency ?? exec.instrument.currency,
-          executedAt: exec.executedAt,
-          side: exec.side,
-          quantity: exec.quantity,
-          price: exec.price,
-          commission: exec.commission,
-          fees: exec.fees,
-        })),
-        openingByAccountInstrument,
-      ).filter((group) => {
-        const tradeDate = new Date(`${group.tradeDate}T00:00:00.000Z`);
-        if (filters.from && tradeDate < startOfDay(new Date(filters.from))) return false;
-        if (filters.to && tradeDate > endOfDay(new Date(filters.to))) return false;
-        return true;
-      }),
-    );
-
-    const groups = filters.side
-      ? filteredGroups.filter((group) => group.executions.some((execution) => execution.side === filters.side))
-      : filteredGroups;
 
     const groupKeys = groups.map((group) => group.groupKey);
     const dayNotePairs = new Map<string, { accountId: string; date: Date }>();
     for (const group of groups) {
-      const key = `${group.accountId}:${group.tradeDate}`;
+      const tradeDate = group.tradeDate.toISOString().slice(0, 10);
+      const key = `${group.accountId}:${tradeDate}`;
       if (!dayNotePairs.has(key)) {
         dayNotePairs.set(key, {
           accountId: group.accountId,
-          date: new Date(`${group.tradeDate}T00:00:00.000Z`),
+          date: new Date(`${tradeDate}T00:00:00.000Z`),
         });
       }
     }
@@ -536,8 +455,25 @@ export async function getClosedTrades(filters: TradeFilters) {
     const closedNoteMap = new Map(closedTradeNotes.map((note) => [note.groupKey, note.content]));
 
     return groups.map((group) => ({
-      ...group,
-      dayNote: dayNoteMap.get(`${group.accountId}:${group.tradeDate}`) ?? "",
+      groupKey: group.groupKey,
+      accountId: group.accountId,
+      accountCode: group.account.ibkrAccount,
+      symbol: group.symbol,
+      tradeDate: group.tradeDate.toISOString().slice(0, 10),
+      realizedPnl: group.realizedPnl,
+      totalCommission: group.totalCommission,
+      openingQuantity: group.openingQuantity,
+      closingQuantity: group.closingQuantity,
+      executions: group.executions.map((execution) => ({
+        id: execution.executionId,
+        executedAt: execution.executedAt.toISOString(),
+        side: execution.side,
+        quantity: execution.quantity,
+        price: execution.price,
+        commission: execution.commission,
+        fees: execution.fees,
+      })),
+      dayNote: dayNoteMap.get(`${group.accountId}:${group.tradeDate.toISOString().slice(0, 10)}`) ?? "",
       tradeNote: closedNoteMap.get(group.groupKey) ?? "",
     }));
   });

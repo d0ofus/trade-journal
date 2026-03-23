@@ -37,6 +37,7 @@ model Account {
   dayNotes     DayNote[]
   symbolNotes  SymbolNote[]
   importBatches ImportBatch[]
+  closedTrades ClosedTrade[]
 }
 
 model Instrument {
@@ -49,6 +50,7 @@ model Instrument {
   positions   Position[]
   positionSnapshots PositionSnapshot[]
   symbolNotes SymbolNote[]
+  closedTrades ClosedTrade[]
 
   @@unique([symbol, exchange, assetType])
 }
@@ -88,6 +90,7 @@ model Execution {
   createdAt    DateTime     @default(now())
   tradeNote    TradeNote?
   tags         ExecutionTag[]
+  closedTradeExecutions ClosedTradeExecution[]
 
   @@index([executedAt])
   @@index([accountId, executedAt])
@@ -187,6 +190,53 @@ model ClosedTradeNote {
   content   String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model ClosedTrade {
+  groupKey          String                @id
+  accountId         String
+  account           Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrumentId      String
+  instrument        Instrument            @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  symbol            String
+  direction         String
+  openTime          DateTime
+  closeTime         DateTime
+  tradeDate         DateTime
+  totalQuantity     Float
+  avgEntryPrice     Float
+  avgExitPrice      Float
+  grossRealizedPnl  Float
+  openingQuantity   Float
+  closingQuantity   Float
+  realizedPnl       Float
+  totalCommission   Float
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  executions        ClosedTradeExecution[]
+
+  @@index([tradeDate])
+  @@index([accountId, tradeDate])
+  @@index([symbol, tradeDate])
+}
+
+model ClosedTradeExecution {
+  id                 String      @id @default(cuid())
+  closedTradeGroupKey String
+  closedTrade        ClosedTrade @relation(fields: [closedTradeGroupKey], references: [groupKey], onDelete: Cascade)
+  executionId        String
+  execution          Execution   @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  sortOrder          Int
+  executedAt         DateTime
+  side               Side
+  quantity           Float
+  price              Float
+  commission         Float       @default(0)
+  fees               Float       @default(0)
+
+  @@index([closedTradeGroupKey, sortOrder])
+  @@index([executionId])
+  @@index([side, executedAt])
 }
 
 model SymbolNote {
