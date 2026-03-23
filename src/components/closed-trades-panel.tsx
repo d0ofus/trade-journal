@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   alignExecutionToBarTime,
   inferExecutionOffsetSeconds,
+  inferBarIntervalSeconds,
   type AlignmentCandle,
   type ExecutionAlignmentInput,
 } from "@/lib/charts/execution-marker-alignment";
@@ -91,6 +92,19 @@ function sideRowClassName(side: "BUY" | "SELL") {
   return side === "BUY"
     ? "border-l-4 border-l-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/70"
     : "border-l-4 border-l-red-500 bg-red-50/40 hover:bg-red-50/70";
+}
+
+function executionTimestampsWithinLoadedRange(executions: ClosedTrade["executions"], candles: Candle[]) {
+  if (executions.length === 0 || candles.length === 0) return true;
+
+  const intervalSeconds = inferBarIntervalSeconds(candles);
+  const firstStart = candles[0].time;
+  const lastEnd = candles[candles.length - 1].time + intervalSeconds;
+
+  return executions.every((execution) => {
+    const executedAtSeconds = Math.floor(new Date(execution.executedAt).getTime() / 1000);
+    return executedAtSeconds >= firstStart && executedAtSeconds < lastEnd;
+  });
 }
 
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
@@ -247,11 +261,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
               const staticAlignmentOffsetSeconds = open
                 ? inferExecutionOffsetSeconds(alignmentInputs, staticFallbackCandles)
                 : 0;
-              const matchedExecutions = open
-                ? trade.executions.filter(
-                    (exec) => alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds) !== null,
-                  ).length
-                : 0;
+              const executionsInLoadedRange = open ? executionTimestampsWithinLoadedRange(trade.executions, allCandles) : true;
               const markersInRange = open
                 ? trade.executions.flatMap((exec) => {
                     const markerTime = alignExecutionToBarTime(exec.executedAt, allCandles, alignmentOffsetSeconds);
@@ -316,12 +326,9 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                     ];
                   })
                 : [];
-              const staticMatchedExecutions = open
-                ? trade.executions.filter(
-                    (exec) =>
-                      alignExecutionToBarTime(exec.executedAt, staticFallbackCandles, staticAlignmentOffsetSeconds) !== null,
-                  ).length
-                : 0;
+              const executionsInStaticLoadedRange = open
+                ? executionTimestampsWithinLoadedRange(trade.executions, staticFallbackCandles)
+                : true;
 
                 return (
                   <div key={trade.groupKey} className="p-4">
@@ -421,12 +428,12 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                           <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
                           <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
                         </div>
-                        {matchedExecutions < trade.executions.length && (
+                        {!executionsInLoadedRange && (
                           <p className="text-xs text-slate-500">
                             Some execution markers are outside the currently loaded {interval} candle range.
                           </p>
                         )}
-                        {staticMatchedExecutions < trade.executions.length && (
+                        {!executionsInStaticLoadedRange && (
                           <p className="text-xs text-slate-500">
                             Some execution markers are outside the static daily fallback candle range.
                           </p>
