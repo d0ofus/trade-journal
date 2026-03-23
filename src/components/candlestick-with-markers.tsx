@@ -5,6 +5,7 @@ import {
   CandlestickSeries,
   CrosshairMode,
   ColorType,
+  HistogramSeries,
   LineSeries,
   createChart,
   createSeriesMarkers,
@@ -12,6 +13,7 @@ import {
   type IPriceLine,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type HistogramData,
   type MouseEventParams,
   type SeriesMarker,
   type SeriesMarkerBarPosition,
@@ -22,7 +24,7 @@ import {
 } from "lightweight-charts";
 import { Button } from "@/components/ui/button";
 
-type Candle = { time: number; open: number; high: number; low: number; close: number };
+type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type BaseMarker = {
   time: number;
   color: string;
@@ -71,6 +73,7 @@ export function CandlestickWithMarkers({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markerPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLineRef = useRef<IPriceLine[]>([]);
   const trendSeriesRef = useRef<Array<ISeriesApi<"Line">>>([]);
@@ -123,6 +126,26 @@ export function CandlestickWithMarkers({
 
   const latestBar = useMemo(() => candles.at(-1) ?? null, [candles]);
   const statusBar = hoverOhlc ?? latestBar;
+  const volumeBars = useMemo(
+    () =>
+      candles
+        .map((candle, index): HistogramData<Time> | null => {
+          if (!Number.isFinite(candle.volume)) return null;
+          const previousClose = index > 0 ? candles[index - 1]?.close : undefined;
+          const isPositive =
+            typeof previousClose === "number" && Number.isFinite(previousClose)
+              ? candle.close >= previousClose
+              : candle.close >= candle.open;
+
+          return {
+            time: candle.time as UTCTimestamp,
+            value: Number(candle.volume),
+            color: isPositive ? "rgba(16, 185, 129, 0.55)" : "rgba(239, 68, 68, 0.55)",
+          };
+        })
+        .filter((bar): bar is HistogramData<Time> => bar !== null),
+    [candles],
+  );
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -183,9 +206,23 @@ export function CandlestickWithMarkers({
         minMove: 0.01,
       },
     });
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: {
+        type: "volume",
+      },
+      priceLineVisible: false,
+      lastValueVisible: false,
+      color: "rgba(148, 163, 184, 0.4)",
+      base: 0,
+      priceScaleId: "",
+    });
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.75, bottom: 0 },
+    });
 
     chartRef.current = chart;
     seriesRef.current = series;
+    volumeSeriesRef.current = volumeSeries;
     markerPluginRef.current = createSeriesMarkers(series);
 
     const clickHandler = (param: MouseEventParams<Time>) => {
@@ -272,6 +309,7 @@ export function CandlestickWithMarkers({
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      volumeSeriesRef.current = null;
       markerPluginRef.current = null;
     };
   }, [height, readOnly]);
@@ -279,13 +317,14 @@ export function CandlestickWithMarkers({
   useEffect(() => {
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((candle) => ({ ...candle, time: candle.time as UTCTimestamp })));
+    volumeSeriesRef.current?.setData(volumeBars);
     markerPluginRef.current?.setMarkers(
       markers.map(
         (marker): SeriesMarker<Time> => ({ ...marker, time: marker.time as UTCTimestamp }),
       ),
     );
     resetView();
-  }, [candles, markers]);
+  }, [candles, markers, volumeBars]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
