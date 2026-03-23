@@ -349,48 +349,6 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
 
                     {open && (
                       <div className="mt-4 space-y-4">
-                        <div className="flex flex-wrap items-center gap-2">
-                          {CHART_INTERVALS.map((option) => (
-                            <Button
-                              key={option.value}
-                              size="sm"
-                              variant={interval === option.value ? "default" : "outline"}
-                              onClick={async () => {
-                                setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
-                                await Promise.all([ensureCandles(trade, option.value), ensureStaticCandles(trade, option.value)]);
-                              }}
-                            >
-                              {option.label}
-                            </Button>
-                          ))}
-                        </div>
-                        <CandlestickWithMarkers
-                          candles={allCandles}
-                          markers={markersInRange}
-                          height={620}
-                          annotationStorageKey={`${trade.groupKey}:${interval}`}
-                        />
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
-                          <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
-                        </div>
-                        {matchedExecutions < trade.executions.length && (
-                          <p className="text-xs text-slate-500">
-                            Some execution markers are outside the currently loaded {interval} candle range.
-                          </p>
-                        )}
-                        {staticMatchedExecutions < trade.executions.length && (
-                          <p className="text-xs text-slate-500">
-                            Some execution markers are outside the static daily fallback candle range.
-                          </p>
-                        )}
-                        {chartStatus[`${trade.groupKey}:${interval}`] && (
-                          <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:${interval}`]}</p>
-                        )}
-                        {chartStatus[`${trade.groupKey}:static:${interval}`] && (
-                          <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
-                        )}
-
                         <details className="rounded-xl border border-slate-200 bg-slate-50">
                           <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-700">
                             Execution Details ({trade.executions.length})
@@ -437,6 +395,48 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                             </Table>
                           </div>
                         </details>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          {CHART_INTERVALS.map((option) => (
+                            <Button
+                              key={option.value}
+                              size="sm"
+                              variant={interval === option.value ? "default" : "outline"}
+                              onClick={async () => {
+                                setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
+                                await Promise.all([ensureCandles(trade, option.value), ensureStaticCandles(trade, option.value)]);
+                              }}
+                            >
+                              {option.label}
+                            </Button>
+                          ))}
+                        </div>
+                        <CandlestickWithMarkers
+                          candles={allCandles}
+                          markers={markersInRange}
+                          height={620}
+                          annotationStorageKey={`${trade.groupKey}:${interval}`}
+                        />
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
+                          <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
+                        </div>
+                        {matchedExecutions < trade.executions.length && (
+                          <p className="text-xs text-slate-500">
+                            Some execution markers are outside the currently loaded {interval} candle range.
+                          </p>
+                        )}
+                        {staticMatchedExecutions < trade.executions.length && (
+                          <p className="text-xs text-slate-500">
+                            Some execution markers are outside the static daily fallback candle range.
+                          </p>
+                        )}
+                        {chartStatus[`${trade.groupKey}:${interval}`] && (
+                          <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:${interval}`]}</p>
+                        )}
+                        {chartStatus[`${trade.groupKey}:static:${interval}`] && (
+                          <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
+                        )}
 
                         <div>
                           <p className="mb-2 text-sm font-medium">Notes</p>
