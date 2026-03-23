@@ -17,6 +17,17 @@ function dedupeCandles(rows: Candle[]) {
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
+function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleTimeframe) {
+  const intervalSeconds = timeframe === "5m" ? 5 * 60 : timeframe === "1h" ? 60 * 60 : 24 * 60 * 60;
+  const period1 = Math.floor(fromRaw / intervalSeconds) * intervalSeconds;
+  const period2 =
+    timeframe === "1d"
+      ? (Math.floor(toRaw / intervalSeconds) + 1) * intervalSeconds
+      : Math.ceil(toRaw / intervalSeconds) * intervalSeconds;
+
+  return { period1, period2: Math.max(period1 + intervalSeconds, period2) };
+}
+
 function trimTrailingDuplicateDailyCandle(rows: Candle[]) {
   if (rows.length < 2) return rows;
 
@@ -28,8 +39,7 @@ function trimTrailingDuplicateDailyCandle(rows: Candle[]) {
       last.open === previous.open &&
       last.high === previous.high &&
       last.low === previous.low &&
-      last.close === previous.close &&
-      (last.volume ?? 0) === (previous.volume ?? 0);
+      last.close === previous.close;
 
     if (!looksDuplicated) {
       break;
@@ -132,8 +142,9 @@ export async function GET(req: NextRequest) {
   const yahooUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   yahooUrl.searchParams.set("interval", config.interval);
   if (hasCustomRange) {
-    yahooUrl.searchParams.set("period1", String(Math.floor(fromRaw)));
-    yahooUrl.searchParams.set("period2", String(Math.ceil(toRaw)));
+    const normalizedRange = normalizedYahooRange(fromRaw, toRaw, timeframe);
+    yahooUrl.searchParams.set("period1", String(normalizedRange.period1));
+    yahooUrl.searchParams.set("period2", String(normalizedRange.period2));
   } else {
     yahooUrl.searchParams.set("range", config.range);
   }
