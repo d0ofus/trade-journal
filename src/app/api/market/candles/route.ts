@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-type Candle = { time: number; open: number; high: number; low: number; close: number };
+type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type CandleTimeframe = "5m" | "1h" | "1d";
 
 const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: string }> = {
@@ -19,6 +19,7 @@ function parseCsvRows(csvText: string) {
     high: headers.indexOf("high"),
     low: headers.indexOf("low"),
     close: headers.indexOf("close"),
+    volume: headers.indexOf("volume"),
   };
 
   return lines.slice(1).flatMap((line) => {
@@ -31,6 +32,7 @@ function parseCsvRows(csvText: string) {
       high: Number(cols[idx.high]),
       low: Number(cols[idx.low]),
       close: Number(cols[idx.close]),
+      volume: idx.volume >= 0 ? Number(cols[idx.volume]) : undefined,
     };
     if (!row.time || [row.open, row.high, row.low, row.close].some((v) => !Number.isFinite(v))) return [];
     return [row];
@@ -38,7 +40,7 @@ function parseCsvRows(csvText: string) {
 }
 
 function parseYahooRows(payload: unknown) {
-  const result = (payload as { chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ open?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null>; close?: Array<number | null> }> } }> } })?.chart?.result?.[0];
+  const result = (payload as { chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ open?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null>; close?: Array<number | null>; volume?: Array<number | null> }> } }> } })?.chart?.result?.[0];
   const timestamps = result?.timestamp ?? [];
   const quote = result?.indicators?.quote?.[0];
   if (!quote || timestamps.length === 0) return [] as Candle[];
@@ -47,6 +49,7 @@ function parseYahooRows(payload: unknown) {
   const high = quote.high ?? [];
   const low = quote.low ?? [];
   const close = quote.close ?? [];
+  const volume = quote.volume ?? [];
   const size = Math.min(timestamps.length, open.length, high.length, low.length, close.length);
 
   const rows: Candle[] = [];
@@ -57,6 +60,7 @@ function parseYahooRows(payload: unknown) {
       high: high[i],
       low: low[i],
       close: close[i],
+      volume: volume[i],
     };
     if (
       Number.isFinite(row.time) &&
@@ -71,6 +75,7 @@ function parseYahooRows(payload: unknown) {
         high: Number(row.high),
         low: Number(row.low),
         close: Number(row.close),
+        volume: Number.isFinite(row.volume) ? Number(row.volume) : undefined,
       });
     }
   }
