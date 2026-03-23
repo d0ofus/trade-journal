@@ -17,6 +17,30 @@ function dedupeCandles(rows: Candle[]) {
   return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
+function trimTrailingDuplicateDailyCandle(rows: Candle[]) {
+  if (rows.length < 2) return rows;
+
+  const trimmed = [...rows];
+  while (trimmed.length >= 2) {
+    const last = trimmed[trimmed.length - 1];
+    const previous = trimmed[trimmed.length - 2];
+    const looksDuplicated =
+      last.open === previous.open &&
+      last.high === previous.high &&
+      last.low === previous.low &&
+      last.close === previous.close &&
+      (last.volume ?? 0) === (previous.volume ?? 0);
+
+    if (!looksDuplicated) {
+      break;
+    }
+
+    trimmed.pop();
+  }
+
+  return trimmed;
+}
+
 function parseCsvRows(csvText: string) {
   const lines = csvText.split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [] as Candle[];
@@ -119,7 +143,9 @@ export async function GET(req: NextRequest) {
   const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
   if (yahooRes.ok) {
     const payload = await yahooRes.json();
-    const rows = dedupeCandles(parseYahooRows(payload));
+    const rows = timeframe === "1d"
+      ? trimTrailingDuplicateDailyCandle(dedupeCandles(parseYahooRows(payload)))
+      : dedupeCandles(parseYahooRows(payload));
     if (rows.length > 0) {
       return NextResponse.json({ symbol, timeframe, candles: rows.slice(-limit) });
     }
@@ -133,7 +159,7 @@ export async function GET(req: NextRequest) {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) continue;
       const csvText = await res.text();
-      const rows = dedupeCandles(parseCsvRows(csvText));
+      const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
       if (rows.length > 0) {
         return NextResponse.json({ symbol: candidate.toUpperCase(), timeframe, candles: rows.slice(-limit) });
       }
