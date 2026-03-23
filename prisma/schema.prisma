@@ -91,6 +91,7 @@ model Execution {
   tradeNote    TradeNote?
   tags         ExecutionTag[]
   closedTradeExecutions ClosedTradeExecution[]
+  analytics    ExecutionAnalytics?
 
   @@index([executedAt])
   @@index([accountId, executedAt])
@@ -237,6 +238,18 @@ model ClosedTradeExecution {
   @@index([closedTradeGroupKey, sortOrder])
   @@index([executionId])
   @@index([side, executedAt])
+}
+
+model ExecutionAnalytics {
+  executionId      String    @id
+  execution        Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  realizedPnl      Float
+  grossRealizedPnl Float
+  cumulativePnl    Float
+  matchedQuantity  Float
+  avgHoldTimeMs    Float
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 }
 
 model SymbolNote {

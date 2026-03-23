@@ -3,6 +3,7 @@ import { parse as parseSync } from "csv-parse/sync";
 import { parseCsvWithMapping, previewCsv } from "@/lib/import/ibkr-parser";
 import { filterOutIdealFxCommissionRows, parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
 import { refreshMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
+import { refreshMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
 import { importParsedFile } from "@/lib/server/import-service";
 
 async function readFiles(formData: FormData) {
@@ -209,6 +210,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (shouldRefreshClosedTrades) {
+        await refreshMaterializedExecutionAnalytics();
         await refreshMaterializedClosedTrades();
       }
 
