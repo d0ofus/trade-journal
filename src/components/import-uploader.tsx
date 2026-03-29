@@ -129,19 +129,19 @@ export function ImportUploader() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80">
           <CardTitle>Upload IBKR CSV Files</CardTitle>
           <CardDescription>Upload Activity Statement exports for trades, positions, and daily metrics.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4 pt-6">
           <Input
             type="file"
             accept=".csv,text/csv"
             multiple
             onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
           />
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button onClick={() => startTransition(previewUpload)} disabled={pending || files.length === 0}>
               {pending ? "Working..." : "Preview"}
             </Button>
@@ -153,29 +153,35 @@ export function ImportUploader() {
               Validate & Import
             </Button>
           </div>
-          {message && <p className="text-sm text-slate-600">{message}</p>}
+          {message ? (
+            <p className="rounded-[18px] border border-slate-200/80 bg-white/80 px-4 py-3 text-sm text-slate-600">
+              {message}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 
       {previews.map((preview) => (
-        <Card key={preview.filename}>
-          <CardHeader>
+        <Card key={preview.filename} className="overflow-hidden">
+          <CardHeader className="border-b border-slate-200/80">
             <CardTitle className="text-base">{preview.filename}</CardTitle>
             <CardDescription>
               Detected type: {preview.kind}
               {typeof preview.totalRows === "number" ? ` | Rows detected: ${preview.totalRows}` : ""}
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {preview.errors.length > 0 && (
-              <div className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+          <CardContent className="space-y-4 pt-6">
+            {preview.errors.length > 0 ? (
+              <div className="rounded-[18px] border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                 {preview.errors.join(" | ")}
               </div>
-            )}
-            <div className="grid gap-2 md:grid-cols-2">
+            ) : null}
+            <div className="grid gap-3 md:grid-cols-2">
               {Object.entries(preview.mapping).map(([field, column]) => (
                 <label key={field} className="text-sm">
-                  <span className="mb-1 block font-medium text-slate-700">{field}</span>
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {field}
+                  </span>
                   <Input
                     value={column ?? ""}
                     onChange={(event) => {
@@ -192,12 +198,12 @@ export function ImportUploader() {
                 </label>
               ))}
             </div>
-            <div className="overflow-auto rounded-md border border-slate-200">
+            <div className="overflow-auto rounded-[20px] border border-slate-200/80 bg-white/80">
               <table className="min-w-full text-xs">
-                <thead className="bg-slate-100">
+                <thead className="bg-slate-900/[0.035]">
                   <tr>
                     {preview.headers.map((header) => (
-                      <th key={header} className="px-2 py-1 text-left font-semibold text-slate-700">
+                      <th key={header} className="px-2 py-2 text-left font-semibold text-slate-700">
                         {header}
                       </th>
                     ))}
@@ -205,9 +211,9 @@ export function ImportUploader() {
                 </thead>
                 <tbody>
                   {preview.rows.map((row, idx) => (
-                    <tr key={idx} className="border-t border-slate-200">
+                    <tr key={idx} className="border-t border-slate-200/80">
                       {preview.headers.map((header) => (
-                        <td key={header} className="px-2 py-1 text-slate-700">
+                        <td key={header} className="px-2 py-1.5 text-slate-700">
                           {row[header]}
                         </td>
                       ))}
@@ -220,34 +226,34 @@ export function ImportUploader() {
         </Card>
       ))}
 
-      {importResults.length > 0 && (
-        <Card>
-          <CardHeader>
+      {importResults.length > 0 ? (
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b border-slate-200/80">
             <CardTitle className="text-base">Latest Import Performance</CardTitle>
             <CardDescription>Per-file throughput from the most recent import run.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="overflow-auto rounded-md border border-slate-200">
+          <CardContent className="pt-6">
+            <div className="overflow-auto rounded-[20px] border border-slate-200/80 bg-white/80">
               <table className="min-w-full text-xs">
-                <thead className="bg-slate-100">
+                <thead className="bg-slate-900/[0.035]">
                   <tr>
-                    <th className="px-2 py-1 text-left font-semibold text-slate-700">File</th>
-                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Seen</th>
-                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Imported</th>
-                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Skipped</th>
-                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Duration</th>
-                    <th className="px-2 py-1 text-left font-semibold text-slate-700">Throughput</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">File</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Seen</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Imported</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Skipped</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Duration</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Throughput</th>
                   </tr>
                 </thead>
                 <tbody>
                   {importResults.map((result) => (
-                    <tr key={result.filename} className="border-t border-slate-200">
-                      <td className="px-2 py-1 text-slate-700">{result.filename}</td>
-                      <td className="px-2 py-1 text-slate-700">{result.rowsSeen.toLocaleString()}</td>
-                      <td className="px-2 py-1 text-slate-700">{result.rowsImported.toLocaleString()}</td>
-                      <td className="px-2 py-1 text-slate-700">{result.rowsSkipped.toLocaleString()}</td>
-                      <td className="px-2 py-1 text-slate-700">{formatDurationMs(result.durationMs)}</td>
-                      <td className="px-2 py-1 text-slate-700">{formatRate(result.rowsPerSecond)}</td>
+                    <tr key={result.filename} className="border-t border-slate-200/80">
+                      <td className="px-2 py-1.5 text-slate-700">{result.filename}</td>
+                      <td className="px-2 py-1.5 text-slate-700">{result.rowsSeen.toLocaleString()}</td>
+                      <td className="px-2 py-1.5 text-slate-700">{result.rowsImported.toLocaleString()}</td>
+                      <td className="px-2 py-1.5 text-slate-700">{result.rowsSkipped.toLocaleString()}</td>
+                      <td className="px-2 py-1.5 text-slate-700">{formatDurationMs(result.durationMs)}</td>
+                      <td className="px-2 py-1.5 text-slate-700">{formatRate(result.rowsPerSecond)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -255,7 +261,7 @@ export function ImportUploader() {
             </div>
           </CardContent>
         </Card>
-      )}
+      ) : null}
     </div>
   );
 }

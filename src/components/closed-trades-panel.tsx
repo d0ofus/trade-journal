@@ -232,23 +232,30 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
   }
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold">Closed Trades</h3>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h3 className="text-xl font-semibold tracking-tight text-slate-950">Closed Trades</h3>
+          <p className="text-sm text-slate-500">Expand any trade to inspect executions, market context, and review notes.</p>
+        </div>
+      </div>
       {groupedByDate.length === 0 && <p className="text-sm text-slate-500">No closed trades found in filter range.</p>}
 
       {groupedByDate.map(({ date, rows, monthLabel, startsNewMonth }) => (
         <div key={date} className="space-y-3">
           {startsNewMonth && (
-            <div className="sticky top-0 z-10 flex items-center gap-3 bg-slate-100/95 px-1 py-1 backdrop-blur">
-              <div className="h-px flex-1 bg-slate-300" />
-              <p className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-700">
+            <div className="sticky top-0 z-10 flex items-center gap-3 bg-[#f7f9fc]/95 px-1 py-2 backdrop-blur">
+              <div className="h-px flex-1 bg-slate-300/80" />
+              <p className="rounded-full border border-slate-200 bg-white px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-700 shadow-sm">
                 {monthLabel}
               </p>
-              <div className="h-px flex-1 bg-slate-300" />
+              <div className="h-px flex-1 bg-slate-300/80" />
             </div>
           )}
-          <div className="rounded-xl border border-slate-200 bg-white">
-            <div className="border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900">{date}</div>
+          <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(248,250,252,0.94))] shadow-[0_18px_40px_-30px_rgba(15,23,42,0.28)]">
+            <div className="border-b border-sky-100 bg-[linear-gradient(90deg,rgba(14,165,233,0.14),rgba(8,145,178,0.05))] px-5 py-3 text-sm font-semibold text-sky-950">
+              {date}
+            </div>
             <div className="divide-y divide-slate-200">
               {rows.map((trade) => {
               const open = expanded === trade.groupKey;
@@ -331,10 +338,10 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                 : true;
 
                 return (
-                  <div key={trade.groupKey} className="p-4">
+                  <div key={trade.groupKey} className="p-5">
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between text-left"
+                      className="flex w-full items-center justify-between gap-4 rounded-[24px] border border-slate-200/80 bg-white/70 px-4 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] hover:border-slate-300"
                       onClick={async () => {
                         const next = open ? null : trade.groupKey;
                         setExpanded(next);
@@ -343,24 +350,30 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                         }
                       }}
                     >
-                      <div>
-                        <p className="font-medium">{trade.symbol}</p>
-                        <p className="text-xs text-slate-500">
-                          {trade.executions.length} executions | Commissions {formatCurrency(trade.totalCommission)}
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-lg font-semibold tracking-tight text-slate-950">{trade.symbol}</p>
+                          <Badge variant={trade.realizedPnl >= 0 ? "success" : "danger"}>{trade.realizedPnl >= 0 ? "Winner" : "Loser"}</Badge>
+                        </div>
+                        <p className="text-sm text-slate-500">
+                          {trade.executions.length} executions | Opened {trade.openingQuantity} | Closed {trade.closingQuantity}
+                        </p>
+                        <p className="text-xs uppercase tracking-[0.18em] text-slate-400">
+                          Commissions {formatCurrency(trade.totalCommission)} | Account {trade.accountCode}
                         </p>
                       </div>
-                      <p className={trade.realizedPnl >= 0 ? "font-semibold text-emerald-600" : "font-semibold text-red-600"}>
+                      <p className={trade.realizedPnl >= 0 ? "text-2xl font-semibold tracking-tight text-emerald-600" : "text-2xl font-semibold tracking-tight text-red-600"}>
                         {formatCurrency(trade.realizedPnl)}
                       </p>
                     </button>
 
                     {open && (
-                      <div className="mt-4 space-y-4">
-                        <details className="rounded-xl border border-slate-200 bg-slate-50">
-                          <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-700">
+                      <div className="mt-5 space-y-5">
+                        <details className="rounded-[24px] border border-slate-200/80 bg-white/80">
+                          <summary className="cursor-pointer px-5 py-4 text-sm font-semibold text-slate-700">
                             Execution Details ({trade.executions.length})
                           </summary>
-                          <div className="border-t border-slate-200 bg-white p-2">
+                          <div className="border-t border-slate-200/80 bg-white p-3">
                             <Table>
                               <TableHeader>
                                 <TableRow>
@@ -418,15 +431,64 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                             </Button>
                           ))}
                         </div>
-                        <CandlestickWithMarkers
-                          candles={allCandles}
-                          markers={markersInRange}
-                          height={620}
-                          annotationStorageKey={`${trade.groupKey}:${interval}`}
-                        />
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium text-slate-700">Static Fallback ({interval}, Free Data)</p>
-                          <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
+                        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.95fr)]">
+                          <div className="space-y-4">
+                            <CandlestickWithMarkers
+                              candles={allCandles}
+                              markers={markersInRange}
+                              height={620}
+                              annotationStorageKey={`${trade.groupKey}:${interval}`}
+                            />
+                            <div className="space-y-2">
+                              <p className="text-sm font-semibold text-slate-700">Static Fallback ({interval}, Free Data)</p>
+                              <CandlestickWithMarkers candles={staticFallbackCandles} markers={staticMarkersInRange} height={360} readOnly />
+                            </div>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-5">
+                              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Trade Summary</p>
+                              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                                <div>
+                                  <p className="text-xs text-slate-500">Date</p>
+                                  <p className="text-sm font-medium text-slate-800">{trade.tradeDate}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Account</p>
+                                  <p className="text-sm font-medium text-slate-800">{trade.accountCode}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Realized P&amp;L</p>
+                                  <p className={trade.realizedPnl >= 0 ? "text-sm font-semibold text-emerald-600" : "text-sm font-semibold text-red-600"}>
+                                    {formatCurrency(trade.realizedPnl)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Commission</p>
+                                  <p className="text-sm font-medium text-slate-800">{formatCurrency(trade.totalCommission)}</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-5">
+                              <p className="mb-2 text-sm font-semibold text-slate-900">Notes</p>
+                              <p className="mb-3 text-sm text-slate-500">Capture setup quality, decision clarity, and what to repeat.</p>
+                              <RichTextEditor
+                                value={tradeNotes[trade.groupKey] ?? ""}
+                                onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
+                                placeholder="Add setup quality, entry/exit rationale, and improvements."
+                              />
+                              <Button
+                                size="sm"
+                                className="mt-3"
+                                disabled={pending}
+                                onClick={() => saveTradeNote(trade)}
+                              >
+                                Save Notes
+                              </Button>
+                              {status[trade.groupKey] && <p className="mt-3 text-xs text-slate-600">{status[trade.groupKey]}</p>}
+                            </div>
+                          </div>
                         </div>
                         {!executionsInLoadedRange && (
                           <p className="text-xs text-slate-500">
@@ -444,25 +506,6 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                         {chartStatus[`${trade.groupKey}:static:${interval}`] && (
                           <p className="text-xs text-slate-500">{chartStatus[`${trade.groupKey}:static:${interval}`]}</p>
                         )}
-
-                        <div>
-                          <p className="mb-2 text-sm font-medium">Notes</p>
-                          <RichTextEditor
-                            value={tradeNotes[trade.groupKey] ?? ""}
-                            onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
-                            placeholder="Add setup quality, entry/exit rationale, and improvements."
-                          />
-                          <Button
-                            size="sm"
-                            className="mt-2"
-                            disabled={pending}
-                            onClick={() => saveTradeNote(trade)}
-                          >
-                            Save Notes
-                          </Button>
-                        </div>
-
-                        {status[trade.groupKey] && <p className="text-xs text-slate-600">{status[trade.groupKey]}</p>}
                       </div>
                     )}
                   </div>

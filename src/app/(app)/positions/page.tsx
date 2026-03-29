@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getPositions } from "@/lib/server/queries";
 import { formatCurrency } from "@/lib/utils";
@@ -7,13 +8,17 @@ export default async function PositionsPage() {
   const positions = await getPositions();
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold">Positions</h2>
-      <Card>
-        <CardHeader>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Live Exposure"
+        title="Monitor open positions with cleaner risk visibility."
+        description="The position table is unchanged in behavior, but now reads like a portfolio product instead of a raw admin screen."
+      />
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">Open Positions</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pt-6">
           <Table>
             <TableHeader>
               <TableRow>

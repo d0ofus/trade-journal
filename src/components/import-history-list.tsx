@@ -53,7 +53,7 @@ export function ImportHistoryList({ batches }: { batches: ImportBatchItem[] }) {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor="import-timezone" className="text-xs text-slate-600">
           Timezone
@@ -74,8 +74,8 @@ export function ImportHistoryList({ batches }: { batches: ImportBatchItem[] }) {
       </div>
 
       {batches.map((batch) => (
-        <div key={batch.id} className="rounded border border-slate-200 px-3 py-2">
-          <p className="font-medium">{batch.filename}</p>
+        <div key={batch.id} className="rounded-[20px] border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
+          <p className="font-medium text-slate-900">{batch.filename}</p>
           <p className="text-slate-600">
             {batch.fileType} | seen {batch.rowsSeen}, imported {batch.rowsImported}, skipped {batch.rowsSkipped}
           </p>

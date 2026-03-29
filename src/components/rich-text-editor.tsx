@@ -37,7 +37,7 @@ export function RichTextEditor({ value, onChange, placeholder }: Props) {
         contentEditable
         dir="ltr"
         suppressContentEditableWarning
-        className="min-h-28 rounded-md border border-slate-300 bg-white p-3 text-left text-sm"
+        className="min-h-32 rounded-[22px] border border-slate-200/80 bg-white/90 p-4 text-left text-sm text-slate-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] focus:outline-none"
         onFocus={() => {
           focusedRef.current = true;
         }}
