@@ -1,9 +1,11 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { ArrowDownToLine, CandlestickChart } from "lucide-react";
 import { ClosedTradesPanel } from "@/components/closed-trades-panel";
 import { TradesFilters } from "@/components/trades-filters";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getClosedTrades, getTrades } from "@/lib/server/queries";
 import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
@@ -33,16 +35,24 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
   };
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold">Trades</h2>
-      <div className="flex flex-wrap gap-2">
-        <Link className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50" href="#closed-trades-section">
-          Closed Trades
-        </Link>
-        <Link className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50" href="#trades-list-section">
-          Trades List
-        </Link>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Execution Ledger"
+        title="Review every filled order and every closed idea."
+        description="Filter by symbol, strategy, side, and date ranges without changing the underlying ingestion or PnL logic."
+        actions={
+          <>
+            <Link className="rounded-2xl border border-white/14 bg-white/10 px-4 py-3 text-sm font-medium text-white backdrop-blur hover:bg-white/16" href="#closed-trades-section">
+              <CandlestickChart className="mr-2 inline h-4 w-4" />
+              Closed Trades
+            </Link>
+            <Link className="rounded-2xl border border-white/14 bg-white/10 px-4 py-3 text-sm font-medium text-white backdrop-blur hover:bg-white/16" href="#trades-list-section">
+              <ArrowDownToLine className="mr-2 inline h-4 w-4" />
+              Trades List
+            </Link>
+          </>
+        }
+      />
 
       <TradesFilters filters={filters} />
 
@@ -90,6 +100,12 @@ async function TradesTableSection({
   page: number;
 }) {
   const trades = await getTrades({ ...filters, page, pageSize: 50 });
+  const tradeRows = trades.rows as Array<
+    (typeof trades.rows)[number] & {
+      account?: { ibkrAccount: string };
+      instrument?: { symbol: string };
+    }
+  >;
   const baseParams = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
     if (value) baseParams.set(key, value);
@@ -110,10 +126,10 @@ async function TradesTableSection({
   }
 
   return (
-    <Card id="trades-list-section">
+    <Card id="trades-list-section" className="overflow-hidden">
       <CardContent className="pt-6">
         <div className="mb-4 flex justify-end">
-          <Link className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50" href="#closed-trades-section">
+          <Link className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-white" href="#closed-trades-section">
             Back To Closed Trades
           </Link>
         </div>
@@ -135,11 +151,11 @@ async function TradesTableSection({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {trades.rows.map((trade) => (
+            {tradeRows.map((trade) => (
               <TableRow key={trade.id} className={sideRowClassName(trade.side)}>
                 <TableCell>{trade.executedAt.toISOString().replace("T", " ").slice(0, 16)}</TableCell>
-                <TableCell>{trade.account.ibkrAccount}</TableCell>
-                <TableCell>{trade.instrument.symbol}</TableCell>
+                <TableCell>{trade.account?.ibkrAccount ?? trade.accountId}</TableCell>
+                <TableCell>{trade.instrument?.symbol ?? trade.instrumentId}</TableCell>
                 <TableCell>
                   <Badge variant={sideBadgeVariant(trade.side)} className="min-w-16 justify-center">
                     {trade.side}
@@ -157,7 +173,7 @@ async function TradesTableSection({
                   {formatCurrency(trade.realizedPnl)}
                 </TableCell>
                 <TableCell>
-                  <Link className="text-blue-600 hover:underline" href={`/trade/${trade.id}`}>
+                  <Link className="font-medium text-sky-700 hover:text-sky-800 hover:underline" href={`/trade/${trade.id}`}>
                     Open
                   </Link>
                 </TableCell>
@@ -165,35 +181,35 @@ async function TradesTableSection({
             ))}
           </TableBody>
         </Table>
-        <div className="mt-4 flex items-center justify-between text-sm text-slate-600">
+        <div className="mt-5 flex flex-col gap-3 text-sm text-slate-600 lg:flex-row lg:items-center lg:justify-between">
           <p>
             Page {trades.page} of {trades.totalPages} | {trades.total} trades
           </p>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {trades.page > 1 ? (
-              <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(1)}>
+              <Link className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 font-medium hover:bg-white" href={pageHref(1)}>
                 Go to first
               </Link>
             ) : (
-              <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Go to first</span>
+              <span className="rounded-2xl border border-slate-200 px-3 py-2 text-slate-400">Go to first</span>
             )}
             {trades.page > 1 ? (
-              <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.page - 1)}>
+              <Link className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 font-medium hover:bg-white" href={pageHref(trades.page - 1)}>
                 Previous
               </Link>
             ) : (
-              <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Previous</span>
+              <span className="rounded-2xl border border-slate-200 px-3 py-2 text-slate-400">Previous</span>
             )}
             {startPage > 1 && <span className="px-1 text-slate-400">...</span>}
             {pageNumbers.map((pageNumber) =>
               pageNumber === trades.page ? (
-                <span key={pageNumber} className="rounded border border-slate-900 bg-slate-900 px-3 py-1 font-semibold text-white">
+                <span key={pageNumber} className="rounded-2xl border border-slate-900 bg-slate-900 px-3 py-2 font-semibold text-white">
                   {pageNumber}
                 </span>
               ) : (
                 <Link
                   key={pageNumber}
-                  className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50"
+                  className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 font-medium hover:bg-white"
                   href={pageHref(pageNumber)}
                 >
                   {pageNumber}
@@ -202,18 +218,18 @@ async function TradesTableSection({
             )}
             {endPage < trades.totalPages && <span className="px-1 text-slate-400">...</span>}
             {trades.page < trades.totalPages ? (
-              <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.page + 1)}>
+              <Link className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 font-medium hover:bg-white" href={pageHref(trades.page + 1)}>
                 Next
               </Link>
             ) : (
-              <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Next</span>
+              <span className="rounded-2xl border border-slate-200 px-3 py-2 text-slate-400">Next</span>
             )}
             {trades.page < trades.totalPages ? (
-              <Link className="rounded border border-slate-300 px-3 py-1 hover:bg-slate-50" href={pageHref(trades.totalPages)}>
+              <Link className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 font-medium hover:bg-white" href={pageHref(trades.totalPages)}>
                 Go to last
               </Link>
             ) : (
-              <span className="rounded border border-slate-200 px-3 py-1 text-slate-400">Go to last</span>
+              <span className="rounded-2xl border border-slate-200 px-3 py-2 text-slate-400">Go to last</span>
             )}
           </div>
         </div>
@@ -226,8 +242,8 @@ function ClosedTradesFallback() {
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">Closed Trades</h3>
-      <div className="h-40 animate-pulse rounded-xl border border-slate-200 bg-white" />
-      <div className="h-40 animate-pulse rounded-xl border border-slate-200 bg-white" />
+      <div className="h-40 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
+      <div className="h-40 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
     </div>
   );
 }
@@ -237,7 +253,7 @@ function TradesTableFallback() {
     <Card id="trades-list-section">
       <CardContent className="space-y-4 pt-6">
         <div className="h-8 w-40 animate-pulse rounded bg-slate-200" />
-        <div className="h-96 animate-pulse rounded-xl border border-slate-200 bg-white" />
+        <div className="h-96 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
       </CardContent>
     </Card>
   );

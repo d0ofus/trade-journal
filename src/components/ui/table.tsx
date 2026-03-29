@@ -3,14 +3,14 @@ import { cn } from "@/lib/utils";
 
 export function Table({ className, ...props }: React.HTMLAttributes<HTMLTableElement>) {
   return (
-    <div className="relative w-full overflow-auto">
+    <div className="relative w-full overflow-auto rounded-[20px] border border-slate-200/80 bg-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
       <table className={cn("w-full caption-bottom text-sm", className)} {...props} />
     </div>
   );
 }
 
 export function TableHeader({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className={cn("[&_tr]:border-b", className)} {...props} />;
+  return <thead className={cn("bg-slate-900/[0.035] [&_tr]:border-b", className)} {...props} />;
 }
 
 export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
@@ -18,7 +18,15 @@ export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTabl
 }
 
 export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
-  return <tr className={cn("border-b border-slate-200 transition-colors hover:bg-slate-50", className)} {...props} />;
+  return (
+    <tr
+      className={cn(
+        "border-b border-slate-200/80 transition-colors hover:bg-sky-50/40",
+        className,
+      )}
+      {...props}
+    />
+  );
 }
 
 export function TableHead({ className, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) {
@@ -31,5 +39,5 @@ export function TableHead({ className, ...props }: React.ThHTMLAttributes<HTMLTa
 }
 
 export function TableCell({ className, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={cn("p-2 align-middle [&:has([role=checkbox])]:pr-0", className)} {...props} />;
+  return <td className={cn("p-3 align-middle text-slate-700 [&:has([role=checkbox])]:pr-0", className)} {...props} />;
 }

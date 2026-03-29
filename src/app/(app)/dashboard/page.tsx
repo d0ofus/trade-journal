@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { format, startOfYear, subMonths } from "date-fns";
 import { DashboardCharts } from "@/components/dashboard-charts";
+import { PageHeader } from "@/components/ui/page-header";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -94,19 +95,24 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
   const rangeKey = `${range.preset}:${range.from ?? "none"}:${range.to ?? "none"}`;
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold">Dashboard</h2>
-          <p className="text-sm text-slate-600">Performance overview for: {range.label}</p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Performance Overview"
+        title="Trading analytics, framed like a premium desk platform."
+        description={`Live review surface for ${range.label.toLowerCase()} performance, capital efficiency, and execution quality.`}
+        actions={
+          <div className="rounded-2xl border border-white/12 bg-white/10 px-4 py-3 text-right shadow-inner shadow-white/10 backdrop-blur">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/65">Range</p>
+            <p className="mt-1 text-lg font-semibold text-white">{range.label}</p>
+          </div>
+        }
+      />
 
-      <Card>
-        <CardHeader className="pb-3">
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80 pb-4">
           <CardTitle className="text-base">Date Range</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4 pt-6">
           <div className="flex flex-wrap gap-2">
             <Link href="/dashboard?preset=all" className={buttonVariants({ size: "sm", variant: range.preset === "all" ? "default" : "outline" })}>
               All Time
@@ -121,17 +127,17 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
               Past 6 Months
             </Link>
           </div>
-          <form key={rangeKey} className="flex flex-wrap items-end gap-3" method="get">
+          <form key={rangeKey} className="grid gap-3 md:grid-cols-[minmax(0,220px)_minmax(0,220px)_auto]" method="get">
             <input name="preset" type="hidden" value="custom" />
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-slate-600">From</p>
+            <label className="space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">From</p>
               <Input name="from" type="date" defaultValue={range.from ?? ""} />
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-slate-600">To</p>
+            </label>
+            <label className="space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">To</p>
               <Input name="to" type="date" defaultValue={range.to ?? ""} />
-            </div>
-            <Button size="sm" type="submit">
+            </label>
+            <Button size="sm" type="submit" className="md:self-end">
               Apply
             </Button>
           </form>
@@ -174,12 +180,12 @@ async function DashboardContent({ from, to }: { from?: string; to?: string }) {
     <>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {cards.map((card) => (
-          <Card key={card.label}>
+          <Card key={card.label} className="overflow-hidden">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500">{card.label}</CardTitle>
+              <CardTitle className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{card.label}</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-2xl font-bold text-slate-900">{card.value}</p>
+              <p className="text-2xl font-semibold tracking-tight text-slate-950">{card.value}</p>
             </CardContent>
           </Card>
         ))}
@@ -195,12 +201,12 @@ function DashboardContentFallback() {
     <>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {Array.from({ length: 6 }, (_, index) => (
-          <div key={index} className="h-32 animate-pulse rounded-xl border border-slate-200 bg-white" />
+          <div key={index} className="h-32 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
         ))}
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
-        <div className="h-72 animate-pulse rounded-xl border border-slate-200 bg-white" />
+        <div className="h-72 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
+        <div className="h-72 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
       </div>
     </>
   );

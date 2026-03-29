@@ -14,6 +14,7 @@ import {
 } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 import { getCalendarPerformance } from "@/lib/server/queries";
 import { formatCurrency } from "@/lib/utils";
 
@@ -72,20 +73,24 @@ export default async function CalendarPage(props: { searchParams: SearchParams }
   const yearLabel = format(selectedDate, "yyyy");
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold">Calendar Journal</h2>
-      <Card>
-        <CardHeader>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Calendar Review"
+        title="Scan performance by year, month, and day."
+        description="This keeps your existing performance aggregation intact while turning the calendar into a cleaner planning and review surface."
+      />
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle className="text-base">Performance Calendar</CardTitle>
             <div className="flex items-center gap-2">
-              <Link href={viewHref("year", selectedDate)} className={view === "year" ? "rounded-md bg-slate-900 px-3 py-1 text-sm text-white" : "rounded-md border border-slate-300 px-3 py-1 text-sm text-slate-700"}>
+              <Link href={viewHref("year", selectedDate)} className={view === "year" ? "rounded-2xl bg-slate-900 px-4 py-2 text-sm text-white" : "rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-sm font-medium text-slate-700"}>
                 Year
               </Link>
-              <Link href={viewHref("month", selectedDate)} className={view === "month" ? "rounded-md bg-slate-900 px-3 py-1 text-sm text-white" : "rounded-md border border-slate-300 px-3 py-1 text-sm text-slate-700"}>
+              <Link href={viewHref("month", selectedDate)} className={view === "month" ? "rounded-2xl bg-slate-900 px-4 py-2 text-sm text-white" : "rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-sm font-medium text-slate-700"}>
                 Month
               </Link>
-              <Link href={viewHref("day", selectedDate)} className={view === "day" ? "rounded-md bg-slate-900 px-3 py-1 text-sm text-white" : "rounded-md border border-slate-300 px-3 py-1 text-sm text-slate-700"}>
+              <Link href={viewHref("day", selectedDate)} className={view === "day" ? "rounded-2xl bg-slate-900 px-4 py-2 text-sm text-white" : "rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-sm font-medium text-slate-700"}>
                 Day
               </Link>
             </div>
@@ -133,13 +138,13 @@ async function CalendarContent({
   const months = Array.from({ length: 12 }, (_, index) => new Date(selectedDate.getFullYear(), index, 1));
 
   return (
-    <CardContent className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between rounded-md border border-slate-200 bg-slate-50 p-3">
+    <CardContent className="space-y-4 pt-6">
+      <div className="flex flex-wrap items-center justify-between rounded-[24px] border border-slate-200/80 bg-white/80 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
         <div className="flex items-center gap-2">
-          <Link href={viewHref(view, prevDate)} className="rounded-md border border-slate-300 px-2 py-1 text-sm text-slate-700">
+          <Link href={viewHref(view, prevDate)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
             Prev
           </Link>
-          <Link href={viewHref(view, nextDate)} className="rounded-md border border-slate-300 px-2 py-1 text-sm text-slate-700">
+          <Link href={viewHref(view, nextDate)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
             Next
           </Link>
         </div>
@@ -162,7 +167,7 @@ async function CalendarContent({
             const monthKey = format(month, "yyyy-MM");
             const totals = monthlyTotals.get(monthKey) ?? { total: 0, realized: 0, mtm: 0 };
             return (
-              <div key={monthKey} className="rounded-md border border-slate-200 bg-white p-2">
+              <div key={monthKey} className="rounded-[24px] border border-slate-200/80 bg-white/85 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
                 <div className="mb-2 flex items-center justify-between">
                   <Link className="text-sm font-semibold text-blue-700 hover:underline" href={viewHref("month", month)}>
                     {format(month, "MMM")}
@@ -184,7 +189,7 @@ async function CalendarContent({
                       <Link
                         key={`${monthKey}-${key}`}
                         href={viewHref("day", date)}
-                        className={`${dailyPnlClass(row?.total ?? 0)} ${isSameMonth(date, month) ? "" : "opacity-30"} rounded border p-1 text-center text-[10px]`}
+                        className={`${dailyPnlClass(row?.total ?? 0)} ${isSameMonth(date, month) ? "" : "opacity-30"} rounded-xl border p-1.5 text-center text-[10px]`}
                       >
                         <p>{format(date, "d")}</p>
                         <p>{row ? `${Math.round(row.total)}` : "-"}</p>
@@ -215,7 +220,7 @@ async function CalendarContent({
                 <Link
                   key={key}
                   href={viewHref("day", date)}
-                  className={`${dailyPnlClass(row?.total ?? 0)} ${isCurrent ? "" : "opacity-40"} min-h-24 rounded border p-2`}
+                  className={`${dailyPnlClass(row?.total ?? 0)} ${isCurrent ? "" : "opacity-40"} min-h-24 rounded-[20px] border p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]`}
                 >
                   <p className="text-xs font-semibold">{format(date, "d")}</p>
                   <p className="mt-2 text-xs">
@@ -235,7 +240,7 @@ async function CalendarContent({
           </div>
 
           {view === "day" && (
-            <div className="rounded-md border border-slate-200 bg-white p-3">
+            <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
               <div className="mb-2 flex items-center justify-between">
                 <p className="font-semibold">{format(selectedDate, "yyyy-MM-dd")}</p>
                 <p className={(selectedDay?.total ?? 0) >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-red-700"}>
@@ -247,7 +252,7 @@ async function CalendarContent({
               <div className="mt-3 space-y-2">
                 {(selectedDay?.notes.length ?? 0) === 0 && <p className="text-sm text-slate-500">No day notes for this date.</p>}
                 {selectedDay?.notes.map((note) => (
-                  <div key={note.id} className="rounded-md border border-slate-200 p-2">
+                  <div key={note.id} className="rounded-[18px] border border-slate-200/80 p-3">
                     <p className="text-xs font-semibold text-slate-500">{note.accountCode}</p>
                     <p className="text-sm text-slate-700">{note.content || "No note content."}</p>
                     <div className="mt-1 space-x-1">
@@ -271,10 +276,10 @@ async function CalendarContent({
 function CalendarContentFallback() {
   return (
     <CardContent className="space-y-3">
-      <div className="h-20 animate-pulse rounded-md border border-slate-200 bg-slate-50" />
+      <div className="h-20 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {Array.from({ length: 6 }, (_, index) => (
-          <div key={index} className="h-52 animate-pulse rounded-md border border-slate-200 bg-white" />
+          <div key={index} className="h-52 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
         ))}
       </div>
     </CardContent>

@@ -1,6 +1,7 @@
 import { FlexRunButton } from "@/components/flex-run-button";
 import { ImportHistoryList } from "@/components/import-history-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 import { getSettingsData } from "@/lib/server/queries";
 
 export default async function SettingsPage() {
@@ -8,29 +9,33 @@ export default async function SettingsPage() {
   const flexConfigured = Boolean(process.env.IBKR_FLEX_TOKEN && process.env.IBKR_FLEX_QUERY_ID);
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold">Settings</h2>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Operations"
+        title="Configuration and import controls in one polished workspace."
+        description="Account references, Flex automation, and import history remain backed by the same data sources and routes."
+      />
 
-      <Card>
-        <CardHeader>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">Accounts</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm">
+        <CardContent className="space-y-3 pt-6 text-sm">
           {accounts.length === 0 && <p className="text-slate-500">No accounts imported yet.</p>}
           {accounts.map((account) => (
-            <div key={account.id} className="rounded border border-slate-200 px-3 py-2">
-              <p className="font-medium">{account.name}</p>
+            <div key={account.id} className="rounded-[20px] border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
+              <p className="font-medium text-slate-900">{account.name}</p>
               <p className="text-slate-600">{account.ibkrAccount}</p>
             </div>
           ))}
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">IBKR Flex Auto Import</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm">
+        <CardContent className="space-y-3 pt-6 text-sm">
           <p className="text-slate-700">
             Status: {flexConfigured ? "Configured" : "Missing IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID env vars"}
           </p>
@@ -41,11 +46,11 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">Import History</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-2 text-sm">
+        <CardContent className="space-y-2 pt-6 text-sm">
           <ImportHistoryList
             batches={batches.map((batch) => ({
               id: batch.id,

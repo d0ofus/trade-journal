@@ -442,7 +442,7 @@ export function CandlestickWithMarkers({
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[24px] border border-slate-200/80 bg-white/80 px-3 py-3 text-xs text-slate-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
         <div className="flex flex-wrap items-center gap-2">
           {!readOnly && (
             <>
@@ -485,7 +485,7 @@ export function CandlestickWithMarkers({
             Reset View (Alt+R)
           </Button>
         </div>
-        <div className="rounded-full border border-slate-200 bg-white px-3 py-1 font-medium text-slate-700 shadow-sm">
+        <div className="rounded-full border border-slate-200 bg-white px-3 py-1.5 font-medium text-slate-700 shadow-sm">
           {statusBar ? (
             `O ${statusBar.open.toFixed(2)} H ${statusBar.high.toFixed(2)} L ${statusBar.low.toFixed(2)} C ${statusBar.close.toFixed(2)} V ${
               Number.isFinite(statusBar.volume) ? Number(statusBar.volume).toLocaleString() : "-"
@@ -507,7 +507,7 @@ export function CandlestickWithMarkers({
           ))}
         </div>
       </div>
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(241,245,249,0.96))] p-2 shadow-sm">
+      <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(241,245,249,0.98))] p-2 shadow-[0_20px_50px_-34px_rgba(15,23,42,0.28)]">
         <div ref={containerRef} className="w-full rounded-xl" />
       </div>
     </div>

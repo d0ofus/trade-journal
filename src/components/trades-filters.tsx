@@ -168,11 +168,11 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
   }
 
   return (
-    <Card>
-      <CardHeader className="px-4 py-3">
+    <Card className="overflow-hidden">
+      <CardHeader className="border-b border-slate-200/80 px-5 py-4">
         <CardTitle className="text-base">Filters</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3 px-4 pb-4 pt-0">
+      <CardContent className="space-y-4 px-5 pb-5 pt-5">
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
@@ -200,32 +200,50 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
             </Button>
           ))}
         </div>
-        <form ref={formRef} className="grid gap-2 md:grid-cols-6" method="get" onSubmit={handleSubmit}>
-          <Input
-            name="from"
-            type="date"
-            value={draftFrom}
-            onChange={(event) => {
-              setDraftFrom(event.target.value);
-            }}
-          />
-          <Input
-            name="to"
-            type="date"
-            value={draftTo}
-            onChange={(event) => {
-              setDraftTo(event.target.value);
-            }}
-          />
-          <Input name="symbol" placeholder="Symbol" defaultValue={filters.symbol} />
-          <Select name="side" defaultValue={filters.side ?? ""}>
-            <option value="">All sides</option>
-            <option value="BUY">BUY</option>
-            <option value="SELL">SELL</option>
-          </Select>
-          <Input name="tag" placeholder="Tag" defaultValue={filters.tag} />
-          <Input name="strategy" placeholder="Strategy" defaultValue={filters.strategy} />
-          <Button type="submit" size="sm" disabled={isPending} className="md:col-span-6 md:justify-self-start">
+        <form ref={formRef} className="grid gap-3 md:grid-cols-2 xl:grid-cols-6" method="get" onSubmit={handleSubmit}>
+          <label className="space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">From</span>
+            <Input
+              name="from"
+              type="date"
+              value={draftFrom}
+              onChange={(event) => {
+                setDraftFrom(event.target.value);
+              }}
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">To</span>
+            <Input
+              name="to"
+              type="date"
+              value={draftTo}
+              onChange={(event) => {
+                setDraftTo(event.target.value);
+              }}
+            />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Symbol</span>
+            <Input name="symbol" placeholder="AAPL, TSLA..." defaultValue={filters.symbol} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Side</span>
+            <Select name="side" defaultValue={filters.side ?? ""}>
+              <option value="">All sides</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+            </Select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Tag</span>
+            <Input name="tag" placeholder="Momentum, news..." defaultValue={filters.tag} />
+          </label>
+          <label className="space-y-1.5">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Strategy</span>
+            <Input name="strategy" placeholder="Opening drive..." defaultValue={filters.strategy} />
+          </label>
+          <Button type="submit" size="sm" disabled={isPending} className="md:col-span-2 xl:col-span-6 xl:justify-self-start">
             Apply Filters
           </Button>
         </form>

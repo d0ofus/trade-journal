@@ -26,7 +26,7 @@ export function FlexRunButton() {
       <Button variant="outline" onClick={runNow} disabled={pending}>
         {pending ? "Running Flex import..." : "Run Flex Import Now"}
       </Button>
-      {message && <p className="text-xs text-slate-600">{message}</p>}
+      {message && <p className="rounded-[16px] border border-slate-200/80 bg-white/80 px-3 py-2 text-xs text-slate-600">{message}</p>}
     </div>
   );
 }
