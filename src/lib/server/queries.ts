@@ -581,11 +581,41 @@ export async function getTradeDetail(id: string) {
   });
 }
 
-export async function getPositions() {
-  return prisma.position.findMany({
+export async function getOpenPositionAccounts() {
+  const positions = await prisma.position.findMany({
     where: { NOT: { quantity: 0 } },
     select: {
+      account: {
+        select: {
+          ibkrAccount: true,
+        },
+      },
+    },
+  });
+
+  const accountCounts = new Map<string, { accountCode: string; count: number }>();
+  for (const position of positions) {
+    const accountCode = position.account.ibkrAccount;
+    const existing = accountCounts.get(accountCode);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      accountCounts.set(accountCode, { accountCode, count: 1 });
+    }
+  }
+
+  return [...accountCounts.values()].sort((a, b) => a.accountCode.localeCompare(b.accountCode));
+}
+
+export async function getPositions(accountCode?: string) {
+  return prisma.position.findMany({
+    where: {
+      NOT: { quantity: 0 },
+      account: accountCode ? { ibkrAccount: accountCode } : undefined,
+    },
+    select: {
       id: true,
+      accountId: true,
       quantity: true,
       avgCost: true,
       unrealizedPnl: true,
@@ -599,9 +629,9 @@ export async function getPositions() {
           symbol: true,
           symbolNotes: {
             select: {
+              accountId: true,
               thesis: true,
             },
-            take: 1,
           },
         },
       },
