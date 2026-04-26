@@ -3,8 +3,9 @@
 - Rework calculation of Gross Cumulative P&L and Equity curve graphs 
 
 ## Trades
+> Format standard sub-categories for Notes section
 - Check SMAs, only have 3 instead of 4 requested (10,20,50,200)
-- Increase number of lookback days for static fallback, but allow for 
+> Increase number of lookback days for static fallback, but allow for 
 - Increase date size for each day on closed trades
 - Remove execution prices (intra-day) graph
 - Change how charts of 'closed trades' are displayed:
@@ -22,4 +23,6 @@
 ## Settings
 
 ## General
+> Have a database storage check, as putting in more notes overtime might afect storage requirements
+> Have downloadable backup for Closed Trades section
 - Dark mode toggle 
