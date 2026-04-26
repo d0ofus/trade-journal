@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
+import { BenchmarkComparisonChart } from "@/components/benchmark-comparison-chart";
 import { CandlestickWithMarkers } from "@/components/candlestick-with-markers";
 import { RichTextEditor } from "@/components/rich-text-editor";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +14,7 @@ import {
   type AlignmentCandle,
   type ExecutionAlignmentInput,
 } from "@/lib/charts/execution-marker-alignment";
+import { computeRelativeStrengthMetrics, type RelativeStrengthMetrics } from "@/lib/charts/relative-strength";
 import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
 
 type ClosedTrade = {
@@ -20,6 +22,11 @@ type ClosedTrade = {
   accountId: string;
   accountCode: string;
   symbol: string;
+  direction: "LONG" | "SHORT";
+  openTime: string;
+  closeTime: string;
+  avgEntryPrice: number;
+  avgExitPrice: number;
   tradeDate: string;
   realizedPnl: number;
   totalCommission: number;
@@ -40,12 +47,20 @@ type ClosedTrade = {
 
 type Candle = AlignmentCandle;
 type ChartInterval = "5m" | "1h" | "1d";
+type BenchmarkSymbol = "SPY" | "QQQ" | "IWM";
+type ComparisonCandles = {
+  ticker: Candle[];
+  benchmark: Candle[];
+  compareError: string | null;
+};
 
 const CHART_INTERVALS: Array<{ value: ChartInterval; label: string }> = [
   { value: "5m", label: "5 minute" },
   { value: "1h", label: "1 hour" },
   { value: "1d", label: "1 day" },
 ];
+
+const BENCHMARK_SYMBOLS: BenchmarkSymbol[] = ["SPY", "QQQ", "IWM"];
 
 const INTERVAL_SECONDS: Record<ChartInterval, number> = {
   "5m": 5 * 60,
@@ -94,6 +109,19 @@ function sideRowClassName(side: "BUY" | "SELL") {
     : "border-l-4 border-l-red-500 bg-red-50/40 hover:bg-red-50/70";
 }
 
+function formatPercent(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "-";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
+function metricTone(value: number | null) {
+  if (value === null) return "text-slate-500";
+  if (value > 0) return "text-emerald-600";
+  if (value < 0) return "text-red-600";
+  return "text-slate-700";
+}
+
 function executionTimestampsWithinLoadedRange(executions: ClosedTrade["executions"], candles: Candle[]) {
   if (executions.length === 0 || candles.length === 0) return true;
 
@@ -110,8 +138,10 @@ function executionTimestampsWithinLoadedRange(executions: ClosedTrade["execution
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [candlesByKey, setCandlesByKey] = useState<Record<string, Candle[]>>({});
+  const [comparisonCandlesByKey, setComparisonCandlesByKey] = useState<Record<string, ComparisonCandles>>({});
   const [staticCandlesByKey, setStaticCandlesByKey] = useState<Record<string, Candle[]>>({});
   const [intervalByKey, setIntervalByKey] = useState<Record<string, ChartInterval>>({});
+  const [benchmarkByKey, setBenchmarkByKey] = useState<Record<string, BenchmarkSymbol>>({});
   const [tradeNotes, setTradeNotes] = useState<Record<string, string>>(
     Object.fromEntries(closedTrades.map((trade) => [trade.groupKey, trade.tradeNote])),
   );
@@ -126,14 +156,13 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
       list.push(row);
       map.set(row.tradeDate, list);
     }
-    let previousMonthKey: string | null = null;
+    const sortedEntries = [...map.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
 
-    return [...map.entries()]
-      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([date, rows]) => {
+    return sortedEntries
+      .map(([date, rows], index) => {
         const currentMonthKey = monthKeyFromTradeDate(date);
-        const startsNewMonth = currentMonthKey !== previousMonthKey;
-        previousMonthKey = currentMonthKey;
+        const previousDate = sortedEntries[index - 1]?.[0];
+        const startsNewMonth = !previousDate || currentMonthKey !== monthKeyFromTradeDate(previousDate);
 
         return {
           date,
@@ -144,13 +173,15 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
       });
   }, [closedTrades]);
 
-  async function ensureCandles(trade: ClosedTrade, interval: ChartInterval) {
+  async function ensureMarketCandles(trade: ClosedTrade, interval: ChartInterval, benchmark: BenchmarkSymbol) {
     const cacheKey = `${trade.groupKey}:${interval}`;
-    if (candlesByKey[cacheKey]) return;
+    const comparisonCacheKey = `${trade.groupKey}:${interval}:${benchmark}`;
+    if (candlesByKey[cacheKey] && comparisonCandlesByKey[comparisonCacheKey]) return;
 
     const url = new URL("/api/market/candles", window.location.origin);
     url.searchParams.set("symbol", trade.symbol);
     url.searchParams.set("timeframe", interval);
+    url.searchParams.set("compare", benchmark);
     let limit = 1200;
     if (trade.executions.length > 0) {
       const intervalSeconds = INTERVAL_SECONDS[interval];
@@ -173,7 +204,17 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
       return;
     }
     const data = await res.json();
-    setCandlesByKey((prev) => ({ ...prev, [cacheKey]: data.candles ?? [] }));
+    const tickerCandles = (data.candles ?? []) as Candle[];
+    const benchmarkCandles = (data.compare?.candles ?? []) as Candle[];
+    setCandlesByKey((prev) => ({ ...prev, [cacheKey]: tickerCandles }));
+    setComparisonCandlesByKey((prev) => ({
+      ...prev,
+      [comparisonCacheKey]: {
+        ticker: tickerCandles,
+        benchmark: benchmarkCandles,
+        compareError: data.compareError ?? (benchmarkCandles.length > 0 ? null : `Unable to load ${benchmark} comparison candles.`),
+      },
+    }));
   }
 
   async function ensureStaticCandles(trade: ClosedTrade, interval: ChartInterval) {
@@ -260,8 +301,21 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
               {rows.map((trade) => {
               const open = expanded === trade.groupKey;
               const interval = intervalByKey[trade.groupKey] ?? "1d";
+              const benchmark = benchmarkByKey[trade.groupKey] ?? "SPY";
               const executionRows = open ? [...trade.executions].sort((a, b) => (a.executedAt < b.executedAt ? 1 : -1)) : [];
               const allCandles = open ? candlesByKey[`${trade.groupKey}:${interval}`] ?? [] : [];
+              const comparisonCandles = open ? comparisonCandlesByKey[`${trade.groupKey}:${interval}:${benchmark}`] : undefined;
+              const benchmarkCandles = comparisonCandles?.benchmark ?? [];
+              const relativeMetrics: RelativeStrengthMetrics | null = open
+                ? computeRelativeStrengthMetrics({
+                    avgEntryPrice: trade.avgEntryPrice,
+                    avgExitPrice: trade.avgExitPrice,
+                    direction: trade.direction,
+                    openTime: trade.openTime,
+                    closeTime: trade.closeTime,
+                    benchmarkCandles,
+                  })
+                : null;
               const staticFallbackCandles = open ? staticCandlesByKey[`${trade.groupKey}:static:${interval}`] ?? [] : [];
               const alignmentInputs = open ? toAlignmentInputs(trade.executions) : [];
               const alignmentOffsetSeconds = open ? inferExecutionOffsetSeconds(alignmentInputs, allCandles) : 0;
@@ -346,7 +400,7 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                         const next = open ? null : trade.groupKey;
                         setExpanded(next);
                         if (!open) {
-                          await Promise.all([ensureCandles(trade, interval), ensureStaticCandles(trade, interval)]);
+                          await Promise.all([ensureMarketCandles(trade, interval, benchmark), ensureStaticCandles(trade, interval)]);
                         }
                       }}
                     >
@@ -416,23 +470,55 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                           </div>
                         </details>
 
-                        <div className="flex flex-wrap items-center gap-2">
-                          {CHART_INTERVALS.map((option) => (
-                            <Button
-                              key={option.value}
-                              size="sm"
-                              variant={interval === option.value ? "default" : "outline"}
-                              onClick={async () => {
-                                setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
-                                await Promise.all([ensureCandles(trade, option.value), ensureStaticCandles(trade, option.value)]);
-                              }}
-                            >
-                              {option.label}
-                            </Button>
-                          ))}
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Timeframe</span>
+                            {CHART_INTERVALS.map((option) => (
+                              <Button
+                                key={option.value}
+                                size="sm"
+                                variant={interval === option.value ? "default" : "outline"}
+                                onClick={async () => {
+                                  setIntervalByKey((prev) => ({ ...prev, [trade.groupKey]: option.value }));
+                                  await Promise.all([
+                                    ensureMarketCandles(trade, option.value, benchmark),
+                                    ensureStaticCandles(trade, option.value),
+                                  ]);
+                                }}
+                              >
+                                {option.label}
+                              </Button>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Compare</span>
+                            {BENCHMARK_SYMBOLS.map((option) => (
+                              <Button
+                                key={option}
+                                size="sm"
+                                variant={benchmark === option ? "default" : "outline"}
+                                onClick={async () => {
+                                  setBenchmarkByKey((prev) => ({ ...prev, [trade.groupKey]: option }));
+                                  await ensureMarketCandles(trade, interval, option);
+                                }}
+                              >
+                                {option}
+                              </Button>
+                            ))}
+                          </div>
                         </div>
                         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.95fr)]">
                           <div className="space-y-4">
+                            <BenchmarkComparisonChart
+                              tickerSymbol={trade.symbol}
+                              benchmarkSymbol={benchmark}
+                              tickerCandles={comparisonCandles?.ticker ?? allCandles}
+                              benchmarkCandles={benchmarkCandles}
+                              height={220}
+                            />
+                            {comparisonCandles?.compareError && (
+                              <p className="text-xs text-slate-500">{comparisonCandles.compareError}</p>
+                            )}
                             <CandlestickWithMarkers
                               candles={allCandles}
                               markers={markersInRange}
@@ -466,6 +552,52 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                                 <div>
                                   <p className="text-xs text-slate-500">Commission</p>
                                   <p className="text-sm font-medium text-slate-800">{formatCurrency(trade.totalCommission)}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Direction</p>
+                                  <p className="text-sm font-medium text-slate-800">{trade.direction}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Entry / Exit</p>
+                                  <p className="text-sm font-medium text-slate-800">
+                                    {trade.avgEntryPrice.toFixed(2)} / {trade.avgExitPrice.toFixed(2)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-5 rounded-[20px] border border-slate-200/80 bg-slate-50/70 p-4">
+                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                                  Relative Strength vs {benchmark}
+                                </p>
+                                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                                  <div>
+                                    <p className="text-xs text-slate-500">{trade.symbol} move</p>
+                                    <p className={cn("text-sm font-semibold", metricTone(relativeMetrics?.tickerMovePct ?? null))}>
+                                      {formatPercent(relativeMetrics?.tickerMovePct ?? null)}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-slate-500">{benchmark} move</p>
+                                    <p className={cn("text-sm font-semibold", metricTone(relativeMetrics?.benchmarkMovePct ?? null))}>
+                                      {formatPercent(relativeMetrics?.benchmarkMovePct ?? null)}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-slate-500">Spread</p>
+                                    <p className={cn("text-sm font-semibold", metricTone(relativeMetrics?.relativeSpreadPct ?? null))}>
+                                      {formatPercent(relativeMetrics?.relativeSpreadPct ?? null)}
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-slate-500">Direction-adjusted</p>
+                                    <p
+                                      className={cn(
+                                        "text-sm font-semibold",
+                                        metricTone(relativeMetrics?.directionAdjustedSpreadPct ?? null),
+                                      )}
+                                    >
+                                      {formatPercent(relativeMetrics?.directionAdjustedSpreadPct ?? null)}
+                                    </p>
+                                  </div>
                                 </div>
                               </div>
                             </div>

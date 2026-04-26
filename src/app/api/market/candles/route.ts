@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type CandleTimeframe = "5m" | "1h" | "1d";
+type CandleRange = { from: number; to: number } | null;
 
 const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: string }> = {
   "5m": { interval: "5m", range: "60d" },
   "1h": { interval: "60m", range: "730d" },
   "1d": { interval: "1d", range: "10y" },
 };
+
+const ALLOWED_COMPARE_SYMBOLS = new Set(["SPY", "QQQ", "IWM"]);
 
 function dedupeCandles(rows: Candle[]) {
   const byTime = new Map<number, Candle>();
@@ -125,24 +128,18 @@ function parseYahooRows(payload: unknown) {
   return dedupeCandles(rows);
 }
 
-export async function GET(req: NextRequest) {
-  const symbol = (req.nextUrl.searchParams.get("symbol") ?? "").trim().toUpperCase();
-  const timeframeRaw = (req.nextUrl.searchParams.get("timeframe") ?? "1d").trim().toLowerCase();
-  const timeframe: CandleTimeframe = timeframeRaw === "5m" || timeframeRaw === "1h" || timeframeRaw === "1d" ? timeframeRaw : "1d";
+async function loadCandlesForSymbol(input: {
+  symbol: string;
+  timeframe: CandleTimeframe;
+  range: CandleRange;
+  limit: number;
+}) {
+  const { symbol, timeframe, range, limit } = input;
   const config = TIMEFRAME_CONFIG[timeframe];
-  const fromRaw = Number(req.nextUrl.searchParams.get("from") ?? "");
-  const toRaw = Number(req.nextUrl.searchParams.get("to") ?? "");
-  const hasCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;
-  const limitRaw = Number(req.nextUrl.searchParams.get("limit") ?? "120");
-  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 30), 5000) : 120;
-  if (!symbol) {
-    return NextResponse.json({ error: "symbol required" }, { status: 400 });
-  }
-
   const yahooUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   yahooUrl.searchParams.set("interval", config.interval);
-  if (hasCustomRange) {
-    const normalizedRange = normalizedYahooRange(fromRaw, toRaw, timeframe);
+  if (range) {
+    const normalizedRange = normalizedYahooRange(range.from, range.to, timeframe);
     yahooUrl.searchParams.set("period1", String(normalizedRange.period1));
     yahooUrl.searchParams.set("period2", String(normalizedRange.period2));
   } else {
@@ -154,11 +151,12 @@ export async function GET(req: NextRequest) {
   const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
   if (yahooRes.ok) {
     const payload = await yahooRes.json();
-    const rows = timeframe === "1d"
-      ? trimTrailingDuplicateDailyCandle(dedupeCandles(parseYahooRows(payload)))
-      : dedupeCandles(parseYahooRows(payload));
+    const rows =
+      timeframe === "1d"
+        ? trimTrailingDuplicateDailyCandle(dedupeCandles(parseYahooRows(payload)))
+        : dedupeCandles(parseYahooRows(payload));
     if (rows.length > 0) {
-      return NextResponse.json({ symbol, timeframe, candles: rows.slice(-limit) });
+      return { symbol, candles: rows.slice(-limit) };
     }
   }
 
@@ -172,10 +170,58 @@ export async function GET(req: NextRequest) {
       const csvText = await res.text();
       const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
       if (rows.length > 0) {
-        return NextResponse.json({ symbol: candidate.toUpperCase(), timeframe, candles: rows.slice(-limit) });
+        return { symbol: candidate.toUpperCase(), candles: rows.slice(-limit) };
       }
     }
   }
 
-  return NextResponse.json({ error: "No candle data found." }, { status: 404 });
+  return null;
+}
+
+export async function GET(req: NextRequest) {
+  const symbol = (req.nextUrl.searchParams.get("symbol") ?? "").trim().toUpperCase();
+  const timeframeRaw = (req.nextUrl.searchParams.get("timeframe") ?? "1d").trim().toLowerCase();
+  const timeframe: CandleTimeframe = timeframeRaw === "5m" || timeframeRaw === "1h" || timeframeRaw === "1d" ? timeframeRaw : "1d";
+  const compareSymbolRaw = (req.nextUrl.searchParams.get("compare") ?? "").trim().toUpperCase();
+  const compareSymbol = ALLOWED_COMPARE_SYMBOLS.has(compareSymbolRaw) ? compareSymbolRaw : null;
+  const fromRaw = Number(req.nextUrl.searchParams.get("from") ?? "");
+  const toRaw = Number(req.nextUrl.searchParams.get("to") ?? "");
+  const hasCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;
+  const range = hasCustomRange ? { from: fromRaw, to: toRaw } : null;
+  const limitRaw = Number(req.nextUrl.searchParams.get("limit") ?? "120");
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 30), 5000) : 120;
+  if (!symbol) {
+    return NextResponse.json({ error: "symbol required" }, { status: 400 });
+  }
+
+  if (compareSymbol) {
+    const [primary, compare] = await Promise.all([
+      loadCandlesForSymbol({ symbol, timeframe, range, limit }),
+      loadCandlesForSymbol({ symbol: compareSymbol, timeframe, range, limit }),
+    ]);
+
+    if (!primary) {
+      return NextResponse.json({ error: "No candle data found." }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      symbol: primary.symbol,
+      timeframe,
+      candles: primary.candles,
+      compare: compare
+        ? {
+            symbol: compare.symbol,
+            candles: compare.candles,
+          }
+        : null,
+      compareError: compare ? null : "No comparison candle data found.",
+    });
+  }
+
+  const primary = await loadCandlesForSymbol({ symbol, timeframe, range, limit });
+  if (!primary) {
+    return NextResponse.json({ error: "No candle data found." }, { status: 404 });
+  }
+
+  return NextResponse.json({ symbol: primary.symbol, timeframe, candles: primary.candles });
 }
