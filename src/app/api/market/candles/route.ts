@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
-type CandleTimeframe = "5m" | "1h" | "1d";
+type CandleTimeframe = "5m" | "10m" | "15m" | "1h" | "1d" | "1wk";
 type CandleRange = { from: number; to: number } | null;
 
 const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: string }> = {
   "5m": { interval: "5m", range: "60d" },
+  "10m": { interval: "5m", range: "60d" },
+  "15m": { interval: "15m", range: "60d" },
   "1h": { interval: "60m", range: "730d" },
   "1d": { interval: "1d", range: "10y" },
+  "1wk": { interval: "1wk", range: "10y" },
 };
 
 const ALLOWED_COMPARE_SYMBOLS = new Set(["SPY", "QQQ", "IWM"]);
@@ -21,14 +24,50 @@ function dedupeCandles(rows: Candle[]) {
 }
 
 function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleTimeframe) {
-  const intervalSeconds = timeframe === "5m" ? 5 * 60 : timeframe === "1h" ? 60 * 60 : 24 * 60 * 60;
+  const intervalSeconds =
+    timeframe === "5m"
+      ? 5 * 60
+      : timeframe === "10m"
+        ? 10 * 60
+        : timeframe === "15m"
+          ? 15 * 60
+          : timeframe === "1h"
+            ? 60 * 60
+            : timeframe === "1wk"
+              ? 7 * 24 * 60 * 60
+              : 24 * 60 * 60;
   const period1 = Math.floor(fromRaw / intervalSeconds) * intervalSeconds;
   const period2 =
-    timeframe === "1d"
+    timeframe === "1d" || timeframe === "1wk"
       ? (Math.floor(toRaw / intervalSeconds) + 1) * intervalSeconds
       : Math.ceil(toRaw / intervalSeconds) * intervalSeconds;
 
   return { period1, period2: Math.max(period1 + intervalSeconds, period2) };
+}
+
+function aggregateCandles(rows: Candle[], bucketSeconds: number) {
+  const buckets = new Map<number, Candle[]>();
+  for (const row of rows) {
+    const bucket = Math.floor(row.time / bucketSeconds) * bucketSeconds;
+    const list = buckets.get(bucket) ?? [];
+    list.push(row);
+    buckets.set(bucket, list);
+  }
+
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([time, bucketRows]) => {
+      const sorted = bucketRows.sort((a, b) => a.time - b.time);
+      const volume = sorted.reduce((sum, row) => sum + (Number.isFinite(row.volume) ? Number(row.volume) : 0), 0);
+      return {
+        time,
+        open: sorted[0].open,
+        high: Math.max(...sorted.map((row) => row.high)),
+        low: Math.min(...sorted.map((row) => row.low)),
+        close: sorted[sorted.length - 1].close,
+        volume: volume > 0 ? volume : undefined,
+      };
+    });
 }
 
 function trimTrailingDuplicateDailyCandle(rows: Candle[]) {
@@ -151,10 +190,13 @@ async function loadCandlesForSymbol(input: {
   const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
   if (yahooRes.ok) {
     const payload = await yahooRes.json();
+    const parsedRows = dedupeCandles(parseYahooRows(payload));
     const rows =
-      timeframe === "1d"
-        ? trimTrailingDuplicateDailyCandle(dedupeCandles(parseYahooRows(payload)))
-        : dedupeCandles(parseYahooRows(payload));
+      timeframe === "1d" || timeframe === "1wk"
+        ? trimTrailingDuplicateDailyCandle(parsedRows)
+        : timeframe === "10m"
+          ? aggregateCandles(parsedRows, 10 * 60)
+          : parsedRows;
     if (rows.length > 0) {
       return { symbol, candles: rows.slice(-limit) };
     }
@@ -181,7 +223,20 @@ async function loadCandlesForSymbol(input: {
 export async function GET(req: NextRequest) {
   const symbol = (req.nextUrl.searchParams.get("symbol") ?? "").trim().toUpperCase();
   const timeframeRaw = (req.nextUrl.searchParams.get("timeframe") ?? "1d").trim().toLowerCase();
-  const timeframe: CandleTimeframe = timeframeRaw === "5m" || timeframeRaw === "1h" || timeframeRaw === "1d" ? timeframeRaw : "1d";
+  const timeframe: CandleTimeframe =
+    timeframeRaw === "5m" || timeframeRaw === "5min"
+      ? "5m"
+      : timeframeRaw === "10m" || timeframeRaw === "10min"
+        ? "10m"
+        : timeframeRaw === "15m" || timeframeRaw === "15min"
+          ? "15m"
+          : timeframeRaw === "1h" || timeframeRaw === "60m"
+            ? "1h"
+            : timeframeRaw === "1w" || timeframeRaw === "1wk" || timeframeRaw === "w"
+              ? "1wk"
+              : timeframeRaw === "1d" || timeframeRaw === "d"
+                ? "1d"
+                : "1d";
   const compareSymbolRaw = (req.nextUrl.searchParams.get("compare") ?? "").trim().toUpperCase();
   const compareSymbol = ALLOWED_COMPARE_SYMBOLS.has(compareSymbolRaw) ? compareSymbolRaw : null;
   const fromRaw = Number(req.nextUrl.searchParams.get("from") ?? "");

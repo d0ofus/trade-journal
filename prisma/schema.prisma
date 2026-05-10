@@ -23,6 +23,44 @@ enum Side {
   SELL
 }
 
+enum JournalDirection {
+  LONG
+  SHORT
+}
+
+enum JournalStatus {
+  DRAFT
+  WATCHING
+  MISSED
+  PASSED
+  INVALIDATED
+  PLAYBOOK
+  ARCHIVED
+}
+
+enum MacroSentiment {
+  BULLISH
+  NEUTRAL
+  BEARISH
+}
+
+enum JournalTagCategory {
+  SETUP
+  LESSON
+  MISTAKE
+  CONTEXT
+  CUSTOM
+}
+
+enum JournalMarkerType {
+  IDEAL_ENTRY
+  STOP
+  TARGET
+  IDEAL_EXIT
+  MISSED_TRIGGER
+  DECISION_POINT
+}
+
 model Account {
   id           String          @id @default(cuid())
   name         String
@@ -152,6 +190,7 @@ model Tag {
   executionTags ExecutionTag[]
   dayNoteTags   DayNoteTag[]
   symbolNoteTags SymbolNoteTag[]
+  journalEntryTags JournalEntryTag[]
 }
 
 model ExecutionTag {
@@ -282,4 +321,111 @@ model SymbolNoteTag {
   tag          Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@id([symbolNoteId, tagId])
+}
+
+model JournalEntry {
+  id                   String                   @id @default(cuid())
+  symbol               String
+  ideaDate             DateTime                 @default(now())
+  direction            JournalDirection         @default(LONG)
+  status               JournalStatus            @default(DRAFT)
+  setup                String?
+  timeframe            String                   @default("1D")
+  macroSentiment       MacroSentiment           @default(NEUTRAL)
+  thesis               String                   @default("")
+  trigger              String                   @default("")
+  riskPlan             String                   @default("")
+  idealExecutionPlan   String                   @default("")
+  missedReason         String                   @default("")
+  marketContext        String                   @default("")
+  peerContext          String                   @default("")
+  rating               Int?
+  lessonLearned        String                   @default("")
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  charts               JournalChart[]
+  tags                 JournalEntryTag[]
+  contextSnapshots     JournalContextSnapshot[]
+  links                JournalLink[]
+
+  @@index([ideaDate])
+  @@index([symbol, ideaDate])
+  @@index([status, ideaDate])
+  @@index([macroSentiment, ideaDate])
+}
+
+model JournalChart {
+  id                    String                @id @default(cuid())
+  journalEntryId        String
+  journalEntry          JournalEntry          @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  symbol                String
+  timeframe             String                @default("1D")
+  rangeStart            DateTime?
+  rangeEnd              DateTime?
+  tradingViewLayoutJson String?
+  screenshotKey         String?
+  screenshotUrl         String?
+  caption               String                @default("")
+  width                 Int?
+  height                Int?
+  mimeType              String?
+  markers               JournalChartMarker[]
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@index([journalEntryId, createdAt])
+  @@index([symbol, timeframe])
+}
+
+model JournalChartMarker {
+  id           String            @id @default(cuid())
+  chartId      String
+  chart        JournalChart      @relation(fields: [chartId], references: [id], onDelete: Cascade)
+  markerType   JournalMarkerType
+  time         DateTime?
+  price        Float?
+  label        String?
+  metadataJson String?
+  createdAt    DateTime          @default(now())
+
+  @@index([chartId])
+  @@index([markerType])
+}
+
+model JournalEntryTag {
+  journalEntryId String
+  tagId          String
+  category       JournalTagCategory @default(CUSTOM)
+  journalEntry   JournalEntry       @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  tag            Tag                @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([journalEntryId, tagId, category])
+  @@index([tagId, category])
+}
+
+model JournalContextSnapshot {
+  id             String       @id @default(cuid())
+  journalEntryId String
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  provider       String
+  kind           String
+  payloadJson    String       @default("{}")
+  createdAt      DateTime     @default(now())
+
+  @@index([journalEntryId, kind, createdAt])
+}
+
+model JournalLink {
+  id             String       @id @default(cuid())
+  journalEntryId String
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  linkType       String
+  targetType     String
+  targetId       String?
+  url            String?
+  label          String?
+  createdAt      DateTime     @default(now())
+
+  @@index([journalEntryId, linkType])
+  @@index([targetType, targetId])
 }

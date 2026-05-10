@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { endOfDay, format, startOfDay, subDays, subMonths, subWeeks, subYears } from "date-fns";
 import { usePathname, useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";

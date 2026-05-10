@@ -173,6 +173,14 @@ Optional Flex tuning:
 - `IBKR_FLEX_MAX_POLLS` (default `20`)
 - `IBKR_FLEX_POLL_MS` (default `3000`)
 
+Journal integrations:
+
+- `MARKET_OVERVIEW_API_BASE` - optional market-overview API origin for peer-group context
+- `MARKET_OVERVIEW_API_TOKEN` - optional bearer token for the market-overview bridge
+- `MARKET_OVERVIEW_WEB_BASE` - optional market-overview app origin for peer-group links
+- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` - optional R2 screenshot storage
+- `NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH` - optional licensed TradingView Advanced Charts bundle path
+
 ## Prisma Deployment Flow (Production)
 
 After committing migrations:

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowUpRight, BarChart3, CalendarDays, Download, LayoutDashboard, ListOrdered, Settings2 } from "lucide-react";
+import { ArrowUpRight, BarChart3, CalendarDays, Download, LayoutDashboard, ListOrdered, NotebookPen, Settings2 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 const links = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/trades", label: "Trades", icon: ListOrdered },
+  { href: "/journal", label: "Journal", icon: NotebookPen },
   { href: "/positions", label: "Positions", icon: BarChart3 },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/import", label: "Import", icon: Download },
