@@ -311,37 +311,6 @@ type TradeFilters = {
   strategy?: string;
 };
 
-function buildExecutionWhere(
-  filters: TradeFilters,
-  options?: {
-    applyDateRange?: boolean;
-    includeSide?: boolean;
-  },
-) {
-  const applyDateRange = options?.applyDateRange ?? true;
-  const includeSide = options?.includeSide ?? true;
-  const where: Record<string, unknown> = {};
-  if (applyDateRange && (filters.from || filters.to)) {
-    where.executedAt = {
-      gte: filters.from ? startOfDay(new Date(filters.from)) : undefined,
-      lte: filters.to ? endOfDay(new Date(filters.to)) : undefined,
-    };
-  }
-  if (filters.symbol) {
-    where.instrument = { symbol: { equals: filters.symbol } };
-  }
-  if (includeSide && filters.side) {
-    where.side = filters.side;
-  }
-  if (filters.tag) {
-    where.tags = { some: { tag: { name: { equals: filters.tag } } } };
-  }
-  if (filters.strategy) {
-    where.strategy = { equals: filters.strategy };
-  }
-  return where;
-}
-
 export async function getClosedTrades(filters: TradeFilters) {
   return withDiagnostics("getClosedTrades", async (step) => {
     await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
