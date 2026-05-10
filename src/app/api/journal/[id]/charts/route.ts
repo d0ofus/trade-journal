@@ -55,6 +55,8 @@ export async function POST(req: NextRequest, props: { params: Params }) {
       journalEntryId: id,
       symbol: data.symbol as string,
       timeframe: data.timeframe as string,
+      purpose: data.purpose as "THESIS" | "TRIGGER" | "MARKET_CONTEXT" | "PEER_CONTEXT" | "FOLLOW_THROUGH" | "REVIEW" | "CUSTOM",
+      compareSymbol: data.compareSymbol as string | null | undefined,
       rangeStart: data.rangeStart as Date | null | undefined,
       rangeEnd: data.rangeEnd as Date | null | undefined,
       tradingViewLayoutJson: data.tradingViewLayoutJson as string | null | undefined,

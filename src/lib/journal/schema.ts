@@ -15,8 +15,43 @@ export const JOURNAL_MARKER_TYPES = [
   "DECISION_POINT",
 ] as const;
 
+export const JOURNAL_OUTCOME_STATUSES = [
+  "UNREVIEWED",
+  "TRIGGERED",
+  "NEVER_TRIGGERED",
+  "WORKED_WITHOUT_ME",
+  "FAILED",
+  "STILL_DEVELOPING",
+] as const;
+export type JournalOutcomeStatusValue = (typeof JOURNAL_OUTCOME_STATUSES)[number];
+
+export const JOURNAL_MARKET_REGIMES = ["UNKNOWN", "RISK_ON", "MIXED", "RISK_OFF"] as const;
+export type JournalMarketRegimeValue = (typeof JOURNAL_MARKET_REGIMES)[number];
+
+export const JOURNAL_TREND_STATES = ["UNKNOWN", "BULLISH", "NEUTRAL", "BEARISH"] as const;
+export type JournalTrendStateValue = (typeof JOURNAL_TREND_STATES)[number];
+
+export const JOURNAL_CHART_PURPOSES = [
+  "THESIS",
+  "TRIGGER",
+  "MARKET_CONTEXT",
+  "PEER_CONTEXT",
+  "FOLLOW_THROUGH",
+  "REVIEW",
+  "CUSTOM",
+] as const;
+export type JournalChartPurposeValue = (typeof JOURNAL_CHART_PURPOSES)[number];
+
+export const JOURNAL_RULE_CHECK_STATUSES = ["PASS", "FAIL", "NA"] as const;
+export const JOURNAL_REVIEW_PERIODS = ["DAILY", "WEEKLY", "MONTHLY"] as const;
+export const JOURNAL_ACTION_STATUSES = ["OPEN", "DONE", "ARCHIVED"] as const;
+
 const optionalText = z.string().max(20000).optional().default("");
 const optionalShortText = z.string().max(240).optional();
+const optionalSymbol = z.string().max(20).transform((value) => value.trim().toUpperCase()).nullable().optional();
+const optionalNumber = z.number().finite().nullable().optional();
+const optionalScore = z.number().int().min(1).max(5).nullable().optional();
+const optionalDateString = z.string().nullable().optional();
 
 export function normalizeJournalTagName(value: string) {
   return value
@@ -49,6 +84,7 @@ export const journalEntryPayloadSchema = z.object({
   ideaDate: z.string().min(1),
   direction: z.enum(["LONG", "SHORT"]).optional().default("LONG"),
   status: z.enum(["DRAFT", "WATCHING", "MISSED", "PASSED", "INVALIDATED", "PLAYBOOK", "ARCHIVED"]).optional().default("DRAFT"),
+  playbookId: z.string().nullable().optional(),
   setup: optionalShortText,
   timeframe: z.enum(JOURNAL_TIMEFRAMES).optional().default("1D"),
   macroSentiment: z.enum(["BULLISH", "NEUTRAL", "BEARISH"]).optional().default("NEUTRAL"),
@@ -61,6 +97,36 @@ export const journalEntryPayloadSchema = z.object({
   peerContext: optionalText,
   rating: z.number().int().min(1).max(5).nullable().optional(),
   lessonLearned: optionalText,
+  plannedEntry: optionalNumber,
+  plannedStop: optionalNumber,
+  plannedTarget1: optionalNumber,
+  plannedTarget2: optionalNumber,
+  plannedTarget3: optionalNumber,
+  invalidationLevel: optionalNumber,
+  expectedR: optionalNumber,
+  actualTriggerAt: optionalDateString,
+  followThroughDays: z.number().int().min(0).max(365).nullable().optional(),
+  mfeR: optionalNumber,
+  maeR: optionalNumber,
+  bestExitR: optionalNumber,
+  outcomeStatus: z.enum(JOURNAL_OUTCOME_STATUSES).optional().default("UNREVIEWED"),
+  outcomeNotes: optionalText,
+  confidenceScore: optionalScore,
+  planClarityScore: optionalScore,
+  preparationScore: optionalScore,
+  patienceScore: optionalScore,
+  ruleAdherenceScore: optionalScore,
+  emotionalState: optionalShortText.nullable().optional(),
+  wouldTakeAgain: z.boolean().nullable().optional(),
+  marketRegime: z.enum(JOURNAL_MARKET_REGIMES).optional().default("UNKNOWN"),
+  spyTrend: z.enum(JOURNAL_TREND_STATES).optional().default("UNKNOWN"),
+  qqqTrend: z.enum(JOURNAL_TREND_STATES).optional().default("UNKNOWN"),
+  iwmTrend: z.enum(JOURNAL_TREND_STATES).optional().default("UNKNOWN"),
+  sectorTrend: z.enum(JOURNAL_TREND_STATES).optional().default("UNKNOWN"),
+  sectorEtf: optionalSymbol,
+  breadthNotes: optionalText,
+  catalystNotes: optionalText,
+  relativeStrengthNotes: optionalText,
   tags: journalTagsPayloadSchema.optional().default({}),
 });
 
@@ -79,6 +145,8 @@ export const chartMarkerPayloadSchema = z.object({
 export const journalChartPayloadSchema = z.object({
   symbol: z.string().min(1).max(20).transform((value) => value.trim().toUpperCase()),
   timeframe: z.enum(JOURNAL_TIMEFRAMES).optional().default("1D"),
+  purpose: z.enum(JOURNAL_CHART_PURPOSES).optional().default("CUSTOM"),
+  compareSymbol: optionalSymbol,
   rangeStart: z.string().nullable().optional(),
   rangeEnd: z.string().nullable().optional(),
   tradingViewLayoutJson: z.string().max(200000).nullable().optional(),
@@ -100,4 +168,73 @@ export const journalSnapshotPayloadSchema = z.object({
   height: z.number().int().positive().nullable().optional(),
   mimeType: z.string().max(120).nullable().optional(),
   tradingViewLayoutJson: z.string().max(200000).nullable().optional(),
+});
+
+export const journalOutcomePatchSchema = journalEntryPatchSchema.pick({
+  actualTriggerAt: true,
+  followThroughDays: true,
+  mfeR: true,
+  maeR: true,
+  bestExitR: true,
+  outcomeStatus: true,
+  outcomeNotes: true,
+  wouldTakeAgain: true,
+});
+
+export const journalPlaybookRulePayloadSchema = z.object({
+  id: z.string().optional(),
+  text: z.string().min(1).max(2000),
+  category: z.string().max(80).optional().default("SETUP"),
+  required: z.boolean().optional().default(true),
+  sortOrder: z.number().int().min(0).max(999).optional().default(0),
+});
+
+export const journalPlaybookPayloadSchema = z.object({
+  name: z.string().min(1).max(160),
+  setupType: optionalShortText.nullable().optional(),
+  description: optionalText,
+  idealConditions: optionalText,
+  invalidationRules: optionalText,
+  marketRegimeFit: optionalText,
+  archived: z.boolean().optional().default(false),
+  rules: z.array(journalPlaybookRulePayloadSchema).optional().default([]),
+});
+
+export const journalPlaybookPatchSchema = journalPlaybookPayloadSchema.partial().extend({
+  rules: z.array(journalPlaybookRulePayloadSchema).optional(),
+});
+
+export const journalRuleChecksPayloadSchema = z.object({
+  checks: z.array(z.object({
+    playbookRuleId: z.string().min(1),
+    status: z.enum(JOURNAL_RULE_CHECK_STATUSES),
+    notes: z.string().max(4000).optional().default(""),
+  })),
+});
+
+export const journalReviewActionPayloadSchema = z.object({
+  id: z.string().optional(),
+  label: z.string().min(1).max(1000),
+  status: z.enum(JOURNAL_ACTION_STATUSES).optional().default("OPEN"),
+  journalEntryId: z.string().nullable().optional(),
+  playbookId: z.string().nullable().optional(),
+  dueDate: z.string().nullable().optional(),
+});
+
+export const journalReviewPayloadSchema = z.object({
+  period: z.enum(JOURNAL_REVIEW_PERIODS),
+  startDate: z.string().min(1),
+  endDate: z.string().min(1),
+  summary: optionalText,
+  bestIdea: optionalText,
+  bestIdeaEntryId: z.string().nullable().optional(),
+  worstMiss: optionalText,
+  worstMissEntryId: z.string().nullable().optional(),
+  recurringLesson: optionalText,
+  nextFocus: optionalText,
+  actions: z.array(journalReviewActionPayloadSchema).optional().default([]),
+});
+
+export const journalReviewPatchSchema = journalReviewPayloadSchema.partial().extend({
+  actions: z.array(journalReviewActionPayloadSchema).optional(),
 });

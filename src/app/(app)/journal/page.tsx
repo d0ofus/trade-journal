@@ -1,7 +1,13 @@
 import { Suspense } from "react";
 import { JournalWorkspace } from "@/components/journal-workspace";
 import { PageHeader } from "@/components/ui/page-header";
-import { listJournalEntries, listJournalTags } from "@/lib/server/journal";
+import {
+  getJournalAnalytics,
+  listJournalEntries,
+  listJournalPlaybooks,
+  listJournalReviews,
+  listJournalTags,
+} from "@/lib/server/journal";
 
 export default function JournalPage() {
   return (
@@ -19,9 +25,20 @@ export default function JournalPage() {
 }
 
 async function JournalPageContent() {
-  const [entries, tags] = await Promise.all([
+  const [entries, tags, playbooks, analytics, reviews] = await Promise.all([
     listJournalEntries({ limit: 100 }),
     listJournalTags(),
+    listJournalPlaybooks({ includeArchived: true }),
+    getJournalAnalytics(),
+    listJournalReviews(),
   ]);
-  return <JournalWorkspace initialEntries={entries} initialTags={tags} />;
+  return (
+    <JournalWorkspace
+      initialAnalytics={analytics}
+      initialEntries={entries}
+      initialPlaybooks={playbooks}
+      initialReviews={reviews}
+      initialTags={tags}
+    />
+  );
 }

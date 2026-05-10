@@ -25,6 +25,8 @@ function serializeChart(chart: {
   width: number | null;
   height: number | null;
   mimeType: string | null;
+  purpose: string;
+  compareSymbol: string | null;
   createdAt: Date;
   updatedAt: Date;
   markers: Array<{
@@ -75,6 +77,8 @@ export async function PATCH(req: NextRequest, props: { params: Params }) {
       data: {
         symbol: data.symbol as string | undefined,
         timeframe: data.timeframe as string | undefined,
+        purpose: data.purpose as "THESIS" | "TRIGGER" | "MARKET_CONTEXT" | "PEER_CONTEXT" | "FOLLOW_THROUGH" | "REVIEW" | "CUSTOM" | undefined,
+        compareSymbol: data.compareSymbol as string | null | undefined,
         rangeStart: data.rangeStart as Date | null | undefined,
         rangeEnd: data.rangeEnd as Date | null | undefined,
         tradingViewLayoutJson: data.tradingViewLayoutJson as string | null | undefined,

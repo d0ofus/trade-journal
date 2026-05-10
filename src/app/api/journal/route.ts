@@ -13,6 +13,10 @@ export async function GET(req: NextRequest) {
     category: req.nextUrl.searchParams.get("category"),
     status: req.nextUrl.searchParams.get("status"),
     macroSentiment: req.nextUrl.searchParams.get("macroSentiment"),
+    outcomeStatus: req.nextUrl.searchParams.get("outcomeStatus"),
+    marketRegime: req.nextUrl.searchParams.get("marketRegime"),
+    playbookId: req.nextUrl.searchParams.get("playbookId"),
+    chartFilter: req.nextUrl.searchParams.get("chartFilter"),
     symbol: req.nextUrl.searchParams.get("symbol"),
     limit: Number(req.nextUrl.searchParams.get("limit") ?? "50"),
   });
