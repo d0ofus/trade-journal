@@ -315,7 +315,16 @@ export function JournalChartEditor({
           tradingViewLayoutJson: JSON.stringify({ annotations, markers, source: advancedChartsAvailable ? "advanced-charts-ready" : "lightweight-capture" }),
         }),
       });
-      if (!res.ok) throw new Error("Failed to save chart.");
+      if (!res.ok) {
+        const errorPayload = await res.json().catch(() => null);
+        const errorMessage =
+          typeof errorPayload?.error === "string"
+            ? errorPayload.error
+            : errorPayload?.error
+              ? JSON.stringify(errorPayload.error)
+              : "Failed to save chart.";
+        throw new Error(errorMessage);
+      }
       setCaption("");
       setMarkers([]);
       setAnnotations([]);

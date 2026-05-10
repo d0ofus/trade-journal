@@ -181,6 +181,8 @@ Journal integrations:
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` - optional R2 screenshot storage
 - `NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH` - optional licensed TradingView Advanced Charts bundle path
 
+If R2 is not configured, journal screenshots still save as inline data URLs in the database so chart capture does not fail. Configure R2 before heavy use to keep the database small.
+
 ## Prisma Deployment Flow (Production)
 
 After committing migrations:
