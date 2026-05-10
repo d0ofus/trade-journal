@@ -13,7 +13,7 @@ const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: strin
   "1wk": { interval: "1wk", range: "10y" },
 };
 
-const ALLOWED_COMPARE_SYMBOLS = new Set(["SPY", "QQQ", "IWM"]);
+const SAFE_SYMBOL_PATTERN = /^[A-Z0-9.^=_-]{1,20}$/;
 
 function dedupeCandles(rows: Candle[]) {
   const byTime = new Map<number, Candle>();
@@ -238,7 +238,7 @@ export async function GET(req: NextRequest) {
                 ? "1d"
                 : "1d";
   const compareSymbolRaw = (req.nextUrl.searchParams.get("compare") ?? "").trim().toUpperCase();
-  const compareSymbol = ALLOWED_COMPARE_SYMBOLS.has(compareSymbolRaw) ? compareSymbolRaw : null;
+  const compareSymbol = SAFE_SYMBOL_PATTERN.test(compareSymbolRaw) ? compareSymbolRaw : null;
   const fromRaw = Number(req.nextUrl.searchParams.get("from") ?? "");
   const toRaw = Number(req.nextUrl.searchParams.get("to") ?? "");
   const hasCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;

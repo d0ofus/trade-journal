@@ -19,8 +19,15 @@ import {
 } from "lightweight-charts";
 import { Camera, CircleDot, Crosshair, Flag, LineChart, Minus, Save, Target, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { JOURNAL_MARKER_TYPES, JOURNAL_TIMEFRAMES, type JournalTimeframe } from "@/lib/journal/schema";
+import {
+  JOURNAL_CHART_PURPOSES,
+  JOURNAL_MARKER_TYPES,
+  JOURNAL_TIMEFRAMES,
+  type JournalChartPurposeValue,
+  type JournalTimeframe,
+} from "@/lib/journal/schema";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type MarkerType = (typeof JOURNAL_MARKER_TYPES)[number];
@@ -88,17 +95,20 @@ export function JournalChartEditor({
   entryId,
   symbol,
   initialTimeframe = "1D",
+  sectorEtf,
   onSaved,
 }: {
   entryId: string;
   symbol: string;
   initialTimeframe?: JournalTimeframe;
+  sectorEtf?: string | null;
   onSaved: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const compareRef = useRef<ISeriesApi<"Line"> | null>(null);
   const smaRefs = useRef<Array<ISeriesApi<"Line">>>([]);
   const markerPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
@@ -106,9 +116,12 @@ export function JournalChartEditor({
   const pendingTrendRef = useRef<{ time: number; price: number } | null>(null);
   const toolRef = useRef<Tool>("cursor");
   const [timeframe, setTimeframe] = useState<JournalTimeframe>(initialTimeframe);
+  const [purpose, setPurpose] = useState<JournalChartPurposeValue>("THESIS");
+  const [compareSymbol, setCompareSymbol] = useState("");
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [compareCandles, setCompareCandles] = useState<Candle[]>([]);
   const [markers, setMarkers] = useState<Marker[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [tool, setTool] = useState<Tool>("cursor");
@@ -133,6 +146,7 @@ export function JournalChartEditor({
     url.searchParams.set("symbol", symbol);
     url.searchParams.set("timeframe", apiTimeframe(timeframe));
     url.searchParams.set("limit", "1200");
+    if (compareSymbol) url.searchParams.set("compare", compareSymbol);
     if (rangeStart) url.searchParams.set("from", String(Math.floor(new Date(`${rangeStart}T00:00:00Z`).getTime() / 1000)));
     if (rangeEnd) url.searchParams.set("to", String(Math.floor(new Date(`${rangeEnd}T23:59:59Z`).getTime() / 1000)));
 
@@ -143,6 +157,7 @@ export function JournalChartEditor({
       .then((data) => {
         if (cancelled) return;
         setCandles((data.candles ?? []) as Candle[]);
+        setCompareCandles((data.compare?.candles ?? []) as Candle[]);
         setStatus("");
       })
       .catch((error) => {
@@ -151,7 +166,7 @@ export function JournalChartEditor({
     return () => {
       cancelled = true;
     };
-  }, [rangeEnd, rangeStart, symbol, timeframe]);
+  }, [compareSymbol, rangeEnd, rangeStart, symbol, timeframe]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -165,6 +180,7 @@ export function JournalChartEditor({
         horzLines: { color: "rgba(148, 163, 184, 0.14)" },
       },
       rightPriceScale: { borderColor: "#cbd5e1", scaleMargins: { top: 0.1, bottom: 0.1 } },
+      leftPriceScale: { visible: false, borderColor: "#cbd5e1" },
       timeScale: { borderColor: "#cbd5e1", timeVisible: true, secondsVisible: false, rightOffset: 8 },
     });
     const candleSeries = chart.addSeries(CandlestickSeries, {
@@ -180,9 +196,18 @@ export function JournalChartEditor({
     const smaSeries = SMA_CONFIG.map((config) =>
       chart.addSeries(LineSeries, { color: config.color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false }),
     );
+    const compareSeries = chart.addSeries(LineSeries, {
+      color: "#0f766e",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      priceScaleId: "left",
+      title: "Compare %",
+    });
     chartRef.current = chart;
     seriesRef.current = candleSeries;
     volumeRef.current = volumeSeries;
+    compareRef.current = compareSeries;
     smaRefs.current = smaSeries;
     markerPluginRef.current = createSeriesMarkers(candleSeries);
 
@@ -235,6 +260,7 @@ export function JournalChartEditor({
       chartRef.current = null;
       seriesRef.current = null;
       volumeRef.current = null;
+      compareRef.current = null;
       smaRefs.current = [];
       markerPluginRef.current = null;
     };
@@ -253,6 +279,30 @@ export function JournalChartEditor({
     smaData.forEach((sma, index) => smaRefs.current[index]?.setData(sma.data));
     chartRef.current?.timeScale().fitContent();
   }, [candles, smaData]);
+
+  useEffect(() => {
+    const series = compareRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart) return;
+    if (!compareSymbol || compareCandles.length === 0) {
+      series.setData([]);
+      chart.applyOptions({ leftPriceScale: { visible: false } });
+      return;
+    }
+    const first = compareCandles.find((candle) => Number.isFinite(candle.close))?.close;
+    if (!first) {
+      series.setData([]);
+      chart.applyOptions({ leftPriceScale: { visible: false } });
+      return;
+    }
+    chart.applyOptions({ leftPriceScale: { visible: true } });
+    series.setData(
+      compareCandles.map((candle) => ({
+        time: candle.time as UTCTimestamp,
+        value: ((candle.close - first) / first) * 100,
+      })),
+    );
+  }, [compareCandles, compareSymbol]);
 
   useEffect(() => {
     const pluginMarkers: Array<SeriesMarker<Time>> = markers.flatMap((marker) => {
@@ -304,6 +354,8 @@ export function JournalChartEditor({
         body: JSON.stringify({
           symbol,
           timeframe,
+          purpose,
+          compareSymbol: compareSymbol || null,
           rangeStart: rangeStart ? `${rangeStart}T00:00:00.000Z` : null,
           rangeEnd: rangeEnd ? `${rangeEnd}T23:59:59.000Z` : null,
           caption,
@@ -312,7 +364,13 @@ export function JournalChartEditor({
           height: 560,
           mimeType: "image/png",
           markers,
-          tradingViewLayoutJson: JSON.stringify({ annotations, markers, source: advancedChartsAvailable ? "advanced-charts-ready" : "lightweight-capture" }),
+          tradingViewLayoutJson: JSON.stringify({
+            annotations,
+            markers,
+            compareSymbol: compareSymbol || null,
+            purpose,
+            source: advancedChartsAvailable ? "advanced-charts-ready" : "lightweight-capture",
+          }),
         }),
       });
       if (!res.ok) {
@@ -348,7 +406,25 @@ export function JournalChartEditor({
             </Button>
           ))}
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-4">
+          <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            Purpose
+            <Select className="mt-1" value={purpose} onChange={(event) => setPurpose(event.target.value as JournalChartPurposeValue)}>
+              {JOURNAL_CHART_PURPOSES.map((option) => (
+                <option key={option} value={option}>{option.replaceAll("_", " ")}</option>
+              ))}
+            </Select>
+          </label>
+          <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            Compare
+            <Select className="mt-1" value={compareSymbol} onChange={(event) => setCompareSymbol(event.target.value)}>
+              <option value="">Symbol only</option>
+              <option value="SPY">vs SPY</option>
+              <option value="QQQ">vs QQQ</option>
+              <option value="IWM">vs IWM</option>
+              {sectorEtf ? <option value={sectorEtf}>vs {sectorEtf}</option> : null}
+            </Select>
+          </label>
           <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             From
             <input className="mt-1 h-9 rounded-xl border border-slate-200 px-3 text-sm" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} />
