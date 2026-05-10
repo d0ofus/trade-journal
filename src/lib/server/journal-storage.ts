@@ -79,7 +79,13 @@ export async function storeJournalScreenshot(input: {
   }
 
   if (process.env.NODE_ENV === "production") {
-    throw new Error("R2 screenshot storage is not configured.");
+    return {
+      key: `inline:${key}`,
+      url: input.dataUrl,
+      mimeType: parsed.mimeType,
+      width: input.width,
+      height: input.height,
+    };
   }
 
   const localDir = path.join(process.cwd(), "public", "journal-screenshots", input.journalEntryId);
