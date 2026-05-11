@@ -21,6 +21,7 @@ import {
   Tags,
   Trash2,
 } from "lucide-react";
+import { JournalEntryChartPreview } from "@/components/journal-entry-chart-preview";
 import { JournalChartEditor } from "@/components/journal-chart-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -204,6 +205,7 @@ type JournalAnalytics = {
 };
 
 type Tab = "dashboard" | "ideas" | "entry" | "playbooks" | "visual" | "reviews";
+type ChartPreviewRequest = { symbol: string; requestKey: number };
 
 const emptyTags = (): TagsByCategory => ({ SETUP: [], LESSON: [], MISTAKE: [], CONTEXT: [], CUSTOM: [] });
 const emptyRule = (sortOrder: number): JournalPlaybookRule => ({ text: "", category: "SETUP", required: true, sortOrder });
@@ -380,6 +382,7 @@ export function JournalWorkspace({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  const [chartPreviewRequest, setChartPreviewRequest] = useState<ChartPreviewRequest | null>(null);
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, { status: "PASS" | "FAIL" | "NA"; notes: string }>>({});
   const [message, setMessage] = useState("");
   const [query, setQuery] = useState("");
@@ -402,6 +405,21 @@ export function JournalWorkspace({
   const selectedEntry = useMemo(() => entries.find((entry) => entry.id === selectedId) ?? null, [entries, selectedId]);
   const selectedPlaybook = useMemo(() => playbooks.find((playbook) => playbook.id === (form.playbookId || selectedPlaybookId)) ?? null, [form.playbookId, playbooks, selectedPlaybookId]);
   const chartRows = useMemo(() => entries.flatMap((entry) => entry.charts.map((chart) => ({ entry, chart }))), [entries]);
+
+  function updateSymbol(value: string) {
+    const nextSymbol = value.toUpperCase();
+    setForm((current) => ({ ...current, symbol: nextSymbol }));
+    setChartPreviewRequest((current) => (current && current.symbol !== nextSymbol.trim() ? null : current));
+  }
+
+  function loadChartPreview() {
+    const requestedSymbol = form.symbol.trim().toUpperCase();
+    if (!requestedSymbol) return;
+    setChartPreviewRequest((current) => ({
+      symbol: requestedSymbol,
+      requestKey: (current?.requestKey ?? 0) + 1,
+    }));
+  }
 
   useEffect(() => {
     if (!selectedPlaybook) {
@@ -472,6 +490,7 @@ export function JournalWorkspace({
       tags: entry.tags,
     });
     setMarketContext(null);
+    setChartPreviewRequest(null);
     setActiveTab("entry");
   }
 
@@ -479,6 +498,7 @@ export function JournalWorkspace({
     setSelectedId(null);
     setForm(blankForm());
     setMarketContext(null);
+    setChartPreviewRequest(null);
     setRuleDrafts({});
     setActiveTab("entry");
   }
@@ -933,11 +953,23 @@ export function JournalWorkspace({
       )}
 
       {activeTab === "entry" && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.4fr)]">
+        <div className="grid gap-5 xl:grid-cols-[24rem_minmax(0,1fr)]">
           <div className="space-y-4">
             <Panel title="Idea">
               <div className="grid gap-3 sm:grid-cols-2">
-                <LabelInput label="Symbol" value={form.symbol} onChange={(value) => setForm((current) => ({ ...current, symbol: value.toUpperCase() }))} />
+                <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Symbol
+                  <Input
+                    className="mt-1"
+                    value={form.symbol}
+                    onChange={(event) => updateSymbol(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      loadChartPreview();
+                    }}
+                  />
+                </label>
                 <DateField label="Idea Date" value={form.ideaDate} onChange={(value) => setForm((current) => ({ ...current, ideaDate: `${value}T00:00:00.000Z` }))} />
                 <SelectField label="Direction" value={form.direction} options={["LONG", "SHORT"]} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
                 <SelectField label="Status" value={form.status} options={["DRAFT", "WATCHING", "MISSED", "PASSED", "INVALIDATED", "PLAYBOOK", "ARCHIVED"]} onChange={(value) => setForm((current) => ({ ...current, status: value as JournalEntry["status"] }))} />
@@ -951,7 +983,7 @@ export function JournalWorkspace({
             </Panel>
 
             <Panel title="Plan">
-              <div className="grid gap-3 sm:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <NumberField label="Entry" value={form.plannedEntry} onChange={(value) => setNumberField("plannedEntry", value)} />
                 <NumberField label="Stop" value={form.plannedStop} onChange={(value) => setNumberField("plannedStop", value)} />
                 <NumberField label="Target 1" value={form.plannedTarget1} onChange={(value) => setNumberField("plannedTarget1", value)} />
@@ -967,7 +999,7 @@ export function JournalWorkspace({
             </Panel>
 
             <Panel title="Context">
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <SelectField label="Market Regime" value={form.marketRegime} options={[...JOURNAL_MARKET_REGIMES]} onChange={(value) => setForm((current) => ({ ...current, marketRegime: value as MarketRegime }))} />
                 <SelectField label="SPY Trend" value={form.spyTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, spyTrend: value as Trend }))} />
                 <SelectField label="QQQ Trend" value={form.qqqTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, qqqTrend: value as Trend }))} />
@@ -987,7 +1019,7 @@ export function JournalWorkspace({
             </Panel>
 
             <Panel title="Psychology">
-              <div className="grid gap-3 sm:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 {[
                   ["Confidence", "confidenceScore"],
                   ["Plan Clarity", "planClarityScore"],
@@ -1005,7 +1037,7 @@ export function JournalWorkspace({
             </Panel>
 
             <Panel title="Outcome">
-              <div className="grid gap-3 sm:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <SelectField label="Outcome" value={form.outcomeStatus} options={[...JOURNAL_OUTCOME_STATUSES]} onChange={(value) => setForm((current) => ({ ...current, outcomeStatus: value as Outcome }))} />
                 <DateTimeField label="Trigger Time" value={form.actualTriggerAt} onChange={(value) => setForm((current) => ({ ...current, actualTriggerAt: datetimeFromInput(value) }))} />
                 <NumberField label="MFE R" value={form.mfeR} onChange={(value) => setNumberField("mfeR", value)} />
@@ -1054,6 +1086,18 @@ export function JournalWorkspace({
           </div>
 
           <div className="space-y-4">
+            {chartPreviewRequest ? (
+              <JournalEntryChartPreview
+                requestKey={chartPreviewRequest.requestKey}
+                symbol={chartPreviewRequest.symbol}
+                timeframe={coerceTimeframe(form.timeframe)}
+              />
+            ) : (
+              <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-[28px] border border-slate-200/80 bg-white/85 p-8 text-center text-sm text-slate-500">
+                <BarChart3 className="mb-2 h-5 w-5" />
+                No chart loaded.
+              </div>
+            )}
             {selectedEntry ? (
               <>
                 <Panel title="Rule Checklist" detail={selectedPlaybook?.name ?? "No playbook selected"}>
