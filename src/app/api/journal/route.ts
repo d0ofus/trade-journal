@@ -24,12 +24,16 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const parsed = journalEntryPayloadSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  }
+  try {
+    const body = await req.json();
+    const parsed = journalEntryPayloadSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    }
 
-  const entry = await createJournalEntry(mapJournalPayloadToData(parsed.data));
-  return NextResponse.json({ entry }, { status: 201 });
+    const entry = await createJournalEntry(mapJournalPayloadToData(parsed.data));
+    return NextResponse.json({ entry }, { status: 201 });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to save journal entry." }, { status: 500 });
+  }
 }
