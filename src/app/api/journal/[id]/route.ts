@@ -17,15 +17,19 @@ export async function GET(_req: NextRequest, props: { params: Params }) {
 }
 
 export async function PATCH(req: NextRequest, props: { params: Params }) {
-  const { id } = await props.params;
-  const body = await req.json();
-  const parsed = journalEntryPatchSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
-  }
+  try {
+    const { id } = await props.params;
+    const body = await req.json();
+    const parsed = journalEntryPatchSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    }
 
-  const entry = await updateJournalEntry(id, mapJournalPayloadToData(parsed.data));
-  return NextResponse.json({ entry });
+    const entry = await updateJournalEntry(id, mapJournalPayloadToData(parsed.data));
+    return NextResponse.json({ entry });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to save journal entry." }, { status: 500 });
+  }
 }
 
 export async function DELETE(_req: NextRequest, props: { params: Params }) {

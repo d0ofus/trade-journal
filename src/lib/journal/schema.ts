@@ -48,7 +48,7 @@ export const JOURNAL_ACTION_STATUSES = ["OPEN", "DONE", "ARCHIVED"] as const;
 export const JOURNAL_SAVED_VIEW_TYPES = ["IDEAS", "VISUAL"] as const;
 
 const optionalText = z.string().max(20000).optional().default("");
-const optionalShortText = z.string().max(240).optional();
+const optionalShortText = z.string().max(240).nullable().optional();
 const optionalSymbol = z.string().max(20).transform((value) => value.trim().toUpperCase()).nullable().optional();
 const optionalNumber = z.number().finite().nullable().optional();
 const optionalScore = z.number().int().min(1).max(5).nullable().optional();

@@ -433,6 +433,45 @@ function normalizeNumberInput(value: string) {
   return Number.isFinite(next) ? next : null;
 }
 
+function flattenApiErrorPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const error = "error" in payload ? (payload as { error?: unknown }).error : payload;
+  if (typeof error === "string") return error;
+  if (!error || typeof error !== "object") return null;
+  const details: string[] = [];
+  const formErrors = (error as { formErrors?: unknown }).formErrors;
+  if (Array.isArray(formErrors)) details.push(...formErrors.filter((value): value is string => typeof value === "string"));
+  const fieldErrors = (error as { fieldErrors?: unknown }).fieldErrors;
+  if (fieldErrors && typeof fieldErrors === "object") {
+    for (const [field, messages] of Object.entries(fieldErrors)) {
+      if (Array.isArray(messages)) {
+        for (const message of messages) {
+          if (typeof message === "string") details.push(`${field}: ${message}`);
+        }
+      }
+    }
+  }
+  if (details.length > 0) return details.join("; ");
+  if ("message" in error && typeof (error as { message?: unknown }).message === "string") {
+    return (error as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return null;
+  }
+}
+
+async function responseErrorMessage(response: Response, fallback: string) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const payload = await response.json().catch(() => null);
+    return flattenApiErrorPayload(payload) ?? fallback;
+  }
+  const text = await response.text().catch(() => "");
+  return text.trim() ? text.trim().slice(0, 1000) : fallback;
+}
+
 function sectionTitle(title: string, detail?: string) {
   return (
     <div className="mb-3 flex items-center justify-between gap-3">
@@ -770,7 +809,7 @@ export function JournalWorkspace({
     });
     if (!res.ok) {
       setAutosaveState("error");
-      setMessage("Failed to create capture draft.");
+      setMessage(await responseErrorMessage(res, "Failed to create capture draft."));
       return;
     }
     const data = await res.json();
@@ -793,6 +832,7 @@ export function JournalWorkspace({
     });
     if (!res.ok) {
       setAutosaveState("error");
+      setMessage(await responseErrorMessage(res, "Failed to autosave capture draft."));
       return;
     }
     const data = await res.json();
@@ -816,6 +856,7 @@ export function JournalWorkspace({
 
   async function uploadPendingCharts(entryId: string, charts: PendingJournalChart[]) {
     const failed: PendingJournalChart[] = [];
+    const errors: string[] = [];
     let uploaded = 0;
     for (const chart of charts) {
       const { localId, ...payload } = chart;
@@ -829,13 +870,15 @@ export function JournalWorkspace({
         if (res.ok) {
           uploaded += 1;
         } else {
+          errors.push(await responseErrorMessage(res, `Failed to upload ${chart.symbol} chart.`));
           failed.push(chart);
         }
-      } catch {
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : `Failed to upload ${chart.symbol} chart.`);
         failed.push(chart);
       }
     }
-    return { failed, uploaded };
+    return { errors, failed, uploaded };
   }
 
   async function reloadEntries(overrides?: {
@@ -901,22 +944,25 @@ export function JournalWorkspace({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error("Failed to save journal entry.");
+        if (!res.ok) throw new Error(await responseErrorMessage(res, "Failed to save journal entry."));
         const data = await res.json();
         const saved = data.entry as JournalEntry;
         setSelectedId(saved.id);
         setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
         let uploaded = 0;
         let failedCharts: PendingJournalChart[] = [];
+        let chartErrors: string[] = [];
         if (chartsToUpload.length > 0) {
           const result = await uploadPendingCharts(saved.id, chartsToUpload);
           uploaded = result.uploaded;
           failedCharts = result.failed;
+          chartErrors = result.errors;
         }
         setPendingCharts(failedCharts);
         await Promise.all([reloadEntries(), reloadPlaybooks()]);
         if (failedCharts.length > 0) {
-          setMessage(`Saved entry. Attached ${uploaded} chart${uploaded === 1 ? "" : "s"}; ${failedCharts.length} chart${failedCharts.length === 1 ? "" : "s"} still pending.`);
+          const detail = chartErrors.length > 0 ? ` ${chartErrors.join(" ")}` : "";
+          setMessage(`Saved entry. Attached ${uploaded} chart${uploaded === 1 ? "" : "s"}; ${failedCharts.length} chart${failedCharts.length === 1 ? "" : "s"} still pending.${detail}`);
         } else {
           setMessage(chartsToUpload.length > 0 ? `Saved entry with ${uploaded} chart${uploaded === 1 ? "" : "s"}.` : "Saved journal entry.");
         }
