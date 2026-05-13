@@ -17,7 +17,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { Camera, CircleDot, Crosshair, Flag, LineChart, Minus, Redo2, Save, Target, Undo2, X } from "lucide-react";
+import { ArrowRight, Camera, CircleDot, Crosshair, Flag, LineChart, Minus, Redo2, Save, Target, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,12 +31,28 @@ import {
 
 type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 type MarkerType = (typeof JOURNAL_MARKER_TYPES)[number];
-type Tool = "cursor" | "horizontal" | "trend" | MarkerType;
+type Tool = "cursor" | "horizontal" | "horizontalRay" | "trend" | MarkerType;
 type Marker = { markerType: MarkerType; time: string | null; price: number | null; label: string | null; metadataJson?: string | null };
 type Annotation =
   | { id: string; type: "horizontal"; price: number; color: string }
+  | { id: string; type: "horizontalRay"; fromTime: number; price: number; color: string }
   | { id: string; type: "trend"; fromTime: number; fromPrice: number; toTime: number; toPrice: number; color: string };
 type EditorState = { markers: Marker[]; annotations: Annotation[] };
+export type JournalChartStagePayload = {
+  symbol: string;
+  timeframe: JournalTimeframe;
+  purpose: JournalChartPurposeValue;
+  compareSymbol: string | null;
+  rangeStart: string | null;
+  rangeEnd: string | null;
+  caption: string;
+  screenshotDataUrl: string;
+  width: number | null;
+  height: number;
+  mimeType: string;
+  markers: Marker[];
+  tradingViewLayoutJson: string;
+};
 type PlanOverlay = {
   direction?: "LONG" | "SHORT";
   ideaDate?: string | null;
@@ -49,6 +65,19 @@ type PlanOverlay = {
   plannedTarget3?: number | null;
   bestExitR?: number | null;
 };
+
+type CommonChartEditorProps = {
+  chartHeight?: number;
+  symbol: string;
+  initialTimeframe?: JournalTimeframe;
+  sectorEtf?: string | null;
+  plan?: PlanOverlay;
+};
+
+type JournalChartEditorProps = CommonChartEditorProps & (
+  | { mode?: "persist"; entryId: string; onSaved: () => void; onStageChart?: never }
+  | { mode: "stage"; entryId?: never; onSaved?: never; onStageChart: (payload: JournalChartStagePayload) => void }
+);
 
 const SMA_CONFIG = [
   { period: 10, color: "#0284c7" },
@@ -107,20 +136,14 @@ function canvasToDataUrl(canvas: HTMLCanvasElement) {
 export function JournalChartEditor({
   chartHeight = 560,
   entryId,
+  mode = "persist",
   symbol,
   initialTimeframe = "1D",
   sectorEtf,
   plan,
+  onStageChart,
   onSaved,
-}: {
-  entryId: string;
-  symbol: string;
-  initialTimeframe?: JournalTimeframe;
-  sectorEtf?: string | null;
-  plan?: PlanOverlay;
-  chartHeight?: number;
-  onSaved: () => void;
-}) {
+}: JournalChartEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -134,6 +157,7 @@ export function JournalChartEditor({
   const toolRef = useRef<Tool>("cursor");
   const markersRef = useRef<Marker[]>([]);
   const annotationsRef = useRef<Annotation[]>([]);
+  const lastAddedRef = useRef<"marker" | "annotation" | null>(null);
   const [timeframe, setTimeframe] = useState<JournalTimeframe>(initialTimeframe);
   const [purpose, setPurpose] = useState<JournalChartPurposeValue>("THESIS");
   const [compareSymbol, setCompareSymbol] = useState("");
@@ -157,6 +181,10 @@ export function JournalChartEditor({
   useEffect(() => {
     toolRef.current = tool;
   }, [tool]);
+
+  useEffect(() => {
+    setTimeframe(initialTimeframe);
+  }, [initialTimeframe]);
 
   useEffect(() => {
     pendingTrendRef.current = pendingTrend;
@@ -244,17 +272,24 @@ export function JournalChartEditor({
       if (event.key === "Delete" || event.key === "Backspace") {
         if (markersRef.current.length || annotationsRef.current.length) {
           event.preventDefault();
-          commitState(markersRef.current.slice(0, -1), annotationsRef.current.slice(0, -1));
+          if (lastAddedRef.current === "marker" && markersRef.current.length) {
+            commitState(markersRef.current.slice(0, -1), annotationsRef.current);
+          } else if (annotationsRef.current.length) {
+            commitState(markersRef.current, annotationsRef.current.slice(0, -1));
+          } else {
+            commitState(markersRef.current.slice(0, -1), annotationsRef.current);
+          }
         }
         return;
       }
       if (event.altKey && key === "j") {
         event.preventDefault();
-        setTool("horizontal");
+        setTool("horizontalRay");
         return;
       }
       const toolByKey: Partial<Record<string, Tool>> = {
         v: "cursor",
+        h: "horizontal",
         t: "trend",
         e: "IDEAL_ENTRY",
         s: "STOP",
@@ -326,6 +361,12 @@ export function JournalChartEditor({
       if (typeof price !== "number" || !Number.isFinite(price)) return;
       if (currentTool === "horizontal") {
         commitState(markersRef.current, [...annotationsRef.current, { id: crypto.randomUUID(), type: "horizontal", price, color: "#2563eb" }]);
+        lastAddedRef.current = "annotation";
+        return;
+      }
+      if (currentTool === "horizontalRay") {
+        commitState(markersRef.current, [...annotationsRef.current, { id: crypto.randomUUID(), type: "horizontalRay", fromTime: time, price, color: "#2563eb" }]);
+        lastAddedRef.current = "annotation";
         return;
       }
       if (currentTool === "trend") {
@@ -338,6 +379,7 @@ export function JournalChartEditor({
           ...annotationsRef.current,
           { id: crypto.randomUUID(), type: "trend", fromTime: pending.time, fromPrice: pending.price, toTime: time, toPrice: price, color: "#f59e0b" },
         ]);
+        lastAddedRef.current = "annotation";
         setPendingTrend(null);
         return;
       }
@@ -352,6 +394,7 @@ export function JournalChartEditor({
           metadataJson: JSON.stringify({ source: "journal-chart-editor" }),
         },
       ], annotationsRef.current);
+      lastAddedRef.current = "marker";
     };
     chart.subscribeClick(clickHandler);
     const resizeObserver = new ResizeObserver(() => {
@@ -433,9 +476,20 @@ export function JournalChartEditor({
     for (const trend of trendRefs.current) chart.removeSeries(trend);
     priceLinesRef.current = [];
     trendRefs.current = [];
+    const lastTime = candles.at(-1)?.time ?? Math.floor(Date.now() / 1000);
+    const firstTime = candles[0]?.time ?? lastTime - 86400;
+    const inferredStep = candles.length > 1 ? Math.max(60, Math.round((lastTime - firstTime) / Math.max(1, candles.length - 1))) : 86400;
     for (const annotation of annotations) {
       if (annotation.type === "horizontal") {
         priceLinesRef.current.push(series.createPriceLine({ price: annotation.price, color: annotation.color, lineWidth: 2, lineStyle: 2, axisLabelVisible: true }));
+      } else if (annotation.type === "horizontalRay") {
+        const ray = chart.addSeries(LineSeries, { color: annotation.color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+        const toTime = Math.max(lastTime + inferredStep * 20, annotation.fromTime + inferredStep * 20);
+        ray.setData([
+          { time: annotation.fromTime as UTCTimestamp, value: annotation.price },
+          { time: toTime as UTCTimestamp, value: annotation.price },
+        ]);
+        trendRefs.current.push(ray);
       } else {
         const trend = chart.addSeries(LineSeries, { color: annotation.color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
         trend.setData([
@@ -445,38 +499,60 @@ export function JournalChartEditor({
         trendRefs.current.push(trend);
       }
     }
-  }, [annotations]);
+  }, [annotations, candles]);
+
+  function buildChartPayload(): JournalChartStagePayload | null {
+    if (!chartRef.current) return null;
+    const screenshot = canvasToDataUrl(chartRef.current.takeScreenshot(true));
+    return {
+      symbol,
+      timeframe,
+      purpose,
+      compareSymbol: compareSymbol || null,
+      rangeStart: rangeStart ? `${rangeStart}T00:00:00.000Z` : null,
+      rangeEnd: rangeEnd ? `${rangeEnd}T23:59:59.000Z` : null,
+      caption,
+      screenshotDataUrl: screenshot,
+      width: containerRef.current?.clientWidth ?? null,
+      height: chartHeight,
+      mimeType: "image/png",
+      markers,
+      tradingViewLayoutJson: JSON.stringify({
+        annotations,
+        markers,
+        compareSymbol: compareSymbol || null,
+        purpose,
+        source: advancedChartsAvailable ? "advanced-charts-ready" : "lightweight-capture",
+      }),
+    };
+  }
+
+  function resetMarkup() {
+    setCaption("");
+    setMarkers([]);
+    setAnnotations([]);
+    setPendingTrend(null);
+    lastAddedRef.current = null;
+  }
 
   async function saveChart() {
-    if (!chartRef.current) return;
+    const payload = buildChartPayload();
+    if (!payload) return;
+    if (mode === "stage") {
+      if (!onStageChart) return;
+      onStageChart(payload);
+      resetMarkup();
+      setStatus("Attached chart.");
+      return;
+    }
+    if (!entryId || !onSaved) return;
     setSaving(true);
     setStatus("Saving chart...");
     try {
-      const screenshot = canvasToDataUrl(chartRef.current.takeScreenshot(true));
       const res = await fetch(`/api/journal/${entryId}/charts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol,
-          timeframe,
-          purpose,
-          compareSymbol: compareSymbol || null,
-          rangeStart: rangeStart ? `${rangeStart}T00:00:00.000Z` : null,
-          rangeEnd: rangeEnd ? `${rangeEnd}T23:59:59.000Z` : null,
-          caption,
-          screenshotDataUrl: screenshot,
-          width: containerRef.current?.clientWidth ?? null,
-          height: chartHeight,
-          mimeType: "image/png",
-          markers,
-          tradingViewLayoutJson: JSON.stringify({
-            annotations,
-            markers,
-            compareSymbol: compareSymbol || null,
-            purpose,
-            source: advancedChartsAvailable ? "advanced-charts-ready" : "lightweight-capture",
-          }),
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const errorPayload = await res.json().catch(() => null);
@@ -488,10 +564,7 @@ export function JournalChartEditor({
               : "Failed to save chart.";
         throw new Error(errorMessage);
       }
-      setCaption("");
-      setMarkers([]);
-      setAnnotations([]);
-      setPendingTrend(null);
+      resetMarkup();
       setStatus("Saved chart.");
       onSaved();
     } catch (error) {
@@ -589,6 +662,9 @@ export function JournalChartEditor({
         <Button size="sm" variant={tool === "horizontal" ? "default" : "outline"} onClick={() => setTool("horizontal")} title="Horizontal line">
           <Minus className="h-4 w-4" />
         </Button>
+        <Button size="sm" variant={tool === "horizontalRay" ? "default" : "outline"} onClick={() => setTool("horizontalRay")} title="Horizontal ray">
+          <ArrowRight className="h-4 w-4" />
+        </Button>
         <Button size="sm" variant={tool === "trend" ? "default" : "outline"} onClick={() => setTool("trend")} title="Trend line">
           <LineChart className="h-4 w-4" />
         </Button>
@@ -614,7 +690,7 @@ export function JournalChartEditor({
         </Button>
         <Button size="sm" className="ml-auto" disabled={saving || candles.length === 0} onClick={saveChart}>
           {saving ? <Save className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
-          Save Chart
+          {mode === "stage" ? "Attach Chart" : "Save Chart"}
         </Button>
       </div>
       <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white p-2 shadow-[0_20px_50px_-34px_rgba(15,23,42,0.28)]">
