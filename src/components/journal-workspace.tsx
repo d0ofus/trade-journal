@@ -259,7 +259,17 @@ type JournalAnalytics = {
 };
 
 type Tab = "dashboard" | "capture" | "inbox" | "ideas" | "entry" | "playbooks" | "visual" | "tags" | "reviews";
+type EntrySection = "basics" | "plan" | "thesis" | "context" | "review" | "tags";
 type ChartPreviewRequest = { symbol: string; requestKey: number };
+
+const ENTRY_SECTIONS: Array<{ key: EntrySection; label: string }> = [
+  { key: "basics", label: "Basics" },
+  { key: "plan", label: "Plan" },
+  { key: "thesis", label: "Thesis" },
+  { key: "context", label: "Context" },
+  { key: "review", label: "Review" },
+  { key: "tags", label: "Tags" },
+];
 
 const emptyTags = (): TagsByCategory => ({ SETUP: [], LESSON: [], MISTAKE: [], CONTEXT: [], CUSTOM: [] });
 const emptyRule = (sortOrder: number): JournalPlaybookRule => ({ text: "", category: "SETUP", required: true, sortOrder });
@@ -453,6 +463,8 @@ export function JournalWorkspace({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  const [entrySection, setEntrySection] = useState<EntrySection>("basics");
+  const [entryChartHeight, setEntryChartHeight] = useState(680);
   const [chartPreviewRequest, setChartPreviewRequest] = useState<ChartPreviewRequest | null>(null);
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, { status: "PASS" | "FAIL" | "NA"; notes: string }>>({});
   const [message, setMessage] = useState("");
@@ -502,6 +514,19 @@ export function JournalWorkspace({
     return true;
   }), [chartRows, filterPurpose, filterTimeframe, minFitScore, minBestExitR]);
   const compareRows = useMemo(() => chartRows.filter((row) => selectedChartIds.includes(row.chart.id)).slice(0, 4), [chartRows, selectedChartIds]);
+  const entryEssentials = useMemo(() => [
+    { label: "Chart", done: Boolean(selectedEntry?.charts.length) },
+    { label: "Entry", done: form.plannedEntry != null },
+    { label: "Stop", done: form.plannedStop != null },
+    { label: "Thesis", done: Boolean(form.thesis.trim()) },
+    { label: "Trigger", done: Boolean(form.trigger.trim()) },
+    { label: "Tags", done: JOURNAL_TAG_CATEGORIES.some((category) => form.tags[category].length > 0) },
+    { label: "Outcome", done: form.outcomeStatus !== "UNREVIEWED" },
+  ], [form.outcomeStatus, form.plannedEntry, form.plannedStop, form.tags, form.thesis, form.trigger, selectedEntry?.charts.length]);
+  const entryCompletion = Math.round((entryEssentials.filter((item) => item.done).length / entryEssentials.length) * 100);
+  const planRisk = typeof form.plannedEntry === "number" && typeof form.plannedStop === "number"
+    ? Math.abs(form.plannedEntry - form.plannedStop)
+    : null;
 
   function updateSymbol(value: string) {
     const nextSymbol = value.toUpperCase();
@@ -567,6 +592,16 @@ export function JournalWorkspace({
     if (activeTab === "inbox") loadInbox();
     if (activeTab === "visual") loadSavedViews("VISUAL");
   }, [activeTab]);
+
+  useEffect(() => {
+    function syncEntryChartHeight() {
+      const width = window.innerWidth;
+      setEntryChartHeight(width < 640 ? 460 : width < 1280 ? 590 : 680);
+    }
+    syncEntryChartHeight();
+    window.addEventListener("resize", syncEntryChartHeight);
+    return () => window.removeEventListener("resize", syncEntryChartHeight);
+  }, []);
 
   function selectEntry(entry: JournalEntry) {
     autosaveReadyRef.current = false;
@@ -637,6 +672,7 @@ export function JournalWorkspace({
     setMarketContext(null);
     setChartPreviewRequest(null);
     setRuleDrafts({});
+    setEntrySection("basics");
     setActiveTab("entry");
   }
 
@@ -702,7 +738,7 @@ export function JournalWorkspace({
     };
   }
 
-  async function createCaptureDraft() {
+  async function createCaptureDraft(targetTab: Tab = "capture") {
     const symbol = form.symbol.trim().toUpperCase();
     if (!symbol) return;
     setAutosaveState("saving");
@@ -733,7 +769,7 @@ export function JournalWorkspace({
     const saved = data.entry as JournalEntry;
     setSelectedId(saved.id);
     selectEntry(saved);
-    setActiveTab("capture");
+    setActiveTab(targetTab);
     setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
     setAutosaveState("saved");
     autosaveReadyRef.current = true;
@@ -1158,6 +1194,122 @@ export function JournalWorkspace({
     });
   }
 
+  function renderEntrySection() {
+    if (entrySection === "basics") {
+      return (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+              Symbol
+              <Input
+                className="mt-1"
+                value={form.symbol}
+                onChange={(event) => updateSymbol(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  loadChartPreview();
+                }}
+              />
+            </label>
+            <DateField label="Idea Date" value={form.ideaDate} onChange={(value) => setForm((current) => ({ ...current, ideaDate: `${value}T00:00:00.000Z` }))} />
+            <SelectField label="Direction" value={form.direction} options={["LONG", "SHORT"]} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
+            <SelectField label="Status" value={form.status} options={["DRAFT", "WATCHING", "MISSED", "PASSED", "INVALIDATED", "PLAYBOOK", "ARCHIVED"]} onChange={(value) => setForm((current) => ({ ...current, status: value as JournalEntry["status"] }))} />
+            <LabelInput label="Setup" value={form.setup ?? ""} onChange={(value) => setForm((current) => ({ ...current, setup: value }))} />
+            <SelectField label="Timeframe" value={form.timeframe} options={[...JOURNAL_TIMEFRAMES]} onChange={(value) => setForm((current) => ({ ...current, timeframe: value }))} />
+            <SelectField label="Macro Sentiment" value={form.macroSentiment} options={["BULLISH", "NEUTRAL", "BEARISH"]} onChange={(value) => setForm((current) => ({ ...current, macroSentiment: value as JournalEntry["macroSentiment"] }))} />
+            <SelectField label="Playbook" value={form.playbookId ?? ""} options={["", ...playbooks.map((playbook) => playbook.id)]} optionLabels={{ "": "No playbook", ...Object.fromEntries(playbooks.map((playbook) => [playbook.id, playbook.name])) }} onChange={(value) => setForm((current) => ({ ...current, playbookId: value || null }))} />
+          </div>
+        </div>
+      );
+    }
+
+    if (entrySection === "plan") {
+      return (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <NumberField label="Entry" value={form.plannedEntry} onChange={(value) => setNumberField("plannedEntry", value)} />
+            <NumberField label="Stop" value={form.plannedStop} onChange={(value) => setNumberField("plannedStop", value)} />
+            <NumberField label="Target 1" value={form.plannedTarget1} onChange={(value) => setNumberField("plannedTarget1", value)} />
+            <NumberField label="Target 2" value={form.plannedTarget2} onChange={(value) => setNumberField("plannedTarget2", value)} />
+            <NumberField label="Target 3" value={form.plannedTarget3} onChange={(value) => setNumberField("plannedTarget3", value)} />
+            <NumberField label="Invalidation" value={form.invalidationLevel} onChange={(value) => setNumberField("invalidationLevel", value)} />
+            <NumberField label="Expected R" value={form.expectedR} onChange={(value) => setNumberField("expectedR", value)} />
+            <NumberField label="Follow Days" value={form.followThroughDays} onChange={(value) => setNumberField("followThroughDays", value)} />
+          </div>
+          <TextAreaField label="Risk Plan" value={form.riskPlan} onChange={(value) => setForm((current) => ({ ...current, riskPlan: value }))} />
+        </div>
+      );
+    }
+
+    if (entrySection === "thesis") {
+      return (
+        <div className="space-y-4">
+          <TextAreaField label="Thesis" value={form.thesis} onChange={(value) => setForm((current) => ({ ...current, thesis: value }))} />
+          <TextAreaField label="Trigger" value={form.trigger} onChange={(value) => setForm((current) => ({ ...current, trigger: value }))} />
+          <TextAreaField label="Ideal Execution" value={form.idealExecutionPlan} onChange={(value) => setForm((current) => ({ ...current, idealExecutionPlan: value }))} />
+          <TextAreaField label="Missed / No-Trade Reason" value={form.missedReason} onChange={(value) => setForm((current) => ({ ...current, missedReason: value }))} />
+        </div>
+      );
+    }
+
+    if (entrySection === "context") {
+      return (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SelectField label="Market Regime" value={form.marketRegime} options={[...JOURNAL_MARKET_REGIMES]} onChange={(value) => setForm((current) => ({ ...current, marketRegime: value as MarketRegime }))} />
+            <LabelInput label="Sector ETF" value={form.sectorEtf ?? ""} onChange={(value) => setForm((current) => ({ ...current, sectorEtf: value.toUpperCase() }))} />
+            <SelectField label="SPY Trend" value={form.spyTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, spyTrend: value as Trend }))} />
+            <SelectField label="QQQ Trend" value={form.qqqTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, qqqTrend: value as Trend }))} />
+            <SelectField label="IWM Trend" value={form.iwmTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, iwmTrend: value as Trend }))} />
+            <SelectField label="Sector Trend" value={form.sectorTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, sectorTrend: value as Trend }))} />
+          </div>
+          <TextAreaField label="Market Context" value={form.marketContext} onChange={(value) => setForm((current) => ({ ...current, marketContext: value }))} />
+          <TextAreaField label="Peer Context" value={form.peerContext} onChange={(value) => setForm((current) => ({ ...current, peerContext: value }))} />
+          <TextAreaField label="Breadth Notes" value={form.breadthNotes} onChange={(value) => setForm((current) => ({ ...current, breadthNotes: value }))} />
+          <TextAreaField label="Catalyst / News" value={form.catalystNotes} onChange={(value) => setForm((current) => ({ ...current, catalystNotes: value }))} />
+          <TextAreaField label="Relative Strength" value={form.relativeStrengthNotes} onChange={(value) => setForm((current) => ({ ...current, relativeStrengthNotes: value }))} />
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={pending || !form.symbol.trim()} onClick={loadMarketContext}><RefreshCw className="h-4 w-4" />Market Context</Button>
+            {selectedId && marketContext ? <Button variant="outline" disabled={pending} onClick={saveContextSnapshot}><BookOpenCheck className="h-4 w-4" />Save Snapshot</Button> : null}
+          </div>
+        </div>
+      );
+    }
+
+    if (entrySection === "review") {
+      return (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SelectField label="Outcome" value={form.outcomeStatus} options={[...JOURNAL_OUTCOME_STATUSES]} onChange={(value) => setForm((current) => ({ ...current, outcomeStatus: value as Outcome }))} />
+            <DateTimeField label="Trigger Time" value={form.actualTriggerAt} onChange={(value) => setForm((current) => ({ ...current, actualTriggerAt: datetimeFromInput(value) }))} />
+            <NumberField label="MFE R" value={form.mfeR} onChange={(value) => setNumberField("mfeR", value)} />
+            <NumberField label="MAE R" value={form.maeR} onChange={(value) => setNumberField("maeR", value)} />
+            <NumberField label="Best Exit R" value={form.bestExitR} onChange={(value) => setNumberField("bestExitR", value)} />
+            <NumberField label="Rating" max={5} min={1} value={form.rating} onChange={(value) => setNumberField("rating", value)} />
+            <NumberField label="Confidence" max={5} min={1} value={form.confidenceScore} onChange={(value) => setNumberField("confidenceScore", value)} />
+            <NumberField label="Plan Clarity" max={5} min={1} value={form.planClarityScore} onChange={(value) => setNumberField("planClarityScore", value)} />
+            <NumberField label="Preparation" max={5} min={1} value={form.preparationScore} onChange={(value) => setNumberField("preparationScore", value)} />
+            <NumberField label="Patience" max={5} min={1} value={form.patienceScore} onChange={(value) => setNumberField("patienceScore", value)} />
+            <NumberField label="Rule Adherence" max={5} min={1} value={form.ruleAdherenceScore} onChange={(value) => setNumberField("ruleAdherenceScore", value)} />
+            <SelectField label="Would Take Again" value={form.wouldTakeAgain == null ? "" : form.wouldTakeAgain ? "YES" : "NO"} options={["", "YES", "NO"]} onChange={(value) => setForm((current) => ({ ...current, wouldTakeAgain: value ? value === "YES" : null }))} />
+          </div>
+          <LabelInput label="Emotional State" value={form.emotionalState ?? ""} onChange={(value) => setForm((current) => ({ ...current, emotionalState: value }))} />
+          <TextAreaField label="Outcome Notes" value={form.outcomeNotes} onChange={(value) => setForm((current) => ({ ...current, outcomeNotes: value }))} />
+          <TextAreaField label="Lesson Learned" value={form.lessonLearned} onChange={(value) => setForm((current) => ({ ...current, lessonLearned: value }))} />
+        </div>
+      );
+    }
+
+    return (
+      <div className="grid gap-3 sm:grid-cols-2">
+        {JOURNAL_TAG_CATEGORIES.map((category) => (
+          <LabelInput key={category} label={category === "LESSON" ? "Lesson Tags" : `${category} Tags`} value={tagString(form.tags[category])} onChange={(value) => updateTags(category, value)} />
+        ))}
+      </div>
+    );
+  }
+
   function promoteNewSetup(entry: JournalEntry) {
     setSelectedPlaybookId(null);
     setPlaybookForm({
@@ -1459,204 +1611,230 @@ export function JournalWorkspace({
       )}
 
       {activeTab === "entry" && (
-        <div className="grid gap-5 xl:grid-cols-[24rem_minmax(0,1fr)]">
-          <div className="space-y-4">
-            <Panel title="Idea">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                  Symbol
-                  <Input
-                    className="mt-1"
-                    value={form.symbol}
-                    onChange={(event) => updateSymbol(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-                      loadChartPreview();
-                    }}
-                  />
-                </label>
-                <DateField label="Idea Date" value={form.ideaDate} onChange={(value) => setForm((current) => ({ ...current, ideaDate: `${value}T00:00:00.000Z` }))} />
-                <SelectField label="Direction" value={form.direction} options={["LONG", "SHORT"]} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
-                <SelectField label="Status" value={form.status} options={["DRAFT", "WATCHING", "MISSED", "PASSED", "INVALIDATED", "PLAYBOOK", "ARCHIVED"]} onChange={(value) => setForm((current) => ({ ...current, status: value as JournalEntry["status"] }))} />
-                <LabelInput label="Setup" value={form.setup ?? ""} onChange={(value) => setForm((current) => ({ ...current, setup: value }))} />
-                <SelectField label="Timeframe" value={form.timeframe} options={[...JOURNAL_TIMEFRAMES]} onChange={(value) => setForm((current) => ({ ...current, timeframe: value }))} />
-                <SelectField label="Macro Sentiment" value={form.macroSentiment} options={["BULLISH", "NEUTRAL", "BEARISH"]} onChange={(value) => setForm((current) => ({ ...current, macroSentiment: value as JournalEntry["macroSentiment"] }))} />
-                <SelectField label="Playbook" value={form.playbookId ?? ""} options={["", ...playbooks.map((playbook) => playbook.id)]} optionLabels={{ "": "No playbook", ...Object.fromEntries(playbooks.map((playbook) => [playbook.id, playbook.name])) }} onChange={(value) => setForm((current) => ({ ...current, playbookId: value || null }))} />
+        <div className="space-y-4">
+          <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4 shadow-[0_18px_45px_-36px_rgba(15,23,42,0.3)]">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-2xl font-semibold tracking-tight text-slate-950">{form.symbol.trim() || "New journal entry"}</h2>
+                  <Badge variant={statusTone(form.status)}>{form.status}</Badge>
+                  <Badge variant={outcomeTone(form.outcomeStatus)}>{compactLabel(form.outcomeStatus)}</Badge>
+                </div>
+                <p className="mt-1 text-sm text-slate-500">
+                  {dateInputValue(form.ideaDate) || "No date"} | {form.direction} | {form.timeframe} | {form.setup || "No setup"} | Fit {selectedEntry ? formatFitScore(selectedEntry) : "-"}
+                </p>
               </div>
-              <TextAreaField label="Thesis" value={form.thesis} onChange={(value) => setForm((current) => ({ ...current, thesis: value }))} />
-              <TextAreaField label="Trigger" value={form.trigger} onChange={(value) => setForm((current) => ({ ...current, trigger: value }))} />
-            </Panel>
-
-            <Panel title="Plan">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumberField label="Entry" value={form.plannedEntry} onChange={(value) => setNumberField("plannedEntry", value)} />
-                <NumberField label="Stop" value={form.plannedStop} onChange={(value) => setNumberField("plannedStop", value)} />
-                <NumberField label="Target 1" value={form.plannedTarget1} onChange={(value) => setNumberField("plannedTarget1", value)} />
-                <NumberField label="Target 2" value={form.plannedTarget2} onChange={(value) => setNumberField("plannedTarget2", value)} />
-                <NumberField label="Target 3" value={form.plannedTarget3} onChange={(value) => setNumberField("plannedTarget3", value)} />
-                <NumberField label="Invalidation" value={form.invalidationLevel} onChange={(value) => setNumberField("invalidationLevel", value)} />
-                <NumberField label="Expected R" value={form.expectedR} onChange={(value) => setNumberField("expectedR", value)} />
-                <NumberField label="Follow Days" value={form.followThroughDays} onChange={(value) => setNumberField("followThroughDays", value)} />
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={loadChartPreview} disabled={!form.symbol.trim()}><BarChart3 className="h-4 w-4" />Load Chart</Button>
+                {!selectedEntry ? <Button variant="outline" onClick={() => void createCaptureDraft("entry")} disabled={!form.symbol.trim()}><Plus className="h-4 w-4" />Create Draft</Button> : null}
+                {selectedEntry ? <Button variant="outline" onClick={() => calculateOutcome(selectedEntry.id)}><RefreshCw className="h-4 w-4" />Calculate</Button> : null}
+                <Button disabled={pending || !form.symbol.trim()} onClick={saveEntry}><Save className="h-4 w-4" />Save Entry</Button>
+                {selectedId ? <Button variant="destructive" disabled={pending} onClick={deleteEntry}><Trash2 className="h-4 w-4" />Delete</Button> : null}
               </div>
-              <TextAreaField label="Risk Plan" value={form.riskPlan} onChange={(value) => setForm((current) => ({ ...current, riskPlan: value }))} />
-              <TextAreaField label="Ideal Execution" value={form.idealExecutionPlan} onChange={(value) => setForm((current) => ({ ...current, idealExecutionPlan: value }))} />
-              <TextAreaField label="Missed / No-Trade Reason" value={form.missedReason} onChange={(value) => setForm((current) => ({ ...current, missedReason: value }))} />
-            </Panel>
-
-            <Panel title="Context">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <SelectField label="Market Regime" value={form.marketRegime} options={[...JOURNAL_MARKET_REGIMES]} onChange={(value) => setForm((current) => ({ ...current, marketRegime: value as MarketRegime }))} />
-                <SelectField label="SPY Trend" value={form.spyTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, spyTrend: value as Trend }))} />
-                <SelectField label="QQQ Trend" value={form.qqqTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, qqqTrend: value as Trend }))} />
-                <SelectField label="IWM Trend" value={form.iwmTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, iwmTrend: value as Trend }))} />
-                <SelectField label="Sector Trend" value={form.sectorTrend} options={[...JOURNAL_TREND_STATES]} onChange={(value) => setForm((current) => ({ ...current, sectorTrend: value as Trend }))} />
-                <LabelInput label="Sector ETF" value={form.sectorEtf ?? ""} onChange={(value) => setForm((current) => ({ ...current, sectorEtf: value.toUpperCase() }))} />
-              </div>
-              <TextAreaField label="Market Context" value={form.marketContext} onChange={(value) => setForm((current) => ({ ...current, marketContext: value }))} />
-              <TextAreaField label="Peer Context" value={form.peerContext} onChange={(value) => setForm((current) => ({ ...current, peerContext: value }))} />
-              <TextAreaField label="Breadth Notes" value={form.breadthNotes} onChange={(value) => setForm((current) => ({ ...current, breadthNotes: value }))} />
-              <TextAreaField label="Catalyst / News" value={form.catalystNotes} onChange={(value) => setForm((current) => ({ ...current, catalystNotes: value }))} />
-              <TextAreaField label="Relative Strength" value={form.relativeStrengthNotes} onChange={(value) => setForm((current) => ({ ...current, relativeStrengthNotes: value }))} />
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button variant="outline" disabled={pending || !form.symbol.trim()} onClick={loadMarketContext}><RefreshCw className="h-4 w-4" />Market Context</Button>
-                {selectedId && marketContext ? <Button variant="outline" disabled={pending} onClick={saveContextSnapshot}><BookOpenCheck className="h-4 w-4" />Save Snapshot</Button> : null}
-              </div>
-            </Panel>
-
-            <Panel title="Psychology">
-              <div className="grid gap-3 sm:grid-cols-2">
-                {[
-                  ["Confidence", "confidenceScore"],
-                  ["Plan Clarity", "planClarityScore"],
-                  ["Preparation", "preparationScore"],
-                  ["Patience", "patienceScore"],
-                  ["Rule Adherence", "ruleAdherenceScore"],
-                  ["Rating", "rating"],
-                ].map(([label, key]) => (
-                  <NumberField key={key} label={label} max={5} min={1} value={form[key as keyof typeof form] as number | null} onChange={(value) => setNumberField(key as keyof typeof form, value)} />
-                ))}
-                <LabelInput label="Emotional State" value={form.emotionalState ?? ""} onChange={(value) => setForm((current) => ({ ...current, emotionalState: value }))} />
-                <SelectField label="Would Take Again" value={form.wouldTakeAgain == null ? "" : form.wouldTakeAgain ? "YES" : "NO"} options={["", "YES", "NO"]} onChange={(value) => setForm((current) => ({ ...current, wouldTakeAgain: value ? value === "YES" : null }))} />
-              </div>
-              <TextAreaField label="Lesson Learned" value={form.lessonLearned} onChange={(value) => setForm((current) => ({ ...current, lessonLearned: value }))} />
-            </Panel>
-
-            <Panel title="Outcome">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <SelectField label="Outcome" value={form.outcomeStatus} options={[...JOURNAL_OUTCOME_STATUSES]} onChange={(value) => setForm((current) => ({ ...current, outcomeStatus: value as Outcome }))} />
-                <DateTimeField label="Trigger Time" value={form.actualTriggerAt} onChange={(value) => setForm((current) => ({ ...current, actualTriggerAt: datetimeFromInput(value) }))} />
-                <NumberField label="MFE R" value={form.mfeR} onChange={(value) => setNumberField("mfeR", value)} />
-                <NumberField label="MAE R" value={form.maeR} onChange={(value) => setNumberField("maeR", value)} />
-                <NumberField label="Best Exit R" value={form.bestExitR} onChange={(value) => setNumberField("bestExitR", value)} />
-              </div>
-              <TextAreaField label="Outcome Notes" value={form.outcomeNotes} onChange={(value) => setForm((current) => ({ ...current, outcomeNotes: value }))} />
-            </Panel>
-
-            <Panel title="Tags">
-              <div className="grid gap-3 sm:grid-cols-2">
-                {JOURNAL_TAG_CATEGORIES.map((category) => (
-                  <LabelInput key={category} label={category === "LESSON" ? "Lesson Tags" : `${category} Tags`} value={tagString(form.tags[category])} onChange={(value) => updateTags(category, value)} />
-                ))}
-              </div>
-            </Panel>
-
-            <div className="flex flex-wrap gap-2">
-              <Button disabled={pending || !form.symbol.trim()} onClick={saveEntry}><Save className="h-4 w-4" />Save Entry</Button>
-              {selectedId ? <Button variant="destructive" disabled={pending} onClick={deleteEntry}><Trash2 className="h-4 w-4" />Delete</Button> : null}
             </div>
-
-            {marketContext ? (
-              <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-950">Peer Group Context</p>
-                    <p className="mt-1 text-sm text-slate-500">{marketContext.detail?.groups?.[0]?.name ?? "No peer group loaded"}</p>
-                  </div>
-                  <a className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50" href={marketContext.peerGroupsUrl} target="_blank" rel="noreferrer">
-                    <LinkIcon className="h-3.5 w-3.5" /> Peer Groups
-                  </a>
-                </div>
-                <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                  {(marketContext.metrics?.rows ?? []).slice(0, 12).map((row) => (
-                    <div key={row.ticker} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm">
-                      <span className="font-semibold text-slate-900">{row.ticker}</span>
-                      <span className={cn("float-right font-medium", (row.change1d ?? 0) < 0 ? "text-red-600" : "text-emerald-600")}>
-                        {row.change1d == null ? "-" : `${row.change1d >= 0 ? "+" : ""}${row.change1d.toFixed(2)}%`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <MetricTile label="Plan Risk" value={planRisk == null ? "-" : planRisk.toFixed(2)} />
+              <MetricTile label="Charts" value={String(selectedEntry?.charts.length ?? 0)} />
+              <MetricTile label="Review Due" value={selectedEntry?.reviewDueAt ? dateInputValue(selectedEntry.reviewDueAt) : "-"} />
+              <MetricTile label="Best Exit" value={formatR(form.bestExitR ?? form.mfeR)} />
+              <MetricTile label="Completion" value={`${entryCompletion}%`} />
+            </div>
+            <div className="mt-4">
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-slate-950 transition-all" style={{ width: `${entryCompletion}%` }} />
               </div>
-            ) : null}
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {entryEssentials.map((item) => (
+                  <span key={item.label} className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", item.done ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500")}>
+                    {item.done ? "Done" : "Missing"} {item.label}
+                  </span>
+                ))}
+              </div>
+            </div>
           </div>
 
-          <div className="space-y-4">
-            {chartPreviewRequest ? (
-              <JournalEntryChartPreview
-                requestKey={chartPreviewRequest.requestKey}
-                symbol={chartPreviewRequest.symbol}
-                timeframe={coerceTimeframe(form.timeframe)}
-              />
-            ) : (
-              <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-[28px] border border-slate-200/80 bg-white/85 p-8 text-center text-sm text-slate-500">
-                <BarChart3 className="mb-2 h-5 w-5" />
-                No chart loaded.
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(22rem,0.9fr)] 2xl:grid-cols-[15rem_minmax(0,1fr)_24rem]">
+            <aside className="hidden 2xl:block">
+              <div className="sticky top-4 space-y-3">
+                <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-4">
+                  {sectionTitle("Entry Snapshot")}
+                  <div className="space-y-2 text-sm">
+                    <SnapshotRow label="Symbol" value={form.symbol || "-"} />
+                    <SnapshotRow label="Setup" value={form.setup || "-"} />
+                    <SnapshotRow label="Macro" value={form.macroSentiment} />
+                    <SnapshotRow label="Outcome" value={compactLabel(form.outcomeStatus)} />
+                    <SnapshotRow label="Chart Count" value={String(selectedEntry?.charts.length ?? 0)} />
+                  </div>
+                </div>
+                <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-4">
+                  {sectionTitle("Quick Tags")}
+                  <div className="flex flex-wrap gap-1.5">
+                    {JOURNAL_TAG_CATEGORIES.flatMap((category) => form.tags[category].map((tag) => (
+                      <span key={`${category}-${tag}`} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700">#{tag}</span>
+                    )))}
+                    {!JOURNAL_TAG_CATEGORIES.some((category) => form.tags[category].length > 0) ? <p className="text-sm text-slate-500">No tags yet.</p> : null}
+                  </div>
+                </div>
               </div>
-            )}
-            {selectedEntry ? (
-              <>
-                <Panel title="Rule Checklist" detail={selectedPlaybook ? `${selectedPlaybook.name} | Fit ${formatFitScore(selectedEntry)}` : "No playbook selected"}>
+            </aside>
+
+            <main className="min-w-0 space-y-4">
+              <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/90 shadow-[0_20px_60px_-38px_rgba(15,23,42,0.34)]">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-950">{form.symbol.trim() || "Chart workspace"}</span>
+                    <Badge variant="outline">{form.timeframe}</Badge>
+                    <Badge variant="outline">{form.direction}</Badge>
+                    <Badge variant="outline">{form.macroSentiment}</Badge>
+                    {form.setup ? <Badge variant="outline">{form.setup}</Badge> : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {JOURNAL_TIMEFRAMES.map((option) => (
+                      <Button key={option} size="sm" variant={form.timeframe === option ? "default" : "outline"} onClick={() => setForm((current) => ({ ...current, timeframe: option }))}>{option}</Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="p-3">
+                  {chartPreviewRequest ? (
+                    <JournalEntryChartPreview
+                      chartHeight={entryChartHeight}
+                      requestKey={chartPreviewRequest.requestKey}
+                      symbol={chartPreviewRequest.symbol}
+                      timeframe={coerceTimeframe(form.timeframe)}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-300 bg-slate-50/80 p-8 text-center text-sm text-slate-500" style={{ minHeight: entryChartHeight }}>
+                      <BarChart3 className="mb-2 h-5 w-5" />
+                      Enter a symbol and load the chart to start the review.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {selectedEntry ? (
+                <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4 shadow-[0_20px_60px_-38px_rgba(15,23,42,0.28)]">
+                  {sectionTitle("Chart Capture", "App-owned saved screenshot")}
+                  <JournalChartEditor
+                    chartHeight={entryChartHeight}
+                    entryId={selectedEntry.id}
+                    symbol={selectedEntry.symbol}
+                    initialTimeframe={coerceTimeframe(selectedEntry.timeframe)}
+                    sectorEtf={selectedEntry.sectorEtf}
+                    plan={selectedEntry}
+                    onSaved={() => void reloadEntries()}
+                  />
+                </div>
+              ) : (
+                <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-6 text-sm text-slate-500">
+                  Create a draft after entering a symbol to enable chart capture and saved chart artifacts.
+                </div>
+              )}
+            </main>
+
+            <aside className="space-y-4 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto xl:pr-1">
+              <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
+                <div className="mb-3 flex flex-wrap gap-1.5">
+                  {ENTRY_SECTIONS.map((section) => (
+                    <button
+                      key={section.key}
+                      className={cn("rounded-xl px-3 py-2 text-xs font-semibold", entrySection === section.key ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}
+                      onClick={() => setEntrySection(section.key)}
+                      type="button"
+                    >
+                      {section.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="border-t border-slate-200/80 pt-4">
+                  {renderEntrySection()}
+                </div>
+              </div>
+
+              {selectedEntry ? (
+                <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">Rule Checklist</p>
+                      <p className="text-xs text-slate-500">{selectedPlaybook ? `${selectedPlaybook.name} | Fit ${formatFitScore(selectedEntry)}` : "No playbook selected"}</p>
+                    </div>
+                    {selectedPlaybook?.rules.length ? <Button size="sm" onClick={saveRuleChecks}><CheckCircle2 className="h-4 w-4" />Save</Button> : null}
+                  </div>
                   {selectedPlaybook?.rules.length ? (
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {selectedPlaybook.rules.map((rule) => (
                         <div key={rule.id ?? rule.text} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <p className="text-sm font-medium text-slate-900">{rule.text}</p>
-                            <div className="flex gap-1">
-                              {JOURNAL_RULE_CHECK_STATUSES.map((status) => (
-                                <Button key={status} size="sm" variant={ruleDrafts[rule.id ?? rule.text]?.status === status ? "default" : "outline"} onClick={() => setRuleDrafts((current) => ({ ...current, [rule.id ?? rule.text]: { ...current[rule.id ?? rule.text], status } }))}>{status}</Button>
-                              ))}
-                            </div>
+                          <p className="text-sm font-medium text-slate-900">{rule.text}</p>
+                          <div className="mt-2 flex gap-1">
+                            {JOURNAL_RULE_CHECK_STATUSES.map((status) => (
+                              <Button key={status} size="sm" variant={ruleDrafts[rule.id ?? rule.text]?.status === status ? "default" : "outline"} onClick={() => setRuleDrafts((current) => ({ ...current, [rule.id ?? rule.text]: { ...current[rule.id ?? rule.text], status } }))}>{status}</Button>
+                            ))}
                           </div>
                           <Input className="mt-2" value={ruleDrafts[rule.id ?? rule.text]?.notes ?? ""} onChange={(event) => setRuleDrafts((current) => ({ ...current, [rule.id ?? rule.text]: { status: current[rule.id ?? rule.text]?.status ?? "NA", notes: event.target.value } }))} placeholder="Rule notes" />
                         </div>
                       ))}
-                      <Button size="sm" onClick={saveRuleChecks}><CheckCircle2 className="h-4 w-4" />Save Rule Checks</Button>
                     </div>
                   ) : (
                     <p className="text-sm text-slate-500">Attach a playbook with rules to score this idea.</p>
                   )}
-                </Panel>
-
-                <Panel title="Chart Capture">
-                  <JournalChartEditor entryId={selectedEntry.id} symbol={selectedEntry.symbol} initialTimeframe={coerceTimeframe(selectedEntry.timeframe)} sectorEtf={selectedEntry.sectorEtf} plan={selectedEntry} onSaved={() => void reloadEntries()} />
-                </Panel>
-                <Panel title="Analysis Reference" detail="TradingView widget">
-                  <TradingViewAnalysisReference symbol={selectedEntry.symbol} timeframe={coerceTimeframe(selectedEntry.timeframe)} />
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <input ref={fileInputRef} className="hidden" type="file" accept="image/*" onChange={(event) => uploadTradingViewImage(event.currentTarget.files?.[0] ?? null)} />
-                    <Button variant="outline" onClick={() => fileInputRef.current?.click()}><Upload className="h-4 w-4" />Upload TradingView Image</Button>
-                    <Button variant="outline" onClick={() => calculateOutcome(selectedEntry.id)}><RefreshCw className="h-4 w-4" />Calculate Outcome</Button>
-                  </div>
-                </Panel>
-                <div className="grid gap-4 lg:grid-cols-2">
-                  {selectedEntry.charts.map((chart) => (
-                    <div key={chart.id} className="rounded-[24px] border border-slate-200/80 bg-white/85 p-3">
-                      {chart.screenshotUrl ? <img src={chart.screenshotUrl} alt={`${chart.symbol} saved chart`} className="aspect-[16/10] w-full rounded-2xl object-cover" /> : <div className="aspect-[16/10] rounded-2xl bg-slate-100" />}
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <Badge variant="outline">{compactLabel(chart.purpose)}</Badge>
-                        <Badge variant="outline">{chart.timeframe}</Badge>
-                        {chart.compareSymbol ? <Badge variant="outline">vs {chart.compareSymbol}</Badge> : null}
-                      </div>
-                      <Textarea className="mt-3 min-h-20" defaultValue={chart.caption} onBlur={(event) => saveChartCaption(chart, event.currentTarget.value)} />
-                    </div>
-                  ))}
                 </div>
-              </>
-            ) : (
-              <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-6 text-sm text-slate-500">Save the journal entry before adding charts.</div>
-            )}
+              ) : null}
+
+              {selectedEntry ? (
+                <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
+                  {sectionTitle("Saved Charts", `${selectedEntry.charts.length}`)}
+                  <div className="space-y-3">
+                    {selectedEntry.charts.slice(0, 4).map((chart) => (
+                      <div key={chart.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-2">
+                        {chart.screenshotUrl ? <img src={chart.screenshotUrl} alt={`${chart.symbol} saved chart`} className="aspect-[16/9] w-full rounded-xl object-cover" /> : <div className="aspect-[16/9] rounded-xl bg-slate-100" />}
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <Badge variant="outline">{compactLabel(chart.purpose)}</Badge>
+                          <Badge variant="outline">{chart.timeframe}</Badge>
+                        </div>
+                        <Textarea className="mt-2 min-h-16 text-xs" defaultValue={chart.caption} onBlur={(event) => saveChartCaption(chart, event.currentTarget.value)} />
+                      </div>
+                    ))}
+                    {selectedEntry.charts.length === 0 ? <p className="text-sm text-slate-500">No saved charts yet.</p> : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedEntry ? (
+                <details className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
+                  <summary className="cursor-pointer text-sm font-semibold text-slate-950">TradingView Reference</summary>
+                  <div className="mt-3">
+                    <TradingViewAnalysisReference symbol={selectedEntry.symbol} timeframe={coerceTimeframe(selectedEntry.timeframe)} />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <input ref={fileInputRef} className="hidden" type="file" accept="image/*" onChange={(event) => uploadTradingViewImage(event.currentTarget.files?.[0] ?? null)} />
+                      <Button variant="outline" onClick={() => fileInputRef.current?.click()}><Upload className="h-4 w-4" />Upload TradingView Image</Button>
+                    </div>
+                  </div>
+                </details>
+              ) : null}
+
+              {marketContext ? (
+                <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">Peer Group Context</p>
+                      <p className="mt-1 text-sm text-slate-500">{marketContext.detail?.groups?.[0]?.name ?? "No peer group loaded"}</p>
+                    </div>
+                    <a className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50" href={marketContext.peerGroupsUrl} target="_blank" rel="noreferrer">
+                      <LinkIcon className="h-3.5 w-3.5" /> Peer Groups
+                    </a>
+                  </div>
+                  <div className="mt-4 grid gap-2">
+                    {(marketContext.metrics?.rows ?? []).slice(0, 8).map((row) => (
+                      <div key={row.ticker} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm">
+                        <span className="font-semibold text-slate-900">{row.ticker}</span>
+                        <span className={cn("float-right font-medium", (row.change1d ?? 0) < 0 ? "text-red-600" : "text-emerald-600")}>
+                          {row.change1d == null ? "-" : `${row.change1d >= 0 ? "+" : ""}${row.change1d.toFixed(2)}%`}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </aside>
           </div>
         </div>
       )}
@@ -1890,6 +2068,24 @@ function Panel({ children, detail, title }: { children: ReactNode; detail?: stri
     <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5">
       {sectionTitle(title, detail)}
       <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/75 px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p>
+      <p className="mt-1 truncate font-mono text-sm font-semibold text-slate-950">{value}</p>
+    </div>
+  );
+}
+
+function SnapshotRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2">
+      <span className="shrink-0 text-xs font-medium text-slate-500">{label}</span>
+      <span className="truncate text-right text-sm font-semibold text-slate-900">{value}</span>
     </div>
   );
 }
