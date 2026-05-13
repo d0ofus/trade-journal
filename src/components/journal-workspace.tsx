@@ -2,13 +2,16 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import type { ReactNode } from "react";
 import {
   BarChart3,
   BookOpen,
   BookOpenCheck,
   CheckCircle2,
+  ClipboardList,
+  GitCompare,
+  Inbox,
   Filter,
   LayoutDashboard,
   LinkIcon,
@@ -20,9 +23,11 @@ import {
   Search,
   Tags,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { JournalEntryChartPreview } from "@/components/journal-entry-chart-preview";
 import { JournalChartEditor } from "@/components/journal-chart-editor";
+import { TradingViewAnalysisReference } from "@/components/tradingview-analysis-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +35,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   JOURNAL_MARKET_REGIMES,
+  JOURNAL_CHART_PURPOSES,
   JOURNAL_OUTCOME_STATUSES,
   JOURNAL_REVIEW_PERIODS,
   JOURNAL_RULE_CHECK_STATUSES,
@@ -62,6 +68,32 @@ type JournalChart = {
   createdAt: string;
 };
 
+type JournalPlaybookExample = {
+  id: string;
+  journalEntryId: string;
+  chartId: string | null;
+  note: string;
+  sortOrder: number;
+  createdAt: string;
+  fitScore: number | null;
+  journalEntry: {
+    id: string;
+    symbol: string;
+    setup: string | null;
+    outcomeStatus: Outcome;
+    bestExitR: number | null;
+    mfeR: number | null;
+    tags: TagsByCategory;
+  };
+  chart: {
+    id: string;
+    screenshotUrl: string | null;
+    caption: string;
+    purpose: JournalChartPurposeValue;
+    timeframe: string;
+  } | null;
+};
+
 type JournalPlaybookRule = {
   id?: string;
   playbookId?: string;
@@ -81,6 +113,7 @@ type JournalPlaybook = {
   marketRegimeFit: string;
   archived: boolean;
   rules: JournalPlaybookRule[];
+  examples?: JournalPlaybookExample[];
   _count?: { entries: number };
 };
 
@@ -142,6 +175,10 @@ type JournalEntry = {
   breadthNotes: string;
   catalystNotes: string;
   relativeStrengthNotes: string;
+  autoDraft: boolean;
+  reviewDueAt: string | null;
+  outcomeCalculatedAt: string | null;
+  outcomeCalculationJson: string | null;
   tags: TagsByCategory;
   charts: JournalChart[];
   ruleChecks: RuleCheck[];
@@ -152,6 +189,17 @@ type JournalEntry = {
 };
 
 type JournalTagRow = { tagId?: string; name: string; category: JournalTagCategoryValue; count: number };
+type JournalSavedView = { id: string; name: string; viewType: "IDEAS" | "VISUAL"; filtersJson: string; sortKey: string | null; sortDirection: "asc" | "desc"; createdAt: string; updatedAt: string };
+
+type JournalInbox = {
+  dueReview: JournalEntry[];
+  missingPlan: JournalEntry[];
+  missingChart: JournalEntry[];
+  triggeredUnreviewed: JournalEntry[];
+  workedWithoutMe: JournalEntry[];
+  newSetupCandidates: JournalEntry[];
+  openReviewActions: Array<JournalReviewAction & { reviewId: string; reviewPeriod: string; reviewRange: string }>;
+};
 
 type JournalReviewAction = {
   id?: string;
@@ -190,6 +238,10 @@ type JournalAnalytics = {
     avgMfeR: number | null;
     avgMaeR: number | null;
     avgBestExitR: number | null;
+    missingPlan: number;
+    dueReview: number;
+    chartCoverage: number;
+    avgFitScore: number | null;
   };
   byStatus: Array<{ name: string; count: number }>;
   byOutcome: Array<{ name: string; count: number }>;
@@ -197,14 +249,16 @@ type JournalAnalytics = {
   byPlaybook: Array<{ name: string; count: number }>;
   byMarketRegime: Array<{ name: string; count: number }>;
   byMacroSentiment: Array<{ name: string; count: number }>;
+  byFitScore: Array<{ name: string; count: number }>;
   lessonTags: JournalTagRow[];
   mistakeTags: JournalTagRow[];
+  tagPerformance: Array<JournalTagRow & { reviewed: number; chartCount: number; avgMfeR: number | null; avgMaeR: number | null; avgBestExitR: number | null }>;
   newSetupCandidates: Array<{ id: string; symbol: string; setup: string | null; bestExitR: number | null; mfeR: number | null; chartCount: number }>;
   recurringRuleFailures: Array<{ name: string; count: number }>;
   opportunityRank: Array<{ id: string; symbol: string; setup: string | null; playbook: string | null; bestExitR: number | null; mfeR: number | null; outcomeStatus: string }>;
 };
 
-type Tab = "dashboard" | "ideas" | "entry" | "playbooks" | "visual" | "reviews";
+type Tab = "dashboard" | "capture" | "inbox" | "ideas" | "entry" | "playbooks" | "visual" | "tags" | "reviews";
 type ChartPreviewRequest = { symbol: string; requestKey: number };
 
 const emptyTags = (): TagsByCategory => ({ SETUP: [], LESSON: [], MISTAKE: [], CONTEXT: [], CUSTOM: [] });
@@ -260,6 +314,10 @@ function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChe
     breadthNotes: "",
     catalystNotes: "",
     relativeStrengthNotes: "",
+    autoDraft: false,
+    reviewDueAt: null,
+    outcomeCalculatedAt: null,
+    outcomeCalculationJson: null,
     tags: emptyTags(),
   };
 }
@@ -320,6 +378,19 @@ function formatPercent(value: number) {
 
 function formatR(value: number | null | undefined) {
   return typeof value === "number" ? `${value.toFixed(2)}R` : "-";
+}
+
+function fitScore(entry: { ruleChecks: RuleCheck[] }) {
+  const applicable = entry.ruleChecks.filter((check) => check.status !== "NA");
+  if (!applicable.length) return null;
+  const total = applicable.reduce((sum, check) => sum + (check.playbookRule?.required ? 2 : 1), 0);
+  const pass = applicable.filter((check) => check.status === "PASS").reduce((sum, check) => sum + (check.playbookRule?.required ? 2 : 1), 0);
+  return Math.round((pass / Math.max(1, total)) * 100);
+}
+
+function formatFitScore(entry: { ruleChecks: RuleCheck[] }) {
+  const score = fitScore(entry);
+  return score == null ? "-" : `${score}%`;
 }
 
 function coerceTimeframe(value: string): JournalTimeframe {
@@ -394,6 +465,21 @@ export function JournalWorkspace({
   const [filterRegime, setFilterRegime] = useState("");
   const [filterPlaybook, setFilterPlaybook] = useState("");
   const [filterChart, setFilterChart] = useState("");
+  const [filterPurpose, setFilterPurpose] = useState("");
+  const [filterTimeframe, setFilterTimeframe] = useState("");
+  const [minFitScore, setMinFitScore] = useState("");
+  const [minBestExitR, setMinBestExitR] = useState("");
+  const [savedViews, setSavedViews] = useState<JournalSavedView[]>([]);
+  const [savedViewName, setSavedViewName] = useState("");
+  const [inboxData, setInboxData] = useState<JournalInbox | null>(null);
+  const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
+  const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
+  const [bulkTagInput, setBulkTagInput] = useState("");
+  const [tagManager, setTagManager] = useState({ category: "LESSON" as JournalTagCategoryValue, from: "", to: "", name: "" });
+  const [autosaveState, setAutosaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autosaveReadyRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [marketContext, setMarketContext] = useState<{
     peerGroupsUrl: string;
     metrics?: { rows?: Array<{ ticker: string; change1d: number | null; price: number | null; marketCap: number | null }> };
@@ -405,6 +491,17 @@ export function JournalWorkspace({
   const selectedEntry = useMemo(() => entries.find((entry) => entry.id === selectedId) ?? null, [entries, selectedId]);
   const selectedPlaybook = useMemo(() => playbooks.find((playbook) => playbook.id === (form.playbookId || selectedPlaybookId)) ?? null, [form.playbookId, playbooks, selectedPlaybookId]);
   const chartRows = useMemo(() => entries.flatMap((entry) => entry.charts.map((chart) => ({ entry, chart }))), [entries]);
+  const filteredChartRows = useMemo(() => chartRows.filter(({ entry, chart }) => {
+    if (filterPurpose && chart.purpose !== filterPurpose) return false;
+    if (filterTimeframe && chart.timeframe !== filterTimeframe) return false;
+    const minFit = minFitScore ? Number(minFitScore) : null;
+    const score = fitScore(entry);
+    if (minFit != null && (score == null || score < minFit)) return false;
+    const minR = minBestExitR ? Number(minBestExitR) : null;
+    if (minR != null && (entry.bestExitR == null || entry.bestExitR < minR)) return false;
+    return true;
+  }), [chartRows, filterPurpose, filterTimeframe, minFitScore, minBestExitR]);
+  const compareRows = useMemo(() => chartRows.filter((row) => selectedChartIds.includes(row.chart.id)).slice(0, 4), [chartRows, selectedChartIds]);
 
   function updateSymbol(value: string) {
     const nextSymbol = value.toUpperCase();
@@ -437,7 +534,42 @@ export function JournalWorkspace({
     );
   }, [selectedEntry, selectedPlaybook]);
 
+  useEffect(() => {
+    if (activeTab !== "capture" || !selectedId || !autosaveReadyRef.current) return;
+    setAutosaveState("dirty");
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      void autosaveCaptureDraft();
+    }, 800);
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  // Capture autosave intentionally watches the editable form fields and uses the latest selected draft id.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeTab,
+    selectedId,
+    form.symbol,
+    form.ideaDate,
+    form.direction,
+    form.timeframe,
+    form.setup,
+    form.macroSentiment,
+    form.thesis,
+    form.trigger,
+    form.plannedEntry,
+    form.plannedStop,
+    form.plannedTarget1,
+    form.tags,
+  ]);
+
+  useEffect(() => {
+    if (activeTab === "inbox") loadInbox();
+    if (activeTab === "visual") loadSavedViews("VISUAL");
+  }, [activeTab]);
+
   function selectEntry(entry: JournalEntry) {
+    autosaveReadyRef.current = false;
     setSelectedId(entry.id);
     setForm({
       symbol: entry.symbol,
@@ -487,6 +619,10 @@ export function JournalWorkspace({
       breadthNotes: entry.breadthNotes,
       catalystNotes: entry.catalystNotes,
       relativeStrengthNotes: entry.relativeStrengthNotes,
+      autoDraft: entry.autoDraft,
+      reviewDueAt: entry.reviewDueAt,
+      outcomeCalculatedAt: entry.outcomeCalculatedAt,
+      outcomeCalculationJson: entry.outcomeCalculationJson,
       tags: entry.tags,
     });
     setMarketContext(null);
@@ -495,6 +631,7 @@ export function JournalWorkspace({
   }
 
   function newEntry() {
+    autosaveReadyRef.current = false;
     setSelectedId(null);
     setForm(blankForm());
     setMarketContext(null);
@@ -548,6 +685,76 @@ export function JournalWorkspace({
 
   function setNumberField<K extends keyof typeof form>(key: K, value: string) {
     setForm((current) => ({ ...current, [key]: normalizeNumberInput(value) }));
+  }
+
+  function journalPayload() {
+    return {
+      ...form,
+      ideaDate: dateInputValue(form.ideaDate),
+      actualTriggerAt: form.actualTriggerAt,
+      reviewDueAt: form.reviewDueAt,
+      outcomeCalculatedAt: form.outcomeCalculatedAt,
+      symbol: form.symbol.trim().toUpperCase(),
+      playbookId: form.playbookId || null,
+      sectorEtf: form.sectorEtf ? form.sectorEtf.trim().toUpperCase() : null,
+      setup: form.setup || null,
+      emotionalState: form.emotionalState || null,
+    };
+  }
+
+  async function createCaptureDraft() {
+    const symbol = form.symbol.trim().toUpperCase();
+    if (!symbol) return;
+    setAutosaveState("saving");
+    const res = await fetch("/api/journal/drafts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol,
+        ideaDate: dateInputValue(form.ideaDate),
+        direction: form.direction,
+        timeframe: form.timeframe,
+        setup: form.setup || null,
+        macroSentiment: form.macroSentiment,
+        thesis: form.thesis,
+        trigger: form.trigger,
+        plannedEntry: form.plannedEntry,
+        plannedStop: form.plannedStop,
+        plannedTarget1: form.plannedTarget1,
+        tags: { SETUP: form.tags.SETUP, LESSON: form.tags.LESSON },
+      }),
+    });
+    if (!res.ok) {
+      setAutosaveState("error");
+      setMessage("Failed to create capture draft.");
+      return;
+    }
+    const data = await res.json();
+    const saved = data.entry as JournalEntry;
+    setSelectedId(saved.id);
+    selectEntry(saved);
+    setActiveTab("capture");
+    setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
+    setAutosaveState("saved");
+    autosaveReadyRef.current = true;
+  }
+
+  async function autosaveCaptureDraft() {
+    if (!selectedId) return;
+    setAutosaveState("saving");
+    const res = await fetch(`/api/journal/${selectedId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...journalPayload(), autoDraft: true }),
+    });
+    if (!res.ok) {
+      setAutosaveState("error");
+      return;
+    }
+    const data = await res.json();
+    const saved = data.entry as JournalEntry;
+    setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
+    setAutosaveState("saved");
   }
 
   async function reloadEntries(overrides?: {
@@ -606,16 +813,7 @@ export function JournalWorkspace({
     startTransition(async () => {
       try {
         setMessage("Saving journal entry...");
-        const payload = {
-          ...form,
-          ideaDate: dateInputValue(form.ideaDate),
-          actualTriggerAt: form.actualTriggerAt,
-          symbol: form.symbol.trim().toUpperCase(),
-          playbookId: form.playbookId || null,
-          sectorEtf: form.sectorEtf ? form.sectorEtf.trim().toUpperCase() : null,
-          setup: form.setup || null,
-          emotionalState: form.emotionalState || null,
-        };
+        const payload = { ...journalPayload(), autoDraft: false };
         const res = await fetch(selectedId ? `/api/journal/${selectedId}` : "/api/journal", {
           method: selectedId ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
@@ -778,6 +976,188 @@ export function JournalWorkspace({
     });
   }
 
+  function loadInbox() {
+    startTransition(async () => {
+      const res = await fetch("/api/journal/inbox");
+      if (!res.ok) {
+        setMessage("Failed to load review inbox.");
+        return;
+      }
+      const data = await res.json();
+      setInboxData(data.inbox);
+    });
+  }
+
+  function loadSavedViews(viewType?: "IDEAS" | "VISUAL") {
+    startTransition(async () => {
+      const params = viewType ? `?viewType=${viewType}` : "";
+      const res = await fetch(`/api/journal/saved-views${params}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSavedViews(data.rows ?? []);
+      }
+    });
+  }
+
+  function saveCurrentVisualView() {
+    if (!savedViewName.trim()) return;
+    startTransition(async () => {
+      const filtersJson = JSON.stringify({
+        tag: filterTag,
+        category: filterCategory,
+        status: filterStatus,
+        outcomeStatus: filterOutcome,
+        macroSentiment: filterSentiment,
+        marketRegime: filterRegime,
+        playbookId: filterPlaybook,
+        purpose: filterPurpose,
+        timeframe: filterTimeframe,
+        minFitScore,
+        minBestExitR,
+      });
+      const res = await fetch("/api/journal/saved-views", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: savedViewName, viewType: "VISUAL", filtersJson, sortDirection: "desc" }),
+      });
+      setMessage(res.ok ? "Saved visual review view." : "Failed to save view.");
+      if (res.ok) {
+        setSavedViewName("");
+        loadSavedViews("VISUAL");
+      }
+    });
+  }
+
+  function applySavedView(view: JournalSavedView) {
+    try {
+      const filters = JSON.parse(view.filtersJson) as Record<string, string>;
+      setFilterTag(filters.tag ?? "");
+      setFilterCategory((filters.category as JournalTagCategoryValue) ?? "");
+      setFilterStatus(filters.status ?? "");
+      setFilterOutcome(filters.outcomeStatus ?? "");
+      setFilterSentiment(filters.macroSentiment ?? "");
+      setFilterRegime(filters.marketRegime ?? "");
+      setFilterPlaybook(filters.playbookId ?? "");
+      setFilterPurpose(filters.purpose ?? "");
+      setFilterTimeframe(filters.timeframe ?? "");
+      setMinFitScore(filters.minFitScore ?? "");
+      setMinBestExitR(filters.minBestExitR ?? "");
+    } catch {
+      setMessage("Saved view filters could not be applied.");
+    }
+  }
+
+  function calculateOutcome(entryId: string, apply = true) {
+    startTransition(async () => {
+      setMessage("Calculating journal outcome...");
+      const res = await fetch(`/api/journal/${entryId}/outcome/calculate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apply }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage(typeof data.error === "string" ? data.error : "Failed to calculate outcome.");
+        return;
+      }
+      if (data.entry) {
+        const saved = data.entry as JournalEntry;
+        setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
+        if (selectedId === saved.id) selectEntry(saved);
+      }
+      setMessage(data.calculation?.reason ?? "Calculated outcome.");
+      await reloadEntries().catch(() => undefined);
+      loadInbox();
+    });
+  }
+
+  function uploadTradingViewImage(file: File | null) {
+    if (!file || !selectedId || !selectedEntry) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      startTransition(async () => {
+        const res = await fetch(`/api/journal/${selectedId}/charts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            symbol: selectedEntry.symbol,
+            timeframe: coerceTimeframe(selectedEntry.timeframe),
+            purpose: "REVIEW",
+            caption: "TradingView analysis reference export",
+            screenshotDataUrl: String(reader.result),
+            mimeType: file.type || "image/png",
+            tradingViewLayoutJson: JSON.stringify({ source: "tradingview-widget-upload", fileName: file.name }),
+          }),
+        });
+        setMessage(res.ok ? "Uploaded TradingView chart image." : "Failed to upload TradingView image.");
+        if (res.ok) await reloadEntries();
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function toggleEntrySelection(id: string) {
+    setSelectedEntryIds((current) => current.includes(id) ? current.filter((candidate) => candidate !== id) : [...current, id]);
+  }
+
+  function toggleChartSelection(id: string) {
+    setSelectedChartIds((current) => current.includes(id) ? current.filter((candidate) => candidate !== id) : current.length >= 4 ? current : [...current, id]);
+  }
+
+  function bulkAddLessonTags() {
+    if (selectedEntryIds.length === 0 || !bulkTagInput.trim()) return;
+    startTransition(async () => {
+      const tags = parseTagInput(bulkTagInput);
+      const res = await fetch("/api/journal/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedEntryIds, addTags: { LESSON: tags } }),
+      });
+      setMessage(res.ok ? "Updated selected entries." : "Failed to bulk update entries.");
+      if (res.ok) {
+        setSelectedEntryIds([]);
+        setBulkTagInput("");
+        await reloadEntries();
+      }
+    });
+  }
+
+  function runTagOperation(operation: "rename" | "merge" | "remove") {
+    startTransition(async () => {
+      const payload = operation === "remove"
+        ? { category: tagManager.category, name: tagManager.name }
+        : { category: tagManager.category, from: tagManager.from, to: tagManager.to };
+      const res = await fetch(`/api/journal/tags/${operation}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setMessage(res.ok ? "Updated journal tags." : "Failed to update tags.");
+      if (res.ok) {
+        const data = await res.json();
+        setTagRows(data.rows ?? tagRows);
+        await reloadEntries().catch(() => undefined);
+      }
+    });
+  }
+
+  function addToPlaybookExamples(entry: JournalEntry, chartId?: string | null) {
+    const playbookId = entry.playbookId || form.playbookId;
+    if (!playbookId) {
+      setMessage("Attach a playbook before adding an example.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await fetch(`/api/journal/playbooks/${playbookId}/examples`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ journalEntryId: entry.id, chartId: chartId ?? null, note: entry.thesis || entry.lessonLearned }),
+      });
+      setMessage(res.ok ? "Added playbook example." : "Failed to add playbook example.");
+      if (res.ok) await reloadPlaybooks();
+    });
+  }
+
   function promoteNewSetup(entry: JournalEntry) {
     setSelectedPlaybookId(null);
     setPlaybookForm({
@@ -798,10 +1178,13 @@ export function JournalWorkspace({
         <div className="flex flex-wrap gap-2">
           {[
             ["dashboard", "Dashboard", LayoutDashboard],
+            ["capture", "Capture", ClipboardList],
+            ["inbox", "Inbox", Inbox],
             ["ideas", "Ideas", NotebookPen],
             ["entry", selectedId ? "Entry" : "New Entry", Save],
             ["playbooks", "Playbooks", BookOpen],
             ["visual", "Visual Review", BarChart3],
+            ["tags", "Tags", Tags],
             ["reviews", "Reviews", BookOpenCheck],
           ].map(([key, label, Icon]) => (
             <button
@@ -838,9 +1221,13 @@ export function JournalWorkspace({
               ["Ideas", analytics.totals.entries],
               ["Reviewed", analytics.totals.reviewed],
               ["With Charts", analytics.totals.withCharts],
+              ["Due Review", analytics.totals.dueReview],
+              ["Missing Plan", analytics.totals.missingPlan],
               ["Trigger Rate", formatPercent(analytics.totals.triggerRate)],
               ["Worked Without Me", formatPercent(analytics.totals.workedWithoutMeRate)],
               ["Failed", formatPercent(analytics.totals.failedAfterTriggerRate)],
+              ["Chart Coverage", formatPercent(analytics.totals.chartCoverage)],
+              ["Avg Fit", analytics.totals.avgFitScore == null ? "-" : `${Math.round(analytics.totals.avgFitScore)}%`],
               ["Avg MFE", formatR(analytics.totals.avgMfeR)],
               ["Avg Best Exit", formatR(analytics.totals.avgBestExitR)],
             ].map(([label, value]) => (
@@ -854,6 +1241,7 @@ export function JournalWorkspace({
             <SummaryList title="Setup Health" rows={analytics.bySetup} />
             <SummaryList title="Outcome Mix" rows={analytics.byOutcome} />
             <SummaryList title="Recurring Rule Failures" rows={analytics.recurringRuleFailures} />
+            <SummaryList title="Fit Score Buckets" rows={analytics.byFitScore} />
           </div>
           <div className="grid gap-4 xl:grid-cols-2">
             <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5">
@@ -882,6 +1270,111 @@ export function JournalWorkspace({
                 })}
                 {analytics.newSetupCandidates.length === 0 ? <p className="text-sm text-slate-500">No #new-setup lesson tags yet.</p> : null}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "capture" && (
+        <div className="grid gap-5 xl:grid-cols-[24rem_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <Panel title="Quick Capture" detail={autosaveState === "idle" ? "Chart-first draft" : autosaveState}>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Symbol
+                  <Input className="mt-1" value={form.symbol} onChange={(event) => updateSymbol(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); loadChartPreview(); } }} />
+                </label>
+                <DateField label="Idea Date" value={form.ideaDate} onChange={(value) => setForm((current) => ({ ...current, ideaDate: `${value}T00:00:00.000Z` }))} />
+                <SelectField label="Direction" value={form.direction} options={["LONG", "SHORT"]} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
+                <SelectField label="Timeframe" value={form.timeframe} options={[...JOURNAL_TIMEFRAMES]} onChange={(value) => setForm((current) => ({ ...current, timeframe: value }))} />
+                <LabelInput label="Setup" value={form.setup ?? ""} onChange={(value) => setForm((current) => ({ ...current, setup: value }))} />
+                <SelectField label="Macro Sentiment" value={form.macroSentiment} options={["BULLISH", "NEUTRAL", "BEARISH"]} onChange={(value) => setForm((current) => ({ ...current, macroSentiment: value as JournalEntry["macroSentiment"] }))} />
+                <NumberField label="Entry" value={form.plannedEntry} onChange={(value) => setNumberField("plannedEntry", value)} />
+                <NumberField label="Stop" value={form.plannedStop} onChange={(value) => setNumberField("plannedStop", value)} />
+                <NumberField label="Target 1" value={form.plannedTarget1} onChange={(value) => setNumberField("plannedTarget1", value)} />
+              </div>
+              <TextAreaField label="Thesis" value={form.thesis} onChange={(value) => setForm((current) => ({ ...current, thesis: value }))} />
+              <TextAreaField label="Trigger" value={form.trigger} onChange={(value) => setForm((current) => ({ ...current, trigger: value }))} />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <LabelInput label="Setup Tags" value={tagString(form.tags.SETUP)} onChange={(value) => updateTags("SETUP", value)} />
+                <LabelInput label="Lesson Tags" value={tagString(form.tags.LESSON)} onChange={(value) => updateTags("LESSON", value)} />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={loadChartPreview} variant="outline"><BarChart3 className="h-4 w-4" />Load Chart</Button>
+                <Button onClick={() => void createCaptureDraft()} disabled={!form.symbol.trim()}><Save className="h-4 w-4" />{selectedId ? "Refresh Draft" : "Create Draft"}</Button>
+                {selectedEntry ? <Button variant="outline" onClick={() => { autosaveReadyRef.current = false; setActiveTab("entry"); }}><NotebookPen className="h-4 w-4" />Full Entry</Button> : null}
+              </div>
+            </Panel>
+            <Panel title="Recent Drafts">
+              <div className="space-y-2">
+                {entries.filter((entry) => entry.autoDraft || entry.status === "DRAFT").slice(0, 6).map((entry) => (
+                  <button key={entry.id} className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-left text-sm" onClick={() => { selectEntry(entry); setActiveTab("capture"); autosaveReadyRef.current = true; }}>
+                    <span className="font-semibold text-slate-900">{entry.symbol} {entry.setup ? `| ${entry.setup}` : ""}</span>
+                    <span className="text-xs text-slate-500">{dateInputValue(entry.ideaDate)}</span>
+                  </button>
+                ))}
+              </div>
+            </Panel>
+          </div>
+          <div className="space-y-4">
+            {chartPreviewRequest ? (
+              <JournalEntryChartPreview requestKey={chartPreviewRequest.requestKey} symbol={chartPreviewRequest.symbol} timeframe={coerceTimeframe(form.timeframe)} />
+            ) : (
+              <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-[28px] border border-slate-200/80 bg-white/85 p-8 text-center text-sm text-slate-500">
+                <BarChart3 className="mb-2 h-5 w-5" />
+                Load a symbol to preview and select the setup window.
+              </div>
+            )}
+            {selectedEntry ? (
+              <>
+                <Panel title="App-Owned Saved Chart">
+                  <JournalChartEditor
+                    entryId={selectedEntry.id}
+                    symbol={selectedEntry.symbol}
+                    initialTimeframe={coerceTimeframe(selectedEntry.timeframe)}
+                    sectorEtf={selectedEntry.sectorEtf}
+                    plan={selectedEntry}
+                    onSaved={() => void reloadEntries()}
+                  />
+                </Panel>
+                <Panel title="Analysis Reference">
+                  <TradingViewAnalysisReference symbol={selectedEntry.symbol} timeframe={coerceTimeframe(selectedEntry.timeframe)} />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <input ref={fileInputRef} className="hidden" type="file" accept="image/*" onChange={(event) => uploadTradingViewImage(event.currentTarget.files?.[0] ?? null)} />
+                    <Button variant="outline" onClick={() => fileInputRef.current?.click()}><Upload className="h-4 w-4" />Upload TradingView Image</Button>
+                  </div>
+                </Panel>
+              </>
+            ) : (
+              <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-6 text-sm text-slate-500">Create a draft before saving charts.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "inbox" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={loadInbox}><RefreshCw className="h-4 w-4" />Refresh Inbox</Button>
+          </div>
+          <div className="grid gap-4 xl:grid-cols-3">
+            <InboxList title="Due Review" rows={inboxData?.dueReview ?? []} onOpen={selectEntry} onCalculate={calculateOutcome} />
+            <InboxList title="Missing Plan" rows={inboxData?.missingPlan ?? []} onOpen={selectEntry} onCalculate={calculateOutcome} />
+            <InboxList title="Missing Chart" rows={inboxData?.missingChart ?? []} onOpen={selectEntry} onCalculate={calculateOutcome} />
+            <InboxList title="Triggered / Needs Outcome" rows={inboxData?.triggeredUnreviewed ?? []} onOpen={selectEntry} onCalculate={calculateOutcome} />
+            <InboxList title="Worked Without Me" rows={inboxData?.workedWithoutMe ?? []} onOpen={selectEntry} onCalculate={calculateOutcome} />
+            <InboxList title="#new-setup Candidates" rows={inboxData?.newSetupCandidates ?? []} onOpen={selectEntry} onCalculate={calculateOutcome} />
+          </div>
+          <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5">
+            {sectionTitle("Open Review Actions")}
+            <div className="space-y-2">
+              {(inboxData?.openReviewActions ?? []).map((action) => (
+                <div key={action.id ?? action.label} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm">
+                  <p className="font-semibold text-slate-900">{action.label}</p>
+                  <p className="text-xs text-slate-500">{action.reviewPeriod} | {action.reviewRange}</p>
+                </div>
+              ))}
+              {!(inboxData?.openReviewActions ?? []).length ? <p className="text-sm text-slate-500">No open review actions.</p> : null}
             </div>
           </div>
         </div>
@@ -920,10 +1413,23 @@ export function JournalWorkspace({
               <Button size="sm" variant={filterChart === "WITH_CHARTS" ? "default" : "outline"} onClick={() => { setFilterChart("WITH_CHARTS"); startTransition(() => void reloadEntries({ chartFilter: "WITH_CHARTS" })); }}>With Charts</Button>
               <Button size="sm" variant={filterChart === "WITHOUT_CHARTS" ? "default" : "outline"} onClick={() => { setFilterChart("WITHOUT_CHARTS"); startTransition(() => void reloadEntries({ chartFilter: "WITHOUT_CHARTS" })); }}>No Charts</Button>
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/70 p-2">
+              <Button size="sm" variant="outline" onClick={() => setSelectedEntryIds(entries.map((entry) => entry.id))}>Select Visible</Button>
+              <Button size="sm" variant="outline" onClick={() => setSelectedEntryIds([])}>Clear</Button>
+              <Input className="max-w-xs" placeholder="Bulk lesson tags, e.g. #new-setup" value={bulkTagInput} onChange={(event) => setBulkTagInput(event.target.value)} />
+              <Button size="sm" disabled={selectedEntryIds.length === 0 || !bulkTagInput.trim()} onClick={bulkAddLessonTags}>Apply to {selectedEntryIds.length}</Button>
+            </div>
           </div>
           <div className="grid gap-4 xl:grid-cols-2">
             {entries.map((entry) => (
-              <button key={entry.id} className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5 text-left shadow-[0_18px_45px_-36px_rgba(15,23,42,0.32)] hover:border-slate-300" onClick={() => selectEntry(entry)}>
+              <div key={entry.id} className={cn("rounded-[28px] border border-slate-200/80 bg-white/85 p-5 text-left shadow-[0_18px_45px_-36px_rgba(15,23,42,0.32)]", selectedEntryIds.includes(entry.id) ? "ring-2 ring-slate-950" : "")}>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                    <input type="checkbox" checked={selectedEntryIds.includes(entry.id)} onChange={() => toggleEntrySelection(entry.id)} />
+                    Select
+                  </label>
+                  <Button size="sm" variant="outline" onClick={() => selectEntry(entry)}>Open</Button>
+                </div>
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -932,7 +1438,7 @@ export function JournalWorkspace({
                       <Badge variant={outcomeTone(entry.outcomeStatus)}>{compactLabel(entry.outcomeStatus)}</Badge>
                     </div>
                     <p className="mt-1 text-sm text-slate-500">{dateInputValue(entry.ideaDate)} | {entry.direction} | {entry.timeframe} | {entry.setup || "No setup"}</p>
-                    <p className="mt-1 text-xs text-slate-500">{entry.playbook?.name ?? "No playbook"} | {compactLabel(entry.marketRegime)} | {entry.charts.length} chart{entry.charts.length === 1 ? "" : "s"}</p>
+                    <p className="mt-1 text-xs text-slate-500">{entry.playbook?.name ?? "No playbook"} | {compactLabel(entry.marketRegime)} | {entry.charts.length} chart{entry.charts.length === 1 ? "" : "s"} | Fit {formatFitScore(entry)}</p>
                   </div>
                   <div className="text-right text-sm font-semibold text-slate-700">
                     <p>{entry.rating ? `${entry.rating}/5` : "-"}</p>
@@ -945,7 +1451,7 @@ export function JournalWorkspace({
                     <span key={`${entry.id}-${category}-${tag}`} className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium", category === "LESSON" ? "bg-amber-100 text-amber-800" : category === "MISTAKE" ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-700")}>#{tag}</span>
                   )))}
                 </div>
-              </button>
+              </div>
             ))}
             {entries.length === 0 ? <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-6 text-sm text-slate-500">No journal entries found.</div> : null}
           </div>
@@ -1100,7 +1606,7 @@ export function JournalWorkspace({
             )}
             {selectedEntry ? (
               <>
-                <Panel title="Rule Checklist" detail={selectedPlaybook?.name ?? "No playbook selected"}>
+                <Panel title="Rule Checklist" detail={selectedPlaybook ? `${selectedPlaybook.name} | Fit ${formatFitScore(selectedEntry)}` : "No playbook selected"}>
                   {selectedPlaybook?.rules.length ? (
                     <div className="space-y-3">
                       {selectedPlaybook.rules.map((rule) => (
@@ -1124,7 +1630,15 @@ export function JournalWorkspace({
                 </Panel>
 
                 <Panel title="Chart Capture">
-                  <JournalChartEditor entryId={selectedEntry.id} symbol={selectedEntry.symbol} initialTimeframe={coerceTimeframe(selectedEntry.timeframe)} sectorEtf={selectedEntry.sectorEtf} onSaved={() => void reloadEntries()} />
+                  <JournalChartEditor entryId={selectedEntry.id} symbol={selectedEntry.symbol} initialTimeframe={coerceTimeframe(selectedEntry.timeframe)} sectorEtf={selectedEntry.sectorEtf} plan={selectedEntry} onSaved={() => void reloadEntries()} />
+                </Panel>
+                <Panel title="Analysis Reference" detail="TradingView widget">
+                  <TradingViewAnalysisReference symbol={selectedEntry.symbol} timeframe={coerceTimeframe(selectedEntry.timeframe)} />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <input ref={fileInputRef} className="hidden" type="file" accept="image/*" onChange={(event) => uploadTradingViewImage(event.currentTarget.files?.[0] ?? null)} />
+                    <Button variant="outline" onClick={() => fileInputRef.current?.click()}><Upload className="h-4 w-4" />Upload TradingView Image</Button>
+                    <Button variant="outline" onClick={() => calculateOutcome(selectedEntry.id)}><RefreshCw className="h-4 w-4" />Calculate Outcome</Button>
+                  </div>
                 </Panel>
                 <div className="grid gap-4 lg:grid-cols-2">
                   {selectedEntry.charts.map((chart) => (
@@ -1188,6 +1702,21 @@ export function JournalWorkspace({
               <Button disabled={!playbookForm.name.trim()} onClick={savePlaybook}><Save className="h-4 w-4" />Save Playbook</Button>
               <Button variant="outline" onClick={() => setPlaybookForm((current) => ({ ...current, archived: !current.archived }))}>{playbookForm.archived ? "Restore" : "Archive"}</Button>
             </div>
+            {selectedPlaybook?.examples?.length ? (
+              <div className="mt-6">
+                {sectionTitle("Example Gallery")}
+                <div className="grid gap-3 md:grid-cols-2">
+                  {selectedPlaybook.examples.map((example) => (
+                    <div key={example.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                      {example.chart?.screenshotUrl ? <img src={example.chart.screenshotUrl} alt={`${example.journalEntry.symbol} playbook example`} className="aspect-[16/10] w-full rounded-xl object-cover" /> : <div className="aspect-[16/10] rounded-xl bg-slate-100" />}
+                      <p className="mt-2 font-semibold text-slate-950">{example.journalEntry.symbol} {example.journalEntry.setup ? `| ${example.journalEntry.setup}` : ""}</p>
+                      <p className="text-xs text-slate-500">Fit {example.fitScore == null ? "-" : `${example.fitScore}%`} | {compactLabel(example.journalEntry.outcomeStatus)} | {formatR(example.journalEntry.bestExitR ?? example.journalEntry.mfeR)}</p>
+                      {example.note ? <p className="mt-2 line-clamp-2 text-sm text-slate-600">{example.note}</p> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </Panel>
         </div>
       )}
@@ -1195,29 +1724,116 @@ export function JournalWorkspace({
       {activeTab === "visual" && (
         <div className="space-y-4">
           <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Tags className="h-4 w-4 text-slate-500" />
-              {tagRows.map((row) => (
-                <button key={`${row.category}-${row.name}`} className={cn("rounded-full px-3 py-1.5 text-xs font-medium", row.category === "LESSON" ? "bg-amber-100 text-amber-800" : row.category === "MISTAKE" ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-700")} onClick={() => { setFilterTag(row.name); setFilterCategory(row.category); setActiveTab("ideas"); startTransition(() => void reloadEntries({ tag: row.name, category: row.category })); }}>
-                  #{row.name} {row.count}
-                </button>
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_10rem_10rem_10rem_10rem_auto]">
+              <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                Tag
+                <Input className="mt-1" value={filterTag} onChange={(event) => setFilterTag(event.target.value.replace(/^#+/, ""))} />
+              </label>
+              <FilterSelect label="Category" value={filterCategory} onChange={(value) => setFilterCategory(value as JournalTagCategoryValue | "")} options={["", ...JOURNAL_TAG_CATEGORIES]} />
+              <FilterSelect label="Purpose" value={filterPurpose} onChange={setFilterPurpose} options={["", ...JOURNAL_CHART_PURPOSES]} />
+              <FilterSelect label="Timeframe" value={filterTimeframe} onChange={setFilterTimeframe} options={["", ...JOURNAL_TIMEFRAMES]} />
+              <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                Min Best R
+                <Input className="mt-1" type="number" value={minBestExitR} onChange={(event) => setMinBestExitR(event.target.value)} />
+              </label>
+              <div className="flex items-end">
+                <Button onClick={() => startTransition(() => void reloadEntries({ tag: filterTag, category: filterCategory }))}><Filter className="h-4 w-4" />Apply</Button>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Input className="max-w-xs" placeholder="Saved view name" value={savedViewName} onChange={(event) => setSavedViewName(event.target.value)} />
+              <Button size="sm" onClick={saveCurrentVisualView}>Save View</Button>
+              {savedViews.filter((view) => view.viewType === "VISUAL").map((view) => (
+                <Button key={view.id} size="sm" variant="outline" onClick={() => applySavedView(view)}>{view.name}</Button>
               ))}
             </div>
           </div>
+          {compareRows.length > 0 ? (
+            <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                {sectionTitle("Compare Selected", `${compareRows.length}/4`)}
+                <Button size="sm" variant="outline" onClick={() => setSelectedChartIds([])}>Clear Compare</Button>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                {compareRows.map(({ entry, chart }) => (
+                  <div key={chart.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                    {chart.screenshotUrl ? <img src={chart.screenshotUrl} alt={`${entry.symbol} compare`} className="aspect-[16/10] w-full rounded-xl object-cover" /> : <div className="aspect-[16/10] rounded-xl bg-slate-100" />}
+                    <p className="mt-2 font-semibold text-slate-950">{entry.symbol}</p>
+                    <p className="text-xs text-slate-500">{compactLabel(chart.purpose)} | {chart.timeframe} | Fit {formatFitScore(entry)} | {formatR(entry.bestExitR ?? entry.mfeR)}</p>
+                    <p className="mt-2 line-clamp-3 text-sm text-slate-600">{chart.caption || entry.thesis}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {chartRows.map(({ entry, chart }) => (
-              <button key={chart.id} className="rounded-[24px] border border-slate-200/80 bg-white/85 p-3 text-left hover:border-slate-300" onClick={() => selectEntry(entry)}>
+            {filteredChartRows.map(({ entry, chart }) => (
+              <div key={chart.id} className={cn("rounded-[24px] border border-slate-200/80 bg-white/85 p-3 text-left hover:border-slate-300", selectedChartIds.includes(chart.id) ? "ring-2 ring-slate-950" : "")}>
                 {chart.screenshotUrl ? <img src={chart.screenshotUrl} alt={`${entry.symbol} visual review`} className="aspect-[16/10] w-full rounded-2xl object-cover" /> : <div className="aspect-[16/10] rounded-2xl bg-slate-100" />}
                 <div className="mt-3 flex items-center justify-between gap-3">
                   <div>
                     <p className="font-semibold text-slate-950">{entry.symbol}</p>
-                    <p className="text-xs text-slate-500">{chart.timeframe} | {compactLabel(chart.purpose)} | {dateInputValue(entry.ideaDate)}</p>
+                    <p className="text-xs text-slate-500">{chart.timeframe} | {compactLabel(chart.purpose)} | {dateInputValue(entry.ideaDate)} | Fit {formatFitScore(entry)}</p>
                   </div>
                   <Badge variant={outcomeTone(entry.outcomeStatus)}>{compactLabel(entry.outcomeStatus)}</Badge>
                 </div>
                 <p className="mt-2 line-clamp-2 text-sm text-slate-600">{chart.caption || entry.lessonLearned || entry.thesis}</p>
-              </button>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => toggleChartSelection(chart.id)}><GitCompare className="h-4 w-4" />{selectedChartIds.includes(chart.id) ? "Selected" : "Compare"}</Button>
+                  <Button size="sm" variant="outline" onClick={() => selectEntry(entry)}>Open</Button>
+                  <Button size="sm" variant="outline" onClick={() => addToPlaybookExamples(entry, chart.id)}>Example</Button>
+                </div>
+              </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "tags" && (
+        <div className="grid gap-5 xl:grid-cols-[22rem_minmax(0,1fr)]">
+          <Panel title="Tag Operations">
+            <SelectField label="Category" value={tagManager.category} options={[...JOURNAL_TAG_CATEGORIES]} onChange={(value) => setTagManager((current) => ({ ...current, category: value as JournalTagCategoryValue }))} />
+            <LabelInput label="From" value={tagManager.from} onChange={(value) => setTagManager((current) => ({ ...current, from: value }))} />
+            <LabelInput label="To" value={tagManager.to} onChange={(value) => setTagManager((current) => ({ ...current, to: value }))} />
+            <LabelInput label="Remove Tag" value={tagManager.name} onChange={(value) => setTagManager((current) => ({ ...current, name: value }))} />
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => runTagOperation("rename")}>Rename</Button>
+              <Button size="sm" variant="outline" onClick={() => runTagOperation("merge")}>Merge</Button>
+              <Button size="sm" variant="destructive" onClick={() => runTagOperation("remove")}>Remove</Button>
+            </div>
+          </Panel>
+          <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5">
+            {sectionTitle("Journal Tags", "journal-only usage")}
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="text-left text-xs uppercase tracking-[0.16em] text-slate-500">
+                  <tr>
+                    <th className="py-2">Tag</th>
+                    <th>Category</th>
+                    <th>Count</th>
+                    <th>Reviewed</th>
+                    <th>Charts</th>
+                    <th>Avg MFE</th>
+                    <th>Avg MAE</th>
+                    <th>Avg Best</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(analytics.tagPerformance ?? tagRows).map((row) => (
+                    <tr key={`${row.category}-${row.name}`} className="border-t border-slate-200">
+                      <td className="py-2 font-semibold text-slate-900">#{row.name}</td>
+                      <td>{row.category}</td>
+                      <td>{row.count}</td>
+                      <td>{"reviewed" in row ? row.reviewed : "-"}</td>
+                      <td>{"chartCount" in row ? row.chartCount : "-"}</td>
+                      <td>{"avgMfeR" in row ? formatR(row.avgMfeR) : "-"}</td>
+                      <td>{"avgMaeR" in row ? formatR(row.avgMaeR) : "-"}</td>
+                      <td>{"avgBestExitR" in row ? formatR(row.avgBestExitR) : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -1290,6 +1906,42 @@ function SummaryList({ rows, title }: { rows: Array<{ name: string; count: numbe
           </div>
         ))}
         {rows.length === 0 ? <p className="text-sm text-slate-500">No data yet.</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function InboxList({
+  onCalculate,
+  onOpen,
+  rows,
+  title,
+}: {
+  title: string;
+  rows: JournalEntry[];
+  onOpen: (entry: JournalEntry) => void;
+  onCalculate: (entryId: string) => void;
+}) {
+  return (
+    <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-5">
+      {sectionTitle(title, String(rows.length))}
+      <div className="space-y-2">
+        {rows.slice(0, 8).map((entry) => (
+          <div key={`${title}-${entry.id}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="font-semibold text-slate-950">{entry.symbol} {entry.setup ? `| ${entry.setup}` : ""}</p>
+                <p className="text-xs text-slate-500">{dateInputValue(entry.ideaDate)} | {compactLabel(entry.outcomeStatus)} | {formatR(entry.bestExitR ?? entry.mfeR)}</p>
+              </div>
+              <Badge variant={outcomeTone(entry.outcomeStatus)}>{compactLabel(entry.status)}</Badge>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => onOpen(entry)}>Open</Button>
+              <Button size="sm" variant="outline" onClick={() => onCalculate(entry.id)}>Calculate</Button>
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 ? <p className="text-sm text-slate-500">Nothing waiting here.</p> : null}
       </div>
     </div>
   );

@@ -45,6 +45,7 @@ export type JournalChartPurposeValue = (typeof JOURNAL_CHART_PURPOSES)[number];
 export const JOURNAL_RULE_CHECK_STATUSES = ["PASS", "FAIL", "NA"] as const;
 export const JOURNAL_REVIEW_PERIODS = ["DAILY", "WEEKLY", "MONTHLY"] as const;
 export const JOURNAL_ACTION_STATUSES = ["OPEN", "DONE", "ARCHIVED"] as const;
+export const JOURNAL_SAVED_VIEW_TYPES = ["IDEAS", "VISUAL"] as const;
 
 const optionalText = z.string().max(20000).optional().default("");
 const optionalShortText = z.string().max(240).optional();
@@ -127,6 +128,10 @@ export const journalEntryPayloadSchema = z.object({
   breadthNotes: optionalText,
   catalystNotes: optionalText,
   relativeStrengthNotes: optionalText,
+  autoDraft: z.boolean().optional(),
+  reviewDueAt: optionalDateString,
+  outcomeCalculatedAt: optionalDateString,
+  outcomeCalculationJson: z.string().max(200000).nullable().optional(),
   tags: journalTagsPayloadSchema.optional().default({}),
 });
 
@@ -237,4 +242,73 @@ export const journalReviewPayloadSchema = z.object({
 
 export const journalReviewPatchSchema = journalReviewPayloadSchema.partial().extend({
   actions: z.array(journalReviewActionPayloadSchema).optional(),
+});
+
+export const journalDraftPayloadSchema = journalEntryPayloadSchema.pick({
+  symbol: true,
+  ideaDate: true,
+  direction: true,
+  timeframe: true,
+  setup: true,
+  macroSentiment: true,
+  thesis: true,
+  trigger: true,
+  plannedEntry: true,
+  plannedStop: true,
+  plannedTarget1: true,
+  tags: true,
+}).partial({
+  direction: true,
+  timeframe: true,
+  setup: true,
+  macroSentiment: true,
+  thesis: true,
+  trigger: true,
+  plannedEntry: true,
+  plannedStop: true,
+  plannedTarget1: true,
+  tags: true,
+}).extend({
+  symbol: z.string().min(1).max(20).transform((value) => value.trim().toUpperCase()),
+  ideaDate: z.string().optional().default(() => new Date().toISOString()),
+});
+
+export const journalOutcomeCalculatePayloadSchema = z.object({
+  apply: z.boolean().optional().default(false),
+});
+
+export const journalSavedViewPayloadSchema = z.object({
+  name: z.string().min(1).max(120),
+  viewType: z.enum(JOURNAL_SAVED_VIEW_TYPES),
+  filtersJson: z.string().max(20000).optional().default("{}"),
+  sortKey: z.string().max(80).nullable().optional(),
+  sortDirection: z.enum(["asc", "desc"]).optional().default("desc"),
+});
+
+export const journalSavedViewPatchSchema = journalSavedViewPayloadSchema.partial();
+
+export const journalBulkPayloadSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(500),
+  addTags: journalTagsPayloadSchema.optional(),
+  removeTags: journalTagsPayloadSchema.optional(),
+  status: z.enum(["DRAFT", "WATCHING", "MISSED", "PASSED", "INVALIDATED", "PLAYBOOK", "ARCHIVED"]).nullable().optional(),
+  outcomeStatus: z.enum(JOURNAL_OUTCOME_STATUSES).nullable().optional(),
+  macroSentiment: z.enum(["BULLISH", "NEUTRAL", "BEARISH"]).nullable().optional(),
+  marketRegime: z.enum(JOURNAL_MARKET_REGIMES).nullable().optional(),
+  playbookId: z.string().nullable().optional(),
+});
+
+export const journalTagOperationSchema = z.object({
+  category: z.enum(JOURNAL_TAG_CATEGORIES),
+  from: z.string().min(1).max(80).optional(),
+  to: z.string().min(1).max(80).optional(),
+  name: z.string().min(1).max(80).optional(),
+  ids: z.array(z.string().min(1)).max(500).optional(),
+});
+
+export const journalPlaybookExamplePayloadSchema = z.object({
+  journalEntryId: z.string().min(1),
+  chartId: z.string().nullable().optional(),
+  note: z.string().max(4000).optional().default(""),
+  sortOrder: z.number().int().min(0).max(9999).optional().default(0),
 });

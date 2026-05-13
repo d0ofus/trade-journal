@@ -424,6 +424,10 @@ model JournalEntry {
   breadthNotes          String                   @default("")
   catalystNotes         String                   @default("")
   relativeStrengthNotes String                   @default("")
+  autoDraft             Boolean                  @default(false)
+  reviewDueAt           DateTime?
+  outcomeCalculatedAt   DateTime?
+  outcomeCalculationJson String?
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
   charts                JournalChart[]
@@ -431,6 +435,7 @@ model JournalEntry {
   contextSnapshots      JournalContextSnapshot[]
   links                 JournalLink[]
   ruleChecks            JournalEntryRuleCheck[]
+  playbookExamples      JournalPlaybookExample[]
 
   @@index([ideaDate])
   @@index([symbol, ideaDate])
@@ -439,6 +444,8 @@ model JournalEntry {
   @@index([playbookId, ideaDate])
   @@index([outcomeStatus, ideaDate])
   @@index([marketRegime, ideaDate])
+  @@index([autoDraft, updatedAt])
+  @@index([reviewDueAt])
 }
 
 model JournalChart {
@@ -459,6 +466,7 @@ model JournalChart {
   height                Int?
   mimeType              String?
   markers               JournalChartMarker[]
+  playbookExamples      JournalPlaybookExample[]
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
 
@@ -533,6 +541,7 @@ model JournalPlaybook {
   updatedAt         DateTime              @updatedAt
   entries           JournalEntry[]
   rules             JournalPlaybookRule[]
+  examples          JournalPlaybookExample[]
 
   @@index([archived, name])
 }
@@ -602,4 +611,36 @@ model JournalReviewAction {
   @@index([reviewId, status])
   @@index([journalEntryId])
   @@index([playbookId])
+}
+
+model JournalSavedView {
+  id            String   @id @default(cuid())
+  name          String
+  viewType      String
+  filtersJson   String   @default("{}")
+  sortKey       String?
+  sortDirection String   @default("desc")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([viewType, name])
+  @@index([viewType, updatedAt])
+}
+
+model JournalPlaybookExample {
+  id             String          @id @default(cuid())
+  playbookId     String
+  playbook       JournalPlaybook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  journalEntryId String
+  journalEntry   JournalEntry    @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  chartId        String?
+  chart          JournalChart?   @relation(fields: [chartId], references: [id], onDelete: SetNull)
+  note           String          @default("")
+  sortOrder      Int             @default(0)
+  createdAt      DateTime        @default(now())
+
+  @@unique([playbookId, journalEntryId, chartId])
+  @@index([playbookId, sortOrder])
+  @@index([journalEntryId])
+  @@index([chartId])
 }

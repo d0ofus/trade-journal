@@ -2,10 +2,11 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   JOURNAL_TAG_CATEGORIES,
+  normalizeJournalTagName,
   normalizeJournalTags,
   type JournalTagCategoryValue,
 } from "@/lib/journal/schema";
-import { computeJournalAnalytics } from "@/lib/journal/analytics";
+import { computeJournalAnalytics, computeRuleFitScore } from "@/lib/journal/analytics";
 
 type JournalTagBuckets = Partial<Record<JournalTagCategoryValue, string[]>>;
 
@@ -85,6 +86,8 @@ export function serializeJournalEntry(entry: JournalEntryWithRelations) {
     ...entry,
     ideaDate: entry.ideaDate.toISOString(),
     actualTriggerAt: entry.actualTriggerAt?.toISOString() ?? null,
+    reviewDueAt: entry.reviewDueAt?.toISOString() ?? null,
+    outcomeCalculatedAt: entry.outcomeCalculatedAt?.toISOString() ?? null,
     createdAt: entry.createdAt.toISOString(),
     updatedAt: entry.updatedAt.toISOString(),
     playbook: entry.playbook
@@ -275,6 +278,10 @@ export async function createJournalEntry(input: JournalEntryMutationInput) {
         breadthNotes: input.breadthNotes as string,
         catalystNotes: input.catalystNotes as string,
         relativeStrengthNotes: input.relativeStrengthNotes as string,
+        autoDraft: input.autoDraft as boolean | undefined,
+        reviewDueAt: input.reviewDueAt as Date | null | undefined,
+        outcomeCalculatedAt: input.outcomeCalculatedAt as Date | null | undefined,
+        outcomeCalculationJson: input.outcomeCalculationJson as string | null | undefined,
       },
       select: { id: true },
     });
@@ -340,6 +347,10 @@ export async function updateJournalEntry(
         breadthNotes: input.breadthNotes as string | undefined,
         catalystNotes: input.catalystNotes as string | undefined,
         relativeStrengthNotes: input.relativeStrengthNotes as string | undefined,
+        autoDraft: input.autoDraft as boolean | undefined,
+        reviewDueAt: input.reviewDueAt as Date | null | undefined,
+        outcomeCalculatedAt: input.outcomeCalculatedAt as Date | null | undefined,
+        outcomeCalculationJson: input.outcomeCalculationJson as string | null | undefined,
       },
       select: { id: true },
     });
@@ -356,6 +367,8 @@ export async function deleteJournalEntry(id: string) {
 export function mapJournalPayloadToData(payload: {
   ideaDate?: string;
   actualTriggerAt?: string | null;
+  reviewDueAt?: string | null;
+  outcomeCalculatedAt?: string | null;
   rating?: number | null;
   tags?: JournalTagBuckets;
   [key: string]: unknown;
@@ -364,6 +377,8 @@ export function mapJournalPayloadToData(payload: {
     ...payload,
     ideaDate: dateFromInput(payload.ideaDate),
     actualTriggerAt: nullableDateFromInput(payload.actualTriggerAt),
+    reviewDueAt: nullableDateFromInput(payload.reviewDueAt),
+    outcomeCalculatedAt: nullableDateFromInput(payload.outcomeCalculatedAt),
   };
   if (Object.prototype.hasOwnProperty.call(payload, "rating")) {
     data.rating = payload.rating ?? null;
@@ -383,6 +398,54 @@ export function mapChartPayloadToData(payload: {
     rangeStart: nullableDateFromInput(payload.rangeStart),
     rangeEnd: nullableDateFromInput(payload.rangeEnd),
   };
+}
+
+export function defaultJournalReviewDueAt(input: { ideaDate: Date; timeframe?: string | null; followThroughDays?: number | null }) {
+  const days = typeof input.followThroughDays === "number"
+    ? input.followThroughDays
+    : input.timeframe === "1W"
+      ? 60
+      : input.timeframe === "1D"
+        ? 20
+        : 5;
+  return new Date(input.ideaDate.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+export async function createJournalDraft(input: JournalEntryMutationInput) {
+  const ideaDate = dateFromInput(input.ideaDate as string | undefined) ?? new Date();
+  return createJournalEntry({
+    symbol: input.symbol,
+    ideaDate,
+    direction: input.direction ?? "LONG",
+    status: "DRAFT",
+    timeframe: input.timeframe ?? "1D",
+    macroSentiment: input.macroSentiment ?? "NEUTRAL",
+    setup: input.setup ?? null,
+    thesis: input.thesis ?? "",
+    trigger: input.trigger ?? "",
+    riskPlan: "",
+    idealExecutionPlan: "",
+    missedReason: "",
+    marketContext: "",
+    peerContext: "",
+    lessonLearned: "",
+    outcomeStatus: "UNREVIEWED",
+    outcomeNotes: "",
+    marketRegime: "UNKNOWN",
+    spyTrend: "UNKNOWN",
+    qqqTrend: "UNKNOWN",
+    iwmTrend: "UNKNOWN",
+    sectorTrend: "UNKNOWN",
+    breadthNotes: "",
+    catalystNotes: "",
+    relativeStrengthNotes: "",
+    autoDraft: true,
+    reviewDueAt: defaultJournalReviewDueAt({ ideaDate, timeframe: String(input.timeframe ?? "1D") }),
+    plannedEntry: input.plannedEntry as number | null | undefined,
+    plannedStop: input.plannedStop as number | null | undefined,
+    plannedTarget1: input.plannedTarget1 as number | null | undefined,
+    tags: input.tags,
+  });
 }
 
 export async function listJournalTags() {
@@ -408,6 +471,32 @@ const playbookInclude = {
   rules: {
     orderBy: { sortOrder: "asc" as const },
   },
+  examples: {
+    include: {
+      journalEntry: {
+        select: {
+          id: true,
+          symbol: true,
+          setup: true,
+          outcomeStatus: true,
+          bestExitR: true,
+          mfeR: true,
+          tags: { include: { tag: true } },
+          ruleChecks: { include: { playbookRule: true } },
+        },
+      },
+      chart: {
+        select: {
+          id: true,
+          screenshotUrl: true,
+          caption: true,
+          purpose: true,
+          timeframe: true,
+        },
+      },
+    },
+    orderBy: [{ sortOrder: "asc" as const }, { createdAt: "desc" as const }],
+  },
   _count: {
     select: { entries: true },
   },
@@ -423,6 +512,27 @@ function serializePlaybook(playbook: Prisma.JournalPlaybookGetPayload<{ include:
       createdAt: rule.createdAt.toISOString(),
       updatedAt: rule.updatedAt.toISOString(),
     })),
+    examples: playbook.examples.map((example) => {
+      const tags = Object.fromEntries(JOURNAL_TAG_CATEGORIES.map((category) => [category, [] as string[]])) as Record<
+        JournalTagCategoryValue,
+        string[]
+      >;
+      for (const row of example.journalEntry.tags) tags[row.category].push(row.tag.name);
+      return {
+        ...example,
+        createdAt: example.createdAt.toISOString(),
+        fitScore: computeRuleFitScore(example.journalEntry.ruleChecks),
+        journalEntry: {
+          id: example.journalEntry.id,
+          symbol: example.journalEntry.symbol,
+          setup: example.journalEntry.setup,
+          outcomeStatus: example.journalEntry.outcomeStatus,
+          bestExitR: example.journalEntry.bestExitR,
+          mfeR: example.journalEntry.mfeR,
+          tags,
+        },
+      };
+    }),
   };
 }
 
@@ -509,6 +619,38 @@ export async function updateJournalPlaybook(id: string, input: JournalPlaybookMu
 
 export async function deleteJournalPlaybook(id: string) {
   await prisma.journalPlaybook.delete({ where: { id } });
+}
+
+export async function addJournalPlaybookExample(playbookId: string, input: {
+  journalEntryId: string;
+  chartId?: string | null;
+  note?: string;
+  sortOrder?: number;
+}) {
+  const existing = await prisma.journalPlaybookExample.findFirst({
+    where: { playbookId, journalEntryId: input.journalEntryId, chartId: input.chartId ?? null },
+    select: { id: true },
+  });
+  const data = {
+    note: input.note ?? "",
+    sortOrder: input.sortOrder ?? 0,
+  };
+  const example = existing
+    ? await prisma.journalPlaybookExample.update({ where: { id: existing.id }, data })
+    : await prisma.journalPlaybookExample.create({
+      data: {
+        playbookId,
+        journalEntryId: input.journalEntryId,
+        chartId: input.chartId ?? null,
+        ...data,
+      },
+    });
+  return example;
+}
+
+export async function deleteJournalPlaybookExample(playbookId: string, exampleId: string) {
+  const example = await prisma.journalPlaybookExample.findFirstOrThrow({ where: { id: exampleId, playbookId }, select: { id: true } });
+  await prisma.journalPlaybookExample.delete({ where: { id: example.id } });
 }
 
 export async function syncJournalRuleChecks(
@@ -642,6 +784,240 @@ export async function updateJournalReview(id: string, input: JournalReviewMutati
 
 export async function deleteJournalReview(id: string) {
   await prisma.journalReview.delete({ where: { id } });
+}
+
+function serializeSavedView(view: Prisma.JournalSavedViewGetPayload<Record<string, never>>) {
+  return {
+    ...view,
+    createdAt: view.createdAt.toISOString(),
+    updatedAt: view.updatedAt.toISOString(),
+  };
+}
+
+export async function listJournalSavedViews(viewType?: string | null) {
+  const rows = await prisma.journalSavedView.findMany({
+    where: viewType ? { viewType } : undefined,
+    orderBy: [{ viewType: "asc" }, { updatedAt: "desc" }],
+  });
+  return rows.map(serializeSavedView);
+}
+
+export async function createJournalSavedView(input: {
+  name: string;
+  viewType: string;
+  filtersJson?: string;
+  sortKey?: string | null;
+  sortDirection?: string;
+}) {
+  const view = await prisma.journalSavedView.create({
+    data: {
+      name: input.name,
+      viewType: input.viewType,
+      filtersJson: input.filtersJson ?? "{}",
+      sortKey: input.sortKey ?? null,
+      sortDirection: input.sortDirection ?? "desc",
+    },
+  });
+  return serializeSavedView(view);
+}
+
+export async function updateJournalSavedView(id: string, input: {
+  name?: string;
+  viewType?: string;
+  filtersJson?: string;
+  sortKey?: string | null;
+  sortDirection?: string;
+}) {
+  const view = await prisma.journalSavedView.update({
+    where: { id },
+    data: input,
+  });
+  return serializeSavedView(view);
+}
+
+export async function deleteJournalSavedView(id: string) {
+  await prisma.journalSavedView.delete({ where: { id } });
+}
+
+export async function listJournalInbox() {
+  const [entries, reviews] = await Promise.all([
+    listJournalEntries({ limit: 1000 }),
+    listJournalReviews(),
+  ]);
+  const now = Date.now();
+  const dueReview = entries.filter((entry) =>
+    entry.reviewDueAt &&
+    new Date(entry.reviewDueAt).getTime() <= now &&
+    (entry.outcomeStatus === "UNREVIEWED" || entry.outcomeStatus === "STILL_DEVELOPING"),
+  );
+  const missingPlan = entries.filter((entry) => entry.plannedEntry == null || entry.plannedStop == null);
+  const missingChart = entries.filter((entry) => entry.charts.length === 0);
+  const triggeredUnreviewed = entries.filter((entry) =>
+    ["TRIGGERED", "STILL_DEVELOPING"].includes(entry.outcomeStatus) &&
+    (entry.mfeR == null || entry.maeR == null || entry.bestExitR == null || !entry.outcomeNotes.trim()),
+  );
+  const workedWithoutMe = entries.filter((entry) => entry.outcomeStatus === "WORKED_WITHOUT_ME");
+  const newSetupCandidates = entries.filter((entry) => entry.tags.LESSON.includes("new-setup"));
+  const openReviewActions = reviews.flatMap((review) =>
+    review.actions
+      .filter((action) => action.status === "OPEN")
+      .map((action) => ({
+        ...action,
+        reviewId: review.id,
+        reviewPeriod: review.period,
+        reviewRange: `${review.startDate} to ${review.endDate}`,
+      })),
+  );
+
+  return {
+    dueReview,
+    missingPlan,
+    missingChart,
+    triggeredUnreviewed,
+    workedWithoutMe,
+    newSetupCandidates,
+    openReviewActions,
+  };
+}
+
+function entryFitScore(entry: { ruleChecks?: Array<{ status: string; playbookRule?: { required: boolean } | null }> }) {
+  return computeRuleFitScore(entry.ruleChecks ?? []);
+}
+
+export async function listJournalVisual(filters: Record<string, string | null>) {
+  const entries = await listJournalEntries({
+    q: filters.q,
+    tag: filters.tag,
+    category: filters.category,
+    status: filters.status,
+    macroSentiment: filters.macroSentiment,
+    outcomeStatus: filters.outcomeStatus,
+    marketRegime: filters.marketRegime,
+    playbookId: filters.playbookId,
+    chartFilter: "WITH_CHARTS",
+    symbol: filters.symbol,
+    limit: 1000,
+  });
+  const purpose = filters.purpose;
+  const timeframe = filters.timeframe;
+  const minFitScore = filters.minFitScore ? Number(filters.minFitScore) : null;
+  const minBestExitR = filters.minBestExitR ? Number(filters.minBestExitR) : null;
+  const from = filters.from ? new Date(filters.from).getTime() : null;
+  const to = filters.to ? new Date(filters.to).getTime() : null;
+
+  const rows = entries.flatMap((entry) => {
+    const ideaTime = new Date(entry.ideaDate).getTime();
+    const fitScore = entryFitScore(entry);
+    if (from && ideaTime < from) return [];
+    if (to && ideaTime > to) return [];
+    if (minFitScore != null && (fitScore == null || fitScore < minFitScore)) return [];
+    if (minBestExitR != null && (entry.bestExitR == null || entry.bestExitR < minBestExitR)) return [];
+    return entry.charts
+      .filter((chart) => !purpose || chart.purpose === purpose)
+      .filter((chart) => !timeframe || chart.timeframe === timeframe)
+      .map((chart) => ({ entry, chart, fitScore }));
+  });
+  return rows;
+}
+
+async function upsertTagByName(tx: Prisma.TransactionClient, name: string) {
+  return tx.tag.upsert({
+    where: { name },
+    update: {},
+    create: { name },
+    select: { id: true, name: true },
+  });
+}
+
+export async function bulkUpdateJournalEntries(input: {
+  ids: string[];
+  addTags?: JournalTagBuckets;
+  removeTags?: JournalTagBuckets;
+  status?: string | null;
+  outcomeStatus?: string | null;
+  macroSentiment?: string | null;
+  marketRegime?: string | null;
+  playbookId?: string | null;
+}) {
+  await prisma.$transaction(async (tx) => {
+    const data: Prisma.JournalEntryUncheckedUpdateManyInput = {};
+    if (input.status) data.status = input.status as Prisma.JournalEntryUncheckedUpdateManyInput["status"];
+    if (input.outcomeStatus) data.outcomeStatus = input.outcomeStatus as Prisma.JournalEntryUncheckedUpdateManyInput["outcomeStatus"];
+    if (input.macroSentiment) data.macroSentiment = input.macroSentiment as Prisma.JournalEntryUncheckedUpdateManyInput["macroSentiment"];
+    if (input.marketRegime) data.marketRegime = input.marketRegime as Prisma.JournalEntryUncheckedUpdateManyInput["marketRegime"];
+    if (Object.prototype.hasOwnProperty.call(input, "playbookId")) data.playbookId = input.playbookId;
+    if (Object.keys(data).length > 0) {
+      await tx.journalEntry.updateMany({ where: { id: { in: input.ids } }, data });
+    }
+
+    const addTags = normalizeTagBuckets(input.addTags);
+    for (const category of JOURNAL_TAG_CATEGORIES) {
+      for (const tagName of addTags[category]) {
+        const tag = await upsertTagByName(tx, tagName);
+        await tx.journalEntryTag.createMany({
+          data: input.ids.map((journalEntryId) => ({ journalEntryId, tagId: tag.id, category })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    const removeTags = normalizeTagBuckets(input.removeTags);
+    for (const category of JOURNAL_TAG_CATEGORIES) {
+      for (const tagName of removeTags[category]) {
+        const tag = await tx.tag.findUnique({ where: { name: tagName }, select: { id: true } });
+        if (!tag) continue;
+        await tx.journalEntryTag.deleteMany({
+          where: { journalEntryId: { in: input.ids }, tagId: tag.id, category },
+        });
+      }
+    }
+  });
+
+  return listJournalEntries({ limit: 1000 });
+}
+
+export async function renameJournalTag(input: { category: JournalTagCategoryValue; from: string; to: string; ids?: string[] }) {
+  const from = normalizeJournalTagName(input.from);
+  const to = normalizeJournalTagName(input.to);
+  if (!from || !to || from === to) return listJournalTags();
+  await prisma.$transaction(async (tx) => {
+    const fromTag = await tx.tag.findUnique({ where: { name: from }, select: { id: true } });
+    if (!fromTag) return;
+    const toTag = await upsertTagByName(tx, to);
+    const where = {
+      tagId: fromTag.id,
+      category: input.category,
+      ...(input.ids?.length ? { journalEntryId: { in: input.ids } } : {}),
+    };
+    const affected = await tx.journalEntryTag.findMany({ where, select: { journalEntryId: true } });
+    await tx.journalEntryTag.deleteMany({ where });
+    if (affected.length > 0) {
+      await tx.journalEntryTag.createMany({
+        data: affected.map((row) => ({ journalEntryId: row.journalEntryId, tagId: toTag.id, category: input.category })),
+        skipDuplicates: true,
+      });
+    }
+  });
+  return listJournalTags();
+}
+
+export async function mergeJournalTag(input: { category: JournalTagCategoryValue; from: string; to: string; ids?: string[] }) {
+  return renameJournalTag(input);
+}
+
+export async function removeJournalTag(input: { category: JournalTagCategoryValue; name: string; ids?: string[] }) {
+  const name = normalizeJournalTagName(input.name);
+  if (!name) return listJournalTags();
+  const tag = await prisma.tag.findUnique({ where: { name }, select: { id: true } });
+  if (!tag) return listJournalTags();
+  await prisma.journalEntryTag.deleteMany({
+    where: {
+      tagId: tag.id,
+      category: input.category,
+      ...(input.ids?.length ? { journalEntryId: { in: input.ids } } : {}),
+    },
+  });
+  return listJournalTags();
 }
 
 export async function getJournalAnalytics() {
