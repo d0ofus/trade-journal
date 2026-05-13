@@ -1650,34 +1650,20 @@ export function JournalWorkspace({
                   </span>
                 ))}
               </div>
+              <details className="mt-3 rounded-2xl border border-slate-200/80 bg-slate-50/70 px-3 py-2 text-sm">
+                <summary className="cursor-pointer font-semibold text-slate-700">Entry snapshot</summary>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                  <SnapshotRow label="Symbol" value={form.symbol || "-"} />
+                  <SnapshotRow label="Setup" value={form.setup || "-"} />
+                  <SnapshotRow label="Macro" value={form.macroSentiment} />
+                  <SnapshotRow label="Outcome" value={compactLabel(form.outcomeStatus)} />
+                  <SnapshotRow label="Chart Count" value={String(selectedEntry?.charts.length ?? 0)} />
+                </div>
+              </details>
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(22rem,0.9fr)] 2xl:grid-cols-[15rem_minmax(0,1fr)_24rem]">
-            <aside className="hidden 2xl:block">
-              <div className="sticky top-4 space-y-3">
-                <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-4">
-                  {sectionTitle("Entry Snapshot")}
-                  <div className="space-y-2 text-sm">
-                    <SnapshotRow label="Symbol" value={form.symbol || "-"} />
-                    <SnapshotRow label="Setup" value={form.setup || "-"} />
-                    <SnapshotRow label="Macro" value={form.macroSentiment} />
-                    <SnapshotRow label="Outcome" value={compactLabel(form.outcomeStatus)} />
-                    <SnapshotRow label="Chart Count" value={String(selectedEntry?.charts.length ?? 0)} />
-                  </div>
-                </div>
-                <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-4">
-                  {sectionTitle("Quick Tags")}
-                  <div className="flex flex-wrap gap-1.5">
-                    {JOURNAL_TAG_CATEGORIES.flatMap((category) => form.tags[category].map((tag) => (
-                      <span key={`${category}-${tag}`} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700">#{tag}</span>
-                    )))}
-                    {!JOURNAL_TAG_CATEGORIES.some((category) => form.tags[category].length > 0) ? <p className="text-sm text-slate-500">No tags yet.</p> : null}
-                  </div>
-                </div>
-              </div>
-            </aside>
-
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,24rem)]">
             <main className="min-w-0 space-y-4">
               <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/90 shadow-[0_20px_60px_-38px_rgba(15,23,42,0.34)]">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 px-4 py-3">
