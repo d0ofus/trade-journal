@@ -18,6 +18,9 @@ export type JournalAnalyticsEntry = {
   charts: unknown[];
   tags: TagBuckets;
   ruleChecks?: Array<{ status: string; playbookRule?: { text: string; required: boolean } | null }>;
+  plannedEntry?: number | null;
+  plannedStop?: number | null;
+  reviewDueAt?: string | null;
 };
 
 type TagRow = { tagId?: string; name: string; category: JournalTagCategoryValue; count: number };
@@ -55,8 +58,22 @@ export function computeJournalAnalytics(entries: JournalAnalyticsEntry[], tags: 
   const workedWithoutMe = entries.filter((entry) => entry.outcomeStatus === "WORKED_WITHOUT_ME");
   const failed = entries.filter((entry) => entry.outcomeStatus === "FAILED");
   const withCharts = entries.filter((entry) => entry.charts.length > 0);
+  const missingPlan = entries.filter((entry) => entry.plannedEntry == null || entry.plannedStop == null);
+  const dueReview = entries.filter((entry) => entry.reviewDueAt && new Date(entry.reviewDueAt).getTime() <= Date.now() && (entry.outcomeStatus === "UNREVIEWED" || entry.outcomeStatus === "STILL_DEVELOPING"));
   const lessonTags = tags.filter((tag) => tag.category === "LESSON");
   const mistakeTags = tags.filter((tag) => tag.category === "MISTAKE");
+  const fitScores = entries.map((entry) => computeRuleFitScore(entry.ruleChecks ?? [])).filter((score): score is number => typeof score === "number");
+  const tagPerformance = tags.map((tag) => {
+    const taggedEntries = entries.filter((entry) => entry.tags[tag.category]?.includes(tag.name));
+    return {
+      ...tag,
+      reviewed: taggedEntries.filter((entry) => entry.outcomeStatus !== "UNREVIEWED").length,
+      chartCount: taggedEntries.reduce((sum, entry) => sum + entry.charts.length, 0),
+      avgMfeR: average(taggedEntries.map((entry) => entry.mfeR)),
+      avgMaeR: average(taggedEntries.map((entry) => entry.maeR)),
+      avgBestExitR: average(taggedEntries.map((entry) => entry.bestExitR)),
+    };
+  });
   const newSetupCandidates = entries
     .filter((entry) => entry.tags.LESSON?.includes("new-setup"))
     .map((entry) => ({
@@ -82,12 +99,16 @@ export function computeJournalAnalytics(entries: JournalAnalyticsEntry[], tags: 
       entries: entries.length,
       reviewed: reviewed.length,
       withCharts: withCharts.length,
+      missingPlan: missingPlan.length,
+      dueReview: dueReview.length,
+      chartCoverage: entries.length ? withCharts.length / entries.length : 0,
       triggerRate: entries.length ? triggered.length / entries.length : 0,
       workedWithoutMeRate: entries.length ? workedWithoutMe.length / entries.length : 0,
       failedAfterTriggerRate: entries.length ? failed.length / entries.length : 0,
       avgMfeR: average(entries.map((entry) => entry.mfeR)),
       avgMaeR: average(entries.map((entry) => entry.maeR)),
       avgBestExitR: average(entries.map((entry) => entry.bestExitR)),
+      avgFitScore: average(fitScores),
     },
     byStatus: groupByKey(entries, (entry) => entry.status),
     byOutcome: groupByKey(entries, (entry) => entry.outcomeStatus),
@@ -95,8 +116,16 @@ export function computeJournalAnalytics(entries: JournalAnalyticsEntry[], tags: 
     byPlaybook: groupByKey(entries, (entry) => entry.playbook?.name ?? "No playbook"),
     byMarketRegime: groupByKey(entries, (entry) => entry.marketRegime),
     byMacroSentiment: groupByKey(entries, (entry) => entry.macroSentiment),
+    byFitScore: countBy(entries.map((entry) => {
+      const score = computeRuleFitScore(entry.ruleChecks ?? []);
+      if (score == null) return "Unscored";
+      if (score >= 80) return "80-100";
+      if (score >= 50) return "50-79";
+      return "0-49";
+    })),
     lessonTags,
     mistakeTags,
+    tagPerformance,
     newSetupCandidates,
     recurringRuleFailures,
     opportunityRank: entries

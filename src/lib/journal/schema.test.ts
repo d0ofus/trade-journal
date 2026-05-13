@@ -5,7 +5,10 @@ import {
   JOURNAL_OUTCOME_STATUSES,
   JOURNAL_TIMEFRAMES,
   journalChartPayloadSchema,
+  journalDraftPayloadSchema,
   journalEntryPayloadSchema,
+  journalSavedViewPayloadSchema,
+  journalTagOperationSchema,
   journalPlaybookPayloadSchema,
   journalReviewPayloadSchema,
   normalizeJournalTagName,
@@ -82,5 +85,30 @@ describe("journal schema", () => {
         actions: [{ label: "Promote the best flag example" }],
       }).actions[0].status,
     ).toBe("OPEN");
+  });
+
+  it("validates quick drafts, saved views, and tag operations", () => {
+    expect(
+      journalDraftPayloadSchema.parse({
+        symbol: " nvda ",
+        tags: { LESSON: ["#new-setup"] },
+      }).symbol,
+    ).toBe("NVDA");
+
+    expect(
+      journalSavedViewPayloadSchema.parse({
+        name: "Worked without me",
+        viewType: "VISUAL",
+        filtersJson: "{\"outcomeStatus\":\"WORKED_WITHOUT_ME\"}",
+      }).sortDirection,
+    ).toBe("desc");
+
+    expect(
+      journalTagOperationSchema.parse({
+        category: "LESSON",
+        from: "#new setup",
+        to: "#new-setup",
+      }).category,
+    ).toBe("LESSON");
   });
 });

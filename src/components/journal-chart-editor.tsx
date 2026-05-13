@@ -17,7 +17,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { Camera, CircleDot, Crosshair, Flag, LineChart, Minus, Save, Target, X } from "lucide-react";
+import { Camera, CircleDot, Crosshair, Flag, LineChart, Minus, Redo2, Save, Target, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +36,19 @@ type Marker = { markerType: MarkerType; time: string | null; price: number | nul
 type Annotation =
   | { id: string; type: "horizontal"; price: number; color: string }
   | { id: string; type: "trend"; fromTime: number; fromPrice: number; toTime: number; toPrice: number; color: string };
+type EditorState = { markers: Marker[]; annotations: Annotation[] };
+type PlanOverlay = {
+  direction?: "LONG" | "SHORT";
+  ideaDate?: string | null;
+  actualTriggerAt?: string | null;
+  followThroughDays?: number | null;
+  plannedEntry?: number | null;
+  plannedStop?: number | null;
+  plannedTarget1?: number | null;
+  plannedTarget2?: number | null;
+  plannedTarget3?: number | null;
+  bestExitR?: number | null;
+};
 
 const SMA_CONFIG = [
   { period: 10, color: "#0284c7" },
@@ -96,12 +109,14 @@ export function JournalChartEditor({
   symbol,
   initialTimeframe = "1D",
   sectorEtf,
+  plan,
   onSaved,
 }: {
   entryId: string;
   symbol: string;
   initialTimeframe?: JournalTimeframe;
   sectorEtf?: string | null;
+  plan?: PlanOverlay;
   onSaved: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -115,6 +130,8 @@ export function JournalChartEditor({
   const trendRefs = useRef<Array<ISeriesApi<"Line">>>([]);
   const pendingTrendRef = useRef<{ time: number; price: number } | null>(null);
   const toolRef = useRef<Tool>("cursor");
+  const markersRef = useRef<Marker[]>([]);
+  const annotationsRef = useRef<Annotation[]>([]);
   const [timeframe, setTimeframe] = useState<JournalTimeframe>(initialTimeframe);
   const [purpose, setPurpose] = useState<JournalChartPurposeValue>("THESIS");
   const [compareSymbol, setCompareSymbol] = useState("");
@@ -124,6 +141,8 @@ export function JournalChartEditor({
   const [compareCandles, setCompareCandles] = useState<Candle[]>([]);
   const [markers, setMarkers] = useState<Marker[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [undoStack, setUndoStack] = useState<EditorState[]>([]);
+  const [redoStack, setRedoStack] = useState<EditorState[]>([]);
   const [tool, setTool] = useState<Tool>("cursor");
   const [caption, setCaption] = useState("");
   const [status, setStatus] = useState("");
@@ -140,6 +159,43 @@ export function JournalChartEditor({
   useEffect(() => {
     pendingTrendRef.current = pendingTrend;
   }, [pendingTrend]);
+
+  useEffect(() => {
+    markersRef.current = markers;
+  }, [markers]);
+
+  useEffect(() => {
+    annotationsRef.current = annotations;
+  }, [annotations]);
+
+  const commitState = (nextMarkers: Marker[], nextAnnotations: Annotation[]) => {
+    setUndoStack((current) => [...current.slice(-24), { markers: markersRef.current, annotations: annotationsRef.current }]);
+    setRedoStack([]);
+    setMarkers(nextMarkers);
+    setAnnotations(nextAnnotations);
+  };
+
+  const undo = () => {
+    setUndoStack((current) => {
+      const previous = current[current.length - 1];
+      if (!previous) return current;
+      setRedoStack((redoCurrent) => [...redoCurrent, { markers: markersRef.current, annotations: annotationsRef.current }]);
+      setMarkers(previous.markers);
+      setAnnotations(previous.annotations);
+      return current.slice(0, -1);
+    });
+  };
+
+  const redo = () => {
+    setRedoStack((current) => {
+      const next = current[current.length - 1];
+      if (!next) return current;
+      setUndoStack((undoCurrent) => [...undoCurrent, { markers: markersRef.current, annotations: annotationsRef.current }]);
+      setMarkers(next.markers);
+      setAnnotations(next.annotations);
+      return current.slice(0, -1);
+    });
+  };
 
   useEffect(() => {
     const url = new URL("/api/market/candles", window.location.origin);
@@ -167,6 +223,53 @@ export function JournalChartEditor({
       cancelled = true;
     };
   }, [compareSymbol, rangeEnd, rangeStart, symbol, timeframe]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === "z") {
+        event.preventDefault();
+        redo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === "z") {
+        event.preventDefault();
+        undo();
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (markersRef.current.length || annotationsRef.current.length) {
+          event.preventDefault();
+          commitState(markersRef.current.slice(0, -1), annotationsRef.current.slice(0, -1));
+        }
+        return;
+      }
+      if (event.altKey && key === "j") {
+        event.preventDefault();
+        setTool("horizontal");
+        return;
+      }
+      const toolByKey: Partial<Record<string, Tool>> = {
+        v: "cursor",
+        t: "trend",
+        e: "IDEAL_ENTRY",
+        s: "STOP",
+        g: "TARGET",
+        x: "IDEAL_EXIT",
+        m: "MISSED_TRIGGER",
+        d: "DECISION_POINT",
+      };
+      const nextTool = toolByKey[key];
+      if (nextTool) {
+        event.preventDefault();
+        setTool(nextTool);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -220,7 +323,7 @@ export function JournalChartEditor({
       const price = seriesRef.current.coordinateToPrice(param.point.y);
       if (typeof price !== "number" || !Number.isFinite(price)) return;
       if (currentTool === "horizontal") {
-        setAnnotations((current) => [...current, { id: crypto.randomUUID(), type: "horizontal", price, color: "#2563eb" }]);
+        commitState(markersRef.current, [...annotationsRef.current, { id: crypto.randomUUID(), type: "horizontal", price, color: "#2563eb" }]);
         return;
       }
       if (currentTool === "trend") {
@@ -229,16 +332,16 @@ export function JournalChartEditor({
           setPendingTrend({ time, price });
           return;
         }
-        setAnnotations((current) => [
-          ...current,
+        commitState(markersRef.current, [
+          ...annotationsRef.current,
           { id: crypto.randomUUID(), type: "trend", fromTime: pending.time, fromPrice: pending.price, toTime: time, toPrice: price, color: "#f59e0b" },
         ]);
         setPendingTrend(null);
         return;
       }
       const meta = MARKER_META[currentTool];
-      setMarkers((current) => [
-        ...current,
+      commitState([
+        ...markersRef.current,
         {
           markerType: currentTool,
           time: unixToIso(time),
@@ -246,7 +349,7 @@ export function JournalChartEditor({
           label: `${meta.label} ${price.toFixed(2)}`,
           metadataJson: JSON.stringify({ source: "journal-chart-editor" }),
         },
-      ]);
+      ], annotationsRef.current);
     };
     chart.subscribeClick(clickHandler);
     const resizeObserver = new ResizeObserver(() => {
@@ -396,6 +499,46 @@ export function JournalChartEditor({
     }
   }
 
+  function inputDate(value?: string | null) {
+    return value ? value.slice(0, 10) : "";
+  }
+
+  function addDays(date: Date, days: number) {
+    const next = new Date(date);
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  function createFollowThroughChart() {
+    const startRaw = plan?.actualTriggerAt || plan?.ideaDate;
+    const start = startRaw ? new Date(startRaw) : new Date();
+    const days = plan?.followThroughDays ?? (timeframe === "1W" ? 60 : timeframe === "1D" ? 20 : 5);
+    setPurpose("FOLLOW_THROUGH");
+    setRangeStart(inputDate(start.toISOString()));
+    setRangeEnd(inputDate(addDays(start, days).toISOString()));
+    const startIso = start.toISOString();
+    const nextMarkers: Marker[] = [];
+    const nextAnnotations: Annotation[] = [];
+    const horizontal = (price: number | null | undefined, color: string) => {
+      if (typeof price === "number") nextAnnotations.push({ id: crypto.randomUUID(), type: "horizontal", price, color });
+    };
+    horizontal(plan?.plannedEntry, "#16a34a");
+    horizontal(plan?.plannedStop, "#dc2626");
+    horizontal(plan?.plannedTarget1, "#2563eb");
+    horizontal(plan?.plannedTarget2, "#2563eb");
+    horizontal(plan?.plannedTarget3, "#2563eb");
+    if (typeof plan?.plannedEntry === "number") {
+      nextMarkers.push({ markerType: "IDEAL_ENTRY", time: startIso, price: plan.plannedEntry, label: "Planned entry", metadataJson: JSON.stringify({ source: "follow-through-template" }) });
+    }
+    if (typeof plan?.plannedStop === "number") {
+      nextMarkers.push({ markerType: "STOP", time: startIso, price: plan.plannedStop, label: "Planned stop", metadataJson: JSON.stringify({ source: "follow-through-template" }) });
+    }
+    if (typeof plan?.plannedTarget1 === "number") {
+      nextMarkers.push({ markerType: "TARGET", time: startIso, price: plan.plannedTarget1, label: "Target 1", metadataJson: JSON.stringify({ source: "follow-through-template" }) });
+    }
+    commitState(nextMarkers, nextAnnotations);
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3 rounded-[24px] border border-slate-200/80 bg-white/85 p-4">
@@ -436,22 +579,36 @@ export function JournalChartEditor({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 rounded-[24px] border border-slate-200/80 bg-white/85 p-3">
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Cursor</span>
         <Button size="sm" variant={tool === "cursor" ? "default" : "outline"} onClick={() => setTool("cursor")} title="Cursor">
           <Crosshair className="h-4 w-4" />
         </Button>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Draw</span>
         <Button size="sm" variant={tool === "horizontal" ? "default" : "outline"} onClick={() => setTool("horizontal")} title="Horizontal line">
           <Minus className="h-4 w-4" />
         </Button>
         <Button size="sm" variant={tool === "trend" ? "default" : "outline"} onClick={() => setTool("trend")} title="Trend line">
           <LineChart className="h-4 w-4" />
         </Button>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Markers</span>
         {JOURNAL_MARKER_TYPES.map((markerType) => (
           <Button key={markerType} size="sm" variant={tool === markerType ? "default" : "outline"} onClick={() => setTool(markerType)} title={MARKER_META[markerType].label}>
             {markerType === "TARGET" ? <Target className="h-4 w-4" /> : markerType === "MISSED_TRIGGER" ? <Flag className="h-4 w-4" /> : <CircleDot className="h-4 w-4" />}
           </Button>
         ))}
-        <Button size="sm" variant="outline" onClick={() => { setMarkers([]); setAnnotations([]); setPendingTrend(null); }} title="Clear">
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Edit</span>
+        <Button size="sm" variant="outline" disabled={undoStack.length === 0} onClick={undo} title="Undo">
+          <Undo2 className="h-4 w-4" />
+        </Button>
+        <Button size="sm" variant="outline" disabled={redoStack.length === 0} onClick={redo} title="Redo">
+          <Redo2 className="h-4 w-4" />
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => { commitState([], []); setPendingTrend(null); }} title="Clear">
           <X className="h-4 w-4" />
+        </Button>
+        <Button size="sm" variant="outline" onClick={createFollowThroughChart} title="Create follow-through chart">
+          <Flag className="h-4 w-4" />
+          Follow-through
         </Button>
         <Button size="sm" className="ml-auto" disabled={saving || candles.length === 0} onClick={saveChart}>
           {saving ? <Save className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
