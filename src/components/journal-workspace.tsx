@@ -26,7 +26,7 @@ import {
   Upload,
 } from "lucide-react";
 import { JournalEntryChartPreview } from "@/components/journal-entry-chart-preview";
-import { JournalChartEditor } from "@/components/journal-chart-editor";
+import { JournalChartEditor, type JournalChartStagePayload } from "@/components/journal-chart-editor";
 import { TradingViewAnalysisReference } from "@/components/tradingview-analysis-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -66,6 +66,10 @@ type JournalChart = {
   screenshotUrl: string | null;
   caption: string;
   createdAt: string;
+};
+
+type PendingJournalChart = JournalChartStagePayload & {
+  localId: string;
 };
 
 type JournalPlaybookExample = {
@@ -486,6 +490,7 @@ export function JournalWorkspace({
   const [inboxData, setInboxData] = useState<JournalInbox | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
+  const [pendingCharts, setPendingCharts] = useState<PendingJournalChart[]>([]);
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [tagManager, setTagManager] = useState({ category: "LESSON" as JournalTagCategoryValue, from: "", to: "", name: "" });
   const [autosaveState, setAutosaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
@@ -514,15 +519,16 @@ export function JournalWorkspace({
     return true;
   }), [chartRows, filterPurpose, filterTimeframe, minFitScore, minBestExitR]);
   const compareRows = useMemo(() => chartRows.filter((row) => selectedChartIds.includes(row.chart.id)).slice(0, 4), [chartRows, selectedChartIds]);
+  const entryChartCount = (selectedEntry?.charts.length ?? 0) + pendingCharts.length;
   const entryEssentials = useMemo(() => [
-    { label: "Chart", done: Boolean(selectedEntry?.charts.length) },
+    { label: "Chart", done: entryChartCount > 0 },
     { label: "Entry", done: form.plannedEntry != null },
     { label: "Stop", done: form.plannedStop != null },
     { label: "Thesis", done: Boolean(form.thesis.trim()) },
     { label: "Trigger", done: Boolean(form.trigger.trim()) },
     { label: "Tags", done: JOURNAL_TAG_CATEGORIES.some((category) => form.tags[category].length > 0) },
     { label: "Outcome", done: form.outcomeStatus !== "UNREVIEWED" },
-  ], [form.outcomeStatus, form.plannedEntry, form.plannedStop, form.tags, form.thesis, form.trigger, selectedEntry?.charts.length]);
+  ], [entryChartCount, form.outcomeStatus, form.plannedEntry, form.plannedStop, form.tags, form.thesis, form.trigger]);
   const entryCompletion = Math.round((entryEssentials.filter((item) => item.done).length / entryEssentials.length) * 100);
   const planRisk = typeof form.plannedEntry === "number" && typeof form.plannedStop === "number"
     ? Math.abs(form.plannedEntry - form.plannedStop)
@@ -662,6 +668,7 @@ export function JournalWorkspace({
     });
     setMarketContext(null);
     setChartPreviewRequest(null);
+    setPendingCharts([]);
     setActiveTab("entry");
   }
 
@@ -672,6 +679,7 @@ export function JournalWorkspace({
     setMarketContext(null);
     setChartPreviewRequest(null);
     setRuleDrafts({});
+    setPendingCharts([]);
     setEntrySection("basics");
     setActiveTab("entry");
   }
@@ -793,6 +801,43 @@ export function JournalWorkspace({
     setAutosaveState("saved");
   }
 
+  function stageChart(payload: JournalChartStagePayload) {
+    setPendingCharts((current) => [{ ...payload, localId: crypto.randomUUID() }, ...current]);
+    setMessage("Attached chart. Save Entry to persist it.");
+  }
+
+  function updatePendingChartCaption(localId: string, caption: string) {
+    setPendingCharts((current) => current.map((chart) => (chart.localId === localId ? { ...chart, caption } : chart)));
+  }
+
+  function removePendingChart(localId: string) {
+    setPendingCharts((current) => current.filter((chart) => chart.localId !== localId));
+  }
+
+  async function uploadPendingCharts(entryId: string, charts: PendingJournalChart[]) {
+    const failed: PendingJournalChart[] = [];
+    let uploaded = 0;
+    for (const chart of charts) {
+      const { localId, ...payload } = chart;
+      void localId;
+      try {
+        const res = await fetch(`/api/journal/${entryId}/charts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          uploaded += 1;
+        } else {
+          failed.push(chart);
+        }
+      } catch {
+        failed.push(chart);
+      }
+    }
+    return { failed, uploaded };
+  }
+
   async function reloadEntries(overrides?: {
     q?: string;
     tag?: string;
@@ -849,6 +894,7 @@ export function JournalWorkspace({
     startTransition(async () => {
       try {
         setMessage("Saving journal entry...");
+        const chartsToUpload = pendingCharts;
         const payload = { ...journalPayload(), autoDraft: false };
         const res = await fetch(selectedId ? `/api/journal/${selectedId}` : "/api/journal", {
           method: selectedId ? "PATCH" : "POST",
@@ -860,8 +906,20 @@ export function JournalWorkspace({
         const saved = data.entry as JournalEntry;
         setSelectedId(saved.id);
         setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
+        let uploaded = 0;
+        let failedCharts: PendingJournalChart[] = [];
+        if (chartsToUpload.length > 0) {
+          const result = await uploadPendingCharts(saved.id, chartsToUpload);
+          uploaded = result.uploaded;
+          failedCharts = result.failed;
+        }
+        setPendingCharts(failedCharts);
         await Promise.all([reloadEntries(), reloadPlaybooks()]);
-        setMessage("Saved journal entry.");
+        if (failedCharts.length > 0) {
+          setMessage(`Saved entry. Attached ${uploaded} chart${uploaded === 1 ? "" : "s"}; ${failedCharts.length} chart${failedCharts.length === 1 ? "" : "s"} still pending.`);
+        } else {
+          setMessage(chartsToUpload.length > 0 ? `Saved entry with ${uploaded} chart${uploaded === 1 ? "" : "s"}.` : "Saved journal entry.");
+        }
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "Failed to save journal entry.");
       }
@@ -1626,7 +1684,6 @@ export function JournalWorkspace({
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={loadChartPreview} disabled={!form.symbol.trim()}><BarChart3 className="h-4 w-4" />Load Chart</Button>
-                {!selectedEntry ? <Button variant="outline" onClick={() => void createCaptureDraft("entry")} disabled={!form.symbol.trim()}><Plus className="h-4 w-4" />Create Draft</Button> : null}
                 {selectedEntry ? <Button variant="outline" onClick={() => calculateOutcome(selectedEntry.id)}><RefreshCw className="h-4 w-4" />Calculate</Button> : null}
                 <Button disabled={pending || !form.symbol.trim()} onClick={saveEntry}><Save className="h-4 w-4" />Save Entry</Button>
                 {selectedId ? <Button variant="destructive" disabled={pending} onClick={deleteEntry}><Trash2 className="h-4 w-4" />Delete</Button> : null}
@@ -1634,7 +1691,7 @@ export function JournalWorkspace({
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <MetricTile label="Plan Risk" value={planRisk == null ? "-" : planRisk.toFixed(2)} />
-              <MetricTile label="Charts" value={String(selectedEntry?.charts.length ?? 0)} />
+              <MetricTile label="Charts" value={String(entryChartCount)} />
               <MetricTile label="Review Due" value={selectedEntry?.reviewDueAt ? dateInputValue(selectedEntry.reviewDueAt) : "-"} />
               <MetricTile label="Best Exit" value={formatR(form.bestExitR ?? form.mfeR)} />
               <MetricTile label="Completion" value={`${entryCompletion}%`} />
@@ -1657,7 +1714,7 @@ export function JournalWorkspace({
                   <SnapshotRow label="Setup" value={form.setup || "-"} />
                   <SnapshotRow label="Macro" value={form.macroSentiment} />
                   <SnapshotRow label="Outcome" value={compactLabel(form.outcomeStatus)} />
-                  <SnapshotRow label="Chart Count" value={String(selectedEntry?.charts.length ?? 0)} />
+                  <SnapshotRow label="Chart Count" value={String(entryChartCount)} />
                 </div>
               </details>
             </div>
@@ -1681,40 +1738,25 @@ export function JournalWorkspace({
                   </div>
                 </div>
                 <div className="p-3">
-                  {chartPreviewRequest ? (
-                    <JournalEntryChartPreview
+                  {form.symbol.trim() ? (
+                    <JournalChartEditor
+                      key={`${form.symbol.trim().toUpperCase()}-${chartPreviewRequest?.requestKey ?? 0}`}
+                      mode="stage"
                       chartHeight={entryChartHeight}
-                      requestKey={chartPreviewRequest.requestKey}
-                      symbol={chartPreviewRequest.symbol}
-                      timeframe={coerceTimeframe(form.timeframe)}
+                      symbol={form.symbol.trim().toUpperCase()}
+                      initialTimeframe={coerceTimeframe(form.timeframe)}
+                      sectorEtf={form.sectorEtf}
+                      plan={form}
+                      onStageChart={stageChart}
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-300 bg-slate-50/80 p-8 text-center text-sm text-slate-500" style={{ minHeight: entryChartHeight }}>
                       <BarChart3 className="mb-2 h-5 w-5" />
-                      Enter a symbol and load the chart to start the review.
+                      Enter a symbol to load the chart editor and start marking up the idea.
                     </div>
                   )}
                 </div>
               </div>
-
-              {selectedEntry ? (
-                <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4 shadow-[0_20px_60px_-38px_rgba(15,23,42,0.28)]">
-                  {sectionTitle("Chart Capture", "App-owned saved screenshot")}
-                  <JournalChartEditor
-                    chartHeight={entryChartHeight}
-                    entryId={selectedEntry.id}
-                    symbol={selectedEntry.symbol}
-                    initialTimeframe={coerceTimeframe(selectedEntry.timeframe)}
-                    sectorEtf={selectedEntry.sectorEtf}
-                    plan={selectedEntry}
-                    onSaved={() => void reloadEntries()}
-                  />
-                </div>
-              ) : (
-                <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-6 text-sm text-slate-500">
-                  Create a draft after entering a symbol to enable chart capture and saved chart artifacts.
-                </div>
-              )}
             </main>
 
             <aside className="space-y-4 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-y-auto xl:pr-1">
@@ -1765,24 +1807,37 @@ export function JournalWorkspace({
                 </div>
               ) : null}
 
-              {selectedEntry ? (
-                <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
-                  {sectionTitle("Saved Charts", `${selectedEntry.charts.length}`)}
-                  <div className="space-y-3">
-                    {selectedEntry.charts.slice(0, 4).map((chart) => (
+              <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
+                {sectionTitle("Charts", pendingCharts.length > 0 ? `${entryChartCount} | ${pendingCharts.length} pending` : String(entryChartCount))}
+                <div className="space-y-3">
+                  {pendingCharts.map((chart) => (
+                    <div key={chart.localId} className="rounded-2xl border border-sky-200 bg-sky-50/70 p-2">
+                      <img src={chart.screenshotDataUrl} alt={`${chart.symbol} pending chart`} className="aspect-[16/9] w-full rounded-xl object-cover" />
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <Badge variant="default">Pending</Badge>
+                        <Badge variant="outline">{compactLabel(chart.purpose)}</Badge>
+                        <Badge variant="outline">{chart.timeframe}</Badge>
+                      </div>
+                      <Textarea className="mt-2 min-h-16 text-xs" value={chart.caption} onChange={(event) => updatePendingChartCaption(chart.localId, event.currentTarget.value)} />
+                      <Button className="mt-2 w-full" size="sm" variant="outline" onClick={() => removePendingChart(chart.localId)}>
+                        <Trash2 className="h-4 w-4" />Remove Pending Chart
+                      </Button>
+                    </div>
+                  ))}
+                  {selectedEntry?.charts.slice(0, 4).map((chart) => (
                       <div key={chart.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-2">
                         {chart.screenshotUrl ? <img src={chart.screenshotUrl} alt={`${chart.symbol} saved chart`} className="aspect-[16/9] w-full rounded-xl object-cover" /> : <div className="aspect-[16/9] rounded-xl bg-slate-100" />}
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          <Badge variant="outline">Saved</Badge>
                           <Badge variant="outline">{compactLabel(chart.purpose)}</Badge>
                           <Badge variant="outline">{chart.timeframe}</Badge>
                         </div>
                         <Textarea className="mt-2 min-h-16 text-xs" defaultValue={chart.caption} onBlur={(event) => saveChartCaption(chart, event.currentTarget.value)} />
                       </div>
-                    ))}
-                    {selectedEntry.charts.length === 0 ? <p className="text-sm text-slate-500">No saved charts yet.</p> : null}
-                  </div>
+                  ))}
+                  {entryChartCount === 0 ? <p className="text-sm text-slate-500">No charts attached yet.</p> : null}
                 </div>
-              ) : null}
+              </div>
 
               {selectedEntry ? (
                 <details className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4">
