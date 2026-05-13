@@ -105,6 +105,7 @@ function canvasToDataUrl(canvas: HTMLCanvasElement) {
 }
 
 export function JournalChartEditor({
+  chartHeight = 560,
   entryId,
   symbol,
   initialTimeframe = "1D",
@@ -117,6 +118,7 @@ export function JournalChartEditor({
   initialTimeframe?: JournalTimeframe;
   sectorEtf?: string | null;
   plan?: PlanOverlay;
+  chartHeight?: number;
   onSaved: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -275,7 +277,7 @@ export function JournalChartEditor({
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
       layout: { background: { type: ColorType.Solid, color: "#f8fafc" }, textColor: "#1e293b" },
-      height: 560,
+      height: chartHeight,
       width: containerRef.current.clientWidth,
       crosshair: { mode: CrosshairMode.Normal },
       grid: {
@@ -367,7 +369,7 @@ export function JournalChartEditor({
       smaRefs.current = [];
       markerPluginRef.current = null;
     };
-  }, []);
+  }, [chartHeight]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -464,7 +466,7 @@ export function JournalChartEditor({
           caption,
           screenshotDataUrl: screenshot,
           width: containerRef.current?.clientWidth ?? null,
-          height: 560,
+          height: chartHeight,
           mimeType: "image/png",
           markers,
           tradingViewLayoutJson: JSON.stringify({

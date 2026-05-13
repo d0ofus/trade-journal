@@ -25,7 +25,7 @@ type DragState = {
 };
 type CandleResponse = { symbol?: string; candles?: Candle[]; error?: string };
 
-const CHART_HEIGHT = 500;
+const DEFAULT_CHART_HEIGHT = 500;
 const DEFAULT_SELECTION_LENGTH = 40;
 const QUICK_LENGTHS = [20, 40, 60, 80, 120] as const;
 const DRAG_ATTRIBUTE = "data-journal-chart-drag";
@@ -96,6 +96,7 @@ function selectionLabels(points: ChartPoint[], selection: ChartSelection | null)
 }
 
 export function JournalEntryChartPreview({
+  chartHeight = DEFAULT_CHART_HEIGHT,
   className,
   requestKey,
   symbol,
@@ -104,6 +105,7 @@ export function JournalEntryChartPreview({
   symbol: string;
   timeframe: JournalTimeframe;
   requestKey: number;
+  chartHeight?: number;
   className?: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -180,7 +182,7 @@ export function JournalEntryChartPreview({
     if (!container || points.length === 0) return;
 
     const chart = createChart(container, {
-      height: CHART_HEIGHT,
+      height: chartHeight,
       width: container.clientWidth,
       layout: {
         background: { type: ColorType.Solid, color: "#0f172a" },
@@ -244,7 +246,7 @@ export function JournalEntryChartPreview({
 
     const resizeObserver = new ResizeObserver((entries) => {
       const width = Math.floor(entries[0]?.contentRect.width ?? 0);
-      if (width > 0) chart.resize(width, CHART_HEIGHT);
+      if (width > 0) chart.resize(width, chartHeight);
     });
     resizeObserver.observe(container);
 
@@ -253,7 +255,7 @@ export function JournalEntryChartPreview({
       chart.remove();
       chartRef.current = null;
     };
-  }, [points, timeframe]);
+  }, [chartHeight, points, timeframe]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -390,7 +392,7 @@ export function JournalEntryChartPreview({
         </div>
       </div>
       <div className="relative mt-3 overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950">
-        <div ref={containerRef} className="relative z-0 w-full" style={{ height: CHART_HEIGHT }} />
+        <div ref={containerRef} className="relative z-0 w-full" style={{ height: chartHeight }} />
         <div
           ref={overlayRef}
           aria-label="Chart date range selector"
