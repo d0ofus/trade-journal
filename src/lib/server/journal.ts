@@ -1,9 +1,21 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
+  JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS,
+  JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS,
+  JOURNAL_NOTION_RELATION_KEYS,
+  JOURNAL_NOTION_TRADE_STATUSES,
   JOURNAL_TAG_CATEGORIES,
+  deriveJournalNotionSystemFields,
+  normalizeJournalNotionRelationSlug,
+  normalizeJournalNotionRelationValues,
+  normalizeJournalNotionRelations,
   normalizeJournalTagName,
   normalizeJournalTags,
+  type JournalNotionIdealExecutionValue,
+  type JournalNotionIdealStopLossValue,
+  type JournalNotionRelationKey,
+  type JournalNotionTradeStatusValue,
   type JournalTagCategoryValue,
 } from "@/lib/journal/schema";
 import { computeJournalAnalytics, computeRuleFitScore } from "@/lib/journal/analytics";
@@ -42,11 +54,24 @@ const journalInclude = {
     },
     orderBy: { createdAt: "asc" as const },
   },
+  notionRelations: {
+    include: {
+      relationTag: true,
+    },
+  },
 } satisfies Prisma.JournalEntryInclude;
 
 export type JournalEntryWithRelations = Prisma.JournalEntryGetPayload<{
   include: typeof journalInclude;
 }>;
+
+function knownOption<T extends readonly string[]>(options: T, value: string | null | undefined): T[number] | null {
+  return typeof value === "string" && options.includes(value) ? value : null;
+}
+
+function knownOptions<T extends readonly string[]>(options: T, values: string[]): T[number][] {
+  return values.filter((value): value is T[number] => options.includes(value));
+}
 
 function dateFromInput(value?: string | null) {
   if (!value) return undefined;
@@ -82,9 +107,32 @@ export function serializeJournalEntry(entry: JournalEntryWithRelations) {
     tags[category].sort((left, right) => left.localeCompare(right));
   }
 
+  const notionRelations = normalizeJournalNotionRelations();
+  for (const row of entry.notionRelations) {
+    const key = row.relationTag.kind as JournalNotionRelationKey;
+    if (JOURNAL_NOTION_RELATION_KEYS.includes(key)) {
+      notionRelations[key].push(row.relationTag.name);
+    }
+  }
+
+  for (const key of JOURNAL_NOTION_RELATION_KEYS) {
+    notionRelations[key] = normalizeJournalNotionRelationValues(notionRelations[key])
+      .sort((left, right) => left.localeCompare(right));
+  }
+
   return {
     ...entry,
+    tradeStatus: knownOption(JOURNAL_NOTION_TRADE_STATUSES, entry.tradeStatus) as JournalNotionTradeStatusValue | null,
+    idealExecutionOptions: knownOptions(
+      JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS,
+      entry.idealExecutionOptions,
+    ) as JournalNotionIdealExecutionValue[],
+    idealStopLossOptions: knownOptions(
+      JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS,
+      entry.idealStopLossOptions,
+    ) as JournalNotionIdealStopLossValue[],
     ideaDate: entry.ideaDate.toISOString(),
+    entryEndAt: entry.entryEndAt?.toISOString() ?? null,
     actualTriggerAt: entry.actualTriggerAt?.toISOString() ?? null,
     reviewDueAt: entry.reviewDueAt?.toISOString() ?? null,
     outcomeCalculatedAt: entry.outcomeCalculatedAt?.toISOString() ?? null,
@@ -103,6 +151,17 @@ export function serializeJournalEntry(entry: JournalEntryWithRelations) {
         }
       : null,
     tags,
+    notionRelations,
+    notionDerived: deriveJournalNotionSystemFields({
+      id: entry.id,
+      createdAt: entry.createdAt,
+      ideaDate: entry.ideaDate,
+      entryEndAt: entry.entryEndAt,
+      notionRelations,
+      bestExitR: entry.bestExitR,
+      mfeR: entry.mfeR,
+      outcomeStatus: entry.outcomeStatus,
+    }),
     charts: entry.charts.map((chart) => ({
       ...chart,
       rangeStart: chart.rangeStart?.toISOString() ?? null,
@@ -160,6 +219,43 @@ async function syncJournalTags(tx: Prisma.TransactionClient, journalEntryId: str
   }
 }
 
+async function syncJournalNotionRelations(
+  tx: Prisma.TransactionClient,
+  journalEntryId: string,
+  relationBuckets?: Partial<Record<JournalNotionRelationKey, string[]>>,
+) {
+  const normalized = normalizeJournalNotionRelations(relationBuckets);
+  await tx.journalEntryNotionRelation.deleteMany({ where: { journalEntryId } });
+
+  const rows: Array<{ journalEntryId: string; relationTagId: string }> = [];
+  for (const kind of JOURNAL_NOTION_RELATION_KEYS) {
+    for (const name of normalized[kind]) {
+      const normalizedName = normalizeJournalNotionRelationSlug(name);
+      if (!normalizedName) continue;
+      const relationTag = await tx.journalNotionRelationTag.upsert({
+        where: {
+          kind_normalizedName: {
+            kind,
+            normalizedName,
+          },
+        },
+        update: { name },
+        create: {
+          kind,
+          name,
+          normalizedName,
+        },
+        select: { id: true },
+      });
+      rows.push({ journalEntryId, relationTagId: relationTag.id });
+    }
+  }
+
+  if (rows.length > 0) {
+    await tx.journalEntryNotionRelation.createMany({ data: rows, skipDuplicates: true });
+  }
+}
+
 export async function listJournalEntries(filters: {
   q?: string | null;
   tag?: string | null;
@@ -184,6 +280,7 @@ export async function listJournalEntries(filters: {
   if (q) {
     where.OR = [
       { symbol: { contains: q, mode: "insensitive" } },
+      { tradeTitle: { contains: q, mode: "insensitive" } },
       { setup: { contains: q, mode: "insensitive" } },
       { thesis: { contains: q, mode: "insensitive" } },
       { lessonLearned: { contains: q, mode: "insensitive" } },
@@ -225,16 +322,22 @@ export async function getJournalEntry(id: string) {
   return entry ? serializeJournalEntry(entry) : null;
 }
 
-type JournalEntryMutationInput = Record<string, unknown> & { tags?: JournalTagBuckets };
+type JournalEntryMutationInput = Record<string, unknown> & {
+  tags?: JournalTagBuckets;
+  notionRelations?: Partial<Record<JournalNotionRelationKey, string[]>>;
+};
 
 export async function createJournalEntry(input: JournalEntryMutationInput) {
   const entry = await prisma.$transaction(async (tx) => {
     const created = await tx.journalEntry.create({
       data: {
         symbol: input.symbol as string,
+        tradeTitle: input.tradeTitle as string | undefined,
         ideaDate: (input.ideaDate as Date | undefined) ?? new Date(),
+        entryEndAt: input.entryEndAt as Date | null | undefined,
         direction: input.direction as Prisma.JournalEntryUncheckedCreateInput["direction"],
         status: input.status as Prisma.JournalEntryUncheckedCreateInput["status"],
+        tradeStatus: input.tradeStatus as string | null | undefined,
         playbookId: input.playbookId as string | null | undefined,
         setup: input.setup as string | null | undefined,
         timeframe: input.timeframe as string,
@@ -255,6 +358,17 @@ export async function createJournalEntry(input: JournalEntryMutationInput) {
         plannedTarget3: input.plannedTarget3 as number | null | undefined,
         invalidationLevel: input.invalidationLevel as number | null | undefined,
         expectedR: input.expectedR as number | null | undefined,
+        exitMarked: input.exitMarked as boolean | undefined,
+        highAvat: input.highAvat as boolean | undefined,
+        indexSupportive: input.indexSupportive as boolean | undefined,
+        daysConsolidating: input.daysConsolidating as number | null | undefined,
+        daysFromT: input.daysFromT as number | null | undefined,
+        xFrom50Sma: input.xFrom50Sma as number | null | undefined,
+        stopLossPercent: input.stopLossPercent as number | null | undefined,
+        riskPercent: input.riskPercent as number | null | undefined,
+        maxRiskReward: input.maxRiskReward as number | null | undefined,
+        idealExecutionOptions: input.idealExecutionOptions as string[] | undefined,
+        idealStopLossOptions: input.idealStopLossOptions as string[] | undefined,
         actualTriggerAt: input.actualTriggerAt as Date | null | undefined,
         followThroughDays: input.followThroughDays as number | null | undefined,
         mfeR: input.mfeR as number | null | undefined,
@@ -286,6 +400,7 @@ export async function createJournalEntry(input: JournalEntryMutationInput) {
       select: { id: true },
     });
     await syncJournalTags(tx, created.id, input.tags ?? {});
+    await syncJournalNotionRelations(tx, created.id, input.notionRelations ?? {});
     return tx.journalEntry.findUniqueOrThrow({ where: { id: created.id }, include: journalInclude });
   });
 
@@ -301,9 +416,12 @@ export async function updateJournalEntry(
       where: { id },
       data: {
         symbol: input.symbol as string | undefined,
+        tradeTitle: input.tradeTitle as string | undefined,
         ideaDate: input.ideaDate as Date | undefined,
+        entryEndAt: input.entryEndAt as Date | null | undefined,
         direction: input.direction as Prisma.JournalEntryUncheckedUpdateInput["direction"],
         status: input.status as Prisma.JournalEntryUncheckedUpdateInput["status"],
+        tradeStatus: input.tradeStatus as string | null | undefined,
         playbookId: input.playbookId as string | null | undefined,
         setup: input.setup as string | null | undefined,
         timeframe: input.timeframe as string | undefined,
@@ -324,6 +442,17 @@ export async function updateJournalEntry(
         plannedTarget3: input.plannedTarget3 as number | null | undefined,
         invalidationLevel: input.invalidationLevel as number | null | undefined,
         expectedR: input.expectedR as number | null | undefined,
+        exitMarked: input.exitMarked as boolean | undefined,
+        highAvat: input.highAvat as boolean | undefined,
+        indexSupportive: input.indexSupportive as boolean | undefined,
+        daysConsolidating: input.daysConsolidating as number | null | undefined,
+        daysFromT: input.daysFromT as number | null | undefined,
+        xFrom50Sma: input.xFrom50Sma as number | null | undefined,
+        stopLossPercent: input.stopLossPercent as number | null | undefined,
+        riskPercent: input.riskPercent as number | null | undefined,
+        maxRiskReward: input.maxRiskReward as number | null | undefined,
+        idealExecutionOptions: input.idealExecutionOptions as string[] | undefined,
+        idealStopLossOptions: input.idealStopLossOptions as string[] | undefined,
         actualTriggerAt: input.actualTriggerAt as Date | null | undefined,
         followThroughDays: input.followThroughDays as number | null | undefined,
         mfeR: input.mfeR as number | null | undefined,
@@ -355,6 +484,7 @@ export async function updateJournalEntry(
       select: { id: true },
     });
     if (input.tags) await syncJournalTags(tx, id, input.tags);
+    if (input.notionRelations) await syncJournalNotionRelations(tx, id, input.notionRelations);
     return tx.journalEntry.findUniqueOrThrow({ where: { id }, include: journalInclude });
   });
   return serializeJournalEntry(entry);
@@ -366,6 +496,7 @@ export async function deleteJournalEntry(id: string) {
 
 export function mapJournalPayloadToData(payload: {
   ideaDate?: string;
+  entryEndAt?: string | null;
   actualTriggerAt?: string | null;
   reviewDueAt?: string | null;
   outcomeCalculatedAt?: string | null;
@@ -376,6 +507,7 @@ export function mapJournalPayloadToData(payload: {
   const data: JournalEntryMutationInput = {
     ...payload,
     ideaDate: dateFromInput(payload.ideaDate),
+    entryEndAt: nullableDateFromInput(payload.entryEndAt),
     actualTriggerAt: nullableDateFromInput(payload.actualTriggerAt),
     reviewDueAt: nullableDateFromInput(payload.reviewDueAt),
     outcomeCalculatedAt: nullableDateFromInput(payload.outcomeCalculatedAt),
@@ -415,7 +547,9 @@ export async function createJournalDraft(input: JournalEntryMutationInput) {
   const ideaDate = dateFromInput(input.ideaDate as string | undefined) ?? new Date();
   return createJournalEntry({
     symbol: input.symbol,
+    tradeTitle: input.tradeTitle ?? "",
     ideaDate,
+    entryEndAt: input.entryEndAt as Date | null | undefined,
     direction: input.direction ?? "LONG",
     status: "DRAFT",
     timeframe: input.timeframe ?? "1D",
@@ -445,6 +579,7 @@ export async function createJournalDraft(input: JournalEntryMutationInput) {
     plannedStop: input.plannedStop as number | null | undefined,
     plannedTarget1: input.plannedTarget1 as number | null | undefined,
     tags: input.tags,
+    notionRelations: input.notionRelations,
   });
 }
 

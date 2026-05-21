@@ -24,6 +24,7 @@ import {
   Tags,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { JournalEntryChartPreview } from "@/components/journal-entry-chart-preview";
 import { JournalChartEditor, type JournalChartStagePayload } from "@/components/journal-chart-editor";
@@ -36,15 +37,29 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   JOURNAL_MARKET_REGIMES,
   JOURNAL_CHART_PURPOSES,
+  JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS,
+  JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS,
+  JOURNAL_NOTION_RELATION_KEYS,
+  JOURNAL_NOTION_SINGLE_RELATION_KEYS,
+  JOURNAL_NOTION_TRADE_STATUSES,
   JOURNAL_OUTCOME_STATUSES,
   JOURNAL_REVIEW_PERIODS,
   JOURNAL_RULE_CHECK_STATUSES,
   JOURNAL_TAG_CATEGORIES,
   JOURNAL_TIMEFRAMES,
   JOURNAL_TREND_STATES,
+  deriveJournalNotionSystemFields,
+  emptyJournalNotionRelations,
+  normalizeJournalNotionRelations,
+  normalizeJournalNotionRelationValues,
   normalizeJournalTags,
   type JournalChartPurposeValue,
   type JournalMarketRegimeValue,
+  type JournalNotionIdealExecutionValue,
+  type JournalNotionIdealStopLossValue,
+  type JournalNotionRelationKey,
+  type JournalNotionRelations,
+  type JournalNotionTradeStatusValue,
   type JournalOutcomeStatusValue,
   type JournalTagCategoryValue,
   type JournalTimeframe,
@@ -53,9 +68,11 @@ import {
 import { cn } from "@/lib/utils";
 
 type TagsByCategory = Record<JournalTagCategoryValue, string[]>;
+type NotionRelations = JournalNotionRelations;
 type Trend = JournalTrendStateValue;
 type Outcome = JournalOutcomeStatusValue;
 type MarketRegime = JournalMarketRegimeValue;
+type NotionTradeStatus = JournalNotionTradeStatusValue;
 
 type JournalChart = {
   id: string;
@@ -132,9 +149,12 @@ type RuleCheck = {
 type JournalEntry = {
   id: string;
   symbol: string;
+  tradeTitle: string;
   ideaDate: string;
+  entryEndAt: string | null;
   direction: "LONG" | "SHORT";
   status: "DRAFT" | "WATCHING" | "MISSED" | "PASSED" | "INVALIDATED" | "PLAYBOOK" | "ARCHIVED";
+  tradeStatus: NotionTradeStatus | null;
   playbookId: string | null;
   playbook: JournalPlaybook | null;
   setup: string | null;
@@ -156,6 +176,17 @@ type JournalEntry = {
   plannedTarget3: number | null;
   invalidationLevel: number | null;
   expectedR: number | null;
+  exitMarked: boolean;
+  highAvat: boolean;
+  indexSupportive: boolean;
+  daysConsolidating: number | null;
+  daysFromT: number | null;
+  xFrom50Sma: number | null;
+  stopLossPercent: number | null;
+  riskPercent: number | null;
+  maxRiskReward: number | null;
+  idealExecutionOptions: JournalNotionIdealExecutionValue[];
+  idealStopLossOptions: JournalNotionIdealStopLossValue[];
   actualTriggerAt: string | null;
   followThroughDays: number | null;
   mfeR: number | null;
@@ -184,6 +215,14 @@ type JournalEntry = {
   outcomeCalculatedAt: string | null;
   outcomeCalculationJson: string | null;
   tags: TagsByCategory;
+  notionRelations: NotionRelations;
+  notionDerived: {
+    id: string | null;
+    createdTime: string | null;
+    durationMinutes: number | null;
+    backtest: boolean;
+    profitLoss: "Profit" | "Loss" | "Breakeven" | null;
+  };
   charts: JournalChart[];
   ruleChecks: RuleCheck[];
   contextSnapshots: Array<{ id: string; provider: string; kind: string; payloadJson: string; createdAt: string }>;
@@ -263,11 +302,12 @@ type JournalAnalytics = {
 };
 
 type Tab = "dashboard" | "capture" | "inbox" | "ideas" | "entry" | "playbooks" | "visual" | "tags" | "reviews";
-type EntrySection = "basics" | "plan" | "thesis" | "context" | "review" | "tags";
+type EntrySection = "basics" | "notion" | "plan" | "thesis" | "context" | "review" | "tags";
 type ChartPreviewRequest = { symbol: string; requestKey: number };
 
 const ENTRY_SECTIONS: Array<{ key: EntrySection; label: string }> = [
   { key: "basics", label: "Basics" },
+  { key: "notion", label: "Notion" },
   { key: "plan", label: "Plan" },
   { key: "thesis", label: "Thesis" },
   { key: "context", label: "Context" },
@@ -279,12 +319,15 @@ const emptyTags = (): TagsByCategory => ({ SETUP: [], LESSON: [], MISTAKE: [], C
 const emptyRule = (sortOrder: number): JournalPlaybookRule => ({ text: "", category: "SETUP", required: true, sortOrder });
 const emptyAction = (): JournalReviewAction => ({ label: "", status: "OPEN", journalEntryId: null, playbookId: null, dueDate: null });
 
-function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChecks" | "contextSnapshots" | "links" | "createdAt" | "updatedAt"> {
+function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChecks" | "contextSnapshots" | "links" | "notionDerived" | "createdAt" | "updatedAt"> {
   return {
     symbol: "",
+    tradeTitle: "",
     ideaDate: new Date().toISOString(),
+    entryEndAt: null,
     direction: "LONG",
     status: "DRAFT",
+    tradeStatus: null,
     playbookId: null,
     setup: "",
     timeframe: "1D",
@@ -305,6 +348,17 @@ function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChe
     plannedTarget3: null,
     invalidationLevel: null,
     expectedR: null,
+    exitMarked: false,
+    highAvat: false,
+    indexSupportive: false,
+    daysConsolidating: null,
+    daysFromT: null,
+    xFrom50Sma: null,
+    stopLossPercent: null,
+    riskPercent: null,
+    maxRiskReward: null,
+    idealExecutionOptions: [],
+    idealStopLossOptions: [],
     actualTriggerAt: null,
     followThroughDays: null,
     mfeR: null,
@@ -333,6 +387,7 @@ function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChe
     outcomeCalculatedAt: null,
     outcomeCalculationJson: null,
     tags: emptyTags(),
+    notionRelations: emptyJournalNotionRelations(),
   };
 }
 
@@ -394,6 +449,20 @@ function formatR(value: number | null | undefined) {
   return typeof value === "number" ? `${value.toFixed(2)}R` : "-";
 }
 
+function formatDateTimeStamp(value: string | null | undefined) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
+}
+
+function formatDurationMinutes(value: number | null | undefined) {
+  if (typeof value !== "number") return "-";
+  if (value < 60) return `${value}m`;
+  const hours = Math.floor(value / 60);
+  const minutes = value % 60;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
 function fitScore(entry: { ruleChecks: RuleCheck[] }) {
   const applicable = entry.ruleChecks.filter((check) => check.status !== "NA");
   if (!applicable.length) return null;
@@ -431,6 +500,10 @@ function normalizeNumberInput(value: string) {
   if (!value.trim()) return null;
   const next = Number(value);
   return Number.isFinite(next) ? next : null;
+}
+
+function toggleListValue<T extends string>(values: T[], value: T) {
+  return values.includes(value) ? values.filter((candidate) => candidate !== value) : [...values, value];
 }
 
 function flattenApiErrorPayload(payload: unknown): string | null {
@@ -572,6 +645,29 @@ export function JournalWorkspace({
   const planRisk = typeof form.plannedEntry === "number" && typeof form.plannedStop === "number"
     ? Math.abs(form.plannedEntry - form.plannedStop)
     : null;
+  const notionRelationSuggestions = useMemo(() => {
+    const suggestions = emptyJournalNotionRelations();
+    for (const entry of entries) {
+      for (const key of JOURNAL_NOTION_RELATION_KEYS) {
+        suggestions[key].push(...(entry.notionRelations?.[key] ?? []));
+      }
+    }
+    for (const key of JOURNAL_NOTION_RELATION_KEYS) {
+      suggestions[key] = normalizeJournalNotionRelationValues(suggestions[key])
+        .sort((left, right) => left.localeCompare(right));
+    }
+    return suggestions;
+  }, [entries]);
+  const currentNotionDerived = useMemo(() => deriveJournalNotionSystemFields({
+    id: selectedId,
+    createdAt: selectedEntry?.createdAt,
+    ideaDate: form.ideaDate,
+    entryEndAt: form.entryEndAt,
+    notionRelations: form.notionRelations,
+    bestExitR: form.bestExitR,
+    mfeR: form.mfeR,
+    outcomeStatus: form.outcomeStatus,
+  }), [form.bestExitR, form.entryEndAt, form.ideaDate, form.mfeR, form.notionRelations, form.outcomeStatus, selectedEntry?.createdAt, selectedId]);
 
   function updateSymbol(value: string) {
     const nextSymbol = value.toUpperCase();
@@ -653,9 +749,12 @@ export function JournalWorkspace({
     setSelectedId(entry.id);
     setForm({
       symbol: entry.symbol,
+      tradeTitle: entry.tradeTitle,
       ideaDate: entry.ideaDate,
+      entryEndAt: entry.entryEndAt,
       direction: entry.direction,
       status: entry.status,
+      tradeStatus: entry.tradeStatus,
       playbookId: entry.playbookId,
       setup: entry.setup ?? "",
       timeframe: entry.timeframe,
@@ -676,6 +775,17 @@ export function JournalWorkspace({
       plannedTarget3: entry.plannedTarget3,
       invalidationLevel: entry.invalidationLevel,
       expectedR: entry.expectedR,
+      exitMarked: entry.exitMarked,
+      highAvat: entry.highAvat,
+      indexSupportive: entry.indexSupportive,
+      daysConsolidating: entry.daysConsolidating,
+      daysFromT: entry.daysFromT,
+      xFrom50Sma: entry.xFrom50Sma,
+      stopLossPercent: entry.stopLossPercent,
+      riskPercent: entry.riskPercent,
+      maxRiskReward: entry.maxRiskReward,
+      idealExecutionOptions: entry.idealExecutionOptions,
+      idealStopLossOptions: entry.idealStopLossOptions,
       actualTriggerAt: entry.actualTriggerAt,
       followThroughDays: entry.followThroughDays,
       mfeR: entry.mfeR,
@@ -704,6 +814,7 @@ export function JournalWorkspace({
       outcomeCalculatedAt: entry.outcomeCalculatedAt,
       outcomeCalculationJson: entry.outcomeCalculationJson,
       tags: entry.tags,
+      notionRelations: entry.notionRelations,
     });
     setMarketContext(null);
     setChartPreviewRequest(null);
@@ -766,6 +877,31 @@ export function JournalWorkspace({
     setForm((current) => ({ ...current, tags: { ...current.tags, [category]: parseTagInput(value) } }));
   }
 
+  function updateNotionRelation(key: JournalNotionRelationKey, values: string[]) {
+    const isSingle = JOURNAL_NOTION_SINGLE_RELATION_KEYS.includes(key as (typeof JOURNAL_NOTION_SINGLE_RELATION_KEYS)[number]);
+    setForm((current) => ({
+      ...current,
+      notionRelations: {
+        ...current.notionRelations,
+        [key]: normalizeJournalNotionRelationValues(values, isSingle ? 1 : 80),
+      },
+    }));
+  }
+
+  function toggleIdealExecutionOption(option: JournalNotionIdealExecutionValue) {
+    setForm((current) => ({
+      ...current,
+      idealExecutionOptions: toggleListValue(current.idealExecutionOptions, option),
+    }));
+  }
+
+  function toggleIdealStopLossOption(option: JournalNotionIdealStopLossValue) {
+    setForm((current) => ({
+      ...current,
+      idealStopLossOptions: toggleListValue(current.idealStopLossOptions, option),
+    }));
+  }
+
   function setNumberField<K extends keyof typeof form>(key: K, value: string) {
     setForm((current) => ({ ...current, [key]: normalizeNumberInput(value) }));
   }
@@ -778,10 +914,12 @@ export function JournalWorkspace({
       reviewDueAt: form.reviewDueAt,
       outcomeCalculatedAt: form.outcomeCalculatedAt,
       symbol: form.symbol.trim().toUpperCase(),
+      tradeTitle: form.tradeTitle.trim(),
       playbookId: form.playbookId || null,
       sectorEtf: form.sectorEtf ? form.sectorEtf.trim().toUpperCase() : null,
       setup: form.setup || null,
       emotionalState: form.emotionalState || null,
+      notionRelations: normalizeJournalNotionRelations(form.notionRelations),
     };
   }
 
@@ -1323,6 +1461,83 @@ export function JournalWorkspace({
             <SelectField label="Timeframe" value={form.timeframe} options={[...JOURNAL_TIMEFRAMES]} onChange={(value) => setForm((current) => ({ ...current, timeframe: value }))} />
             <SelectField label="Macro Sentiment" value={form.macroSentiment} options={["BULLISH", "NEUTRAL", "BEARISH"]} onChange={(value) => setForm((current) => ({ ...current, macroSentiment: value as JournalEntry["macroSentiment"] }))} />
             <SelectField label="Playbook" value={form.playbookId ?? ""} options={["", ...playbooks.map((playbook) => playbook.id)]} optionLabels={{ "": "No playbook", ...Object.fromEntries(playbooks.map((playbook) => [playbook.id, playbook.name])) }} onChange={(value) => setForm((current) => ({ ...current, playbookId: value || null }))} />
+          </div>
+        </div>
+      );
+    }
+
+    if (entrySection === "notion") {
+      return (
+        <div className="space-y-5">
+          <div>
+            {sectionTitle("Trade")}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <LabelInput label="Trade" value={form.tradeTitle} onChange={(value) => setForm((current) => ({ ...current, tradeTitle: value }))} />
+              <SelectField label="Position" value={form.direction} options={["LONG", "SHORT"]} optionLabels={{ LONG: "Buy", SHORT: "Sell" }} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
+              <DateTimeField label="Entry End" value={form.entryEndAt} onChange={(value) => setForm((current) => ({ ...current, entryEndAt: datetimeFromInput(value) }))} />
+              <SelectField label="Notion Status" value={form.tradeStatus ?? ""} options={["", ...JOURNAL_NOTION_TRADE_STATUSES]} optionLabels={{ "": "Unset" }} onChange={(value) => setForm((current) => ({ ...current, tradeStatus: value ? value as NotionTradeStatus : null }))} />
+              <RelationChipPicker label="Account" single values={form.notionRelations.ACCOUNT} suggestions={notionRelationSuggestions.ACCOUNT} onChange={(values) => updateNotionRelation("ACCOUNT", values)} />
+              <RelationChipPicker label="Type of Review" values={form.notionRelations.TYPE_OF_REVIEW} suggestions={notionRelationSuggestions.TYPE_OF_REVIEW} onChange={(values) => updateNotionRelation("TYPE_OF_REVIEW", values)} />
+              <CheckboxField label="Exit?" checked={form.exitMarked} onChange={(checked) => setForm((current) => ({ ...current, exitMarked: checked }))} />
+            </div>
+          </div>
+
+          <div>
+            {sectionTitle("Setup")}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <RelationChipPicker label="Type of Trade" single values={form.notionRelations.TYPE_OF_TRADE} suggestions={notionRelationSuggestions.TYPE_OF_TRADE} onChange={(values) => updateNotionRelation("TYPE_OF_TRADE", values)} />
+              <RelationChipPicker label="Chart Pattern" values={form.notionRelations.CHART_PATTERN} suggestions={notionRelationSuggestions.CHART_PATTERN} onChange={(values) => updateNotionRelation("CHART_PATTERN", values)} />
+              <RelationChipPicker label="Confluences" values={form.notionRelations.CONFLUENCE} suggestions={notionRelationSuggestions.CONFLUENCE} onChange={(values) => updateNotionRelation("CONFLUENCE", values)} />
+              <RelationChipPicker label="Characteristics" values={form.notionRelations.CHARACTERISTIC} suggestions={notionRelationSuggestions.CHARACTERISTIC} onChange={(values) => updateNotionRelation("CHARACTERISTIC", values)} />
+              <RelationChipPicker label="News Impact" single values={form.notionRelations.NEWS_IMPACT} suggestions={notionRelationSuggestions.NEWS_IMPACT} onChange={(values) => updateNotionRelation("NEWS_IMPACT", values)} />
+              <RelationChipPicker label="Narrative" single values={form.notionRelations.NARRATIVE} suggestions={notionRelationSuggestions.NARRATIVE} onChange={(values) => updateNotionRelation("NARRATIVE", values)} />
+              <RelationChipPicker label="Bais" single values={form.notionRelations.BAIS} suggestions={notionRelationSuggestions.BAIS} onChange={(values) => updateNotionRelation("BAIS", values)} />
+              <NumberField label="Days Conso" value={form.daysConsolidating} onChange={(value) => setNumberField("daysConsolidating", value)} />
+              <NumberField label="Days From T" value={form.daysFromT} onChange={(value) => setNumberField("daysFromT", value)} />
+              <NumberField label="X from 50 SMA" value={form.xFrom50Sma} onChange={(value) => setNumberField("xFrom50Sma", value)} />
+              <CheckboxField label="Index Supportive?" checked={form.indexSupportive} onChange={(checked) => setForm((current) => ({ ...current, indexSupportive: checked }))} />
+              <CheckboxField label="High AVAT?" checked={form.highAvat} onChange={(checked) => setForm((current) => ({ ...current, highAvat: checked }))} />
+            </div>
+          </div>
+
+          <div>
+            {sectionTitle("Execution / Risk")}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <RelationChipPicker label="Order Type" single values={form.notionRelations.ORDER_TYPE} suggestions={notionRelationSuggestions.ORDER_TYPE} onChange={(values) => updateNotionRelation("ORDER_TYPE", values)} />
+              <RelationChipPicker label="Entry Performance" single values={form.notionRelations.ENTRY_PERFORMANCE} suggestions={notionRelationSuggestions.ENTRY_PERFORMANCE} onChange={(values) => updateNotionRelation("ENTRY_PERFORMANCE", values)} />
+              <NumberField label="S/L %" value={form.stopLossPercent} onChange={(value) => setNumberField("stopLossPercent", value)} />
+              <NumberField label="% Risk" value={form.riskPercent} onChange={(value) => setNumberField("riskPercent", value)} />
+              <NumberField label="Max R/R" value={form.maxRiskReward} onChange={(value) => setNumberField("maxRiskReward", value)} />
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <MultiOptionField label="Ideal Execution" options={[...JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS]} values={form.idealExecutionOptions} onToggle={toggleIdealExecutionOption} />
+              <MultiOptionField label="Ideal Stop Loss" options={[...JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS]} values={form.idealStopLossOptions} onToggle={toggleIdealStopLossOption} />
+            </div>
+          </div>
+
+          <div>
+            {sectionTitle("Review")}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <RelationChipPicker label="Psychology" single values={form.notionRelations.PSYCHOLOGY} suggestions={notionRelationSuggestions.PSYCHOLOGY} onChange={(values) => updateNotionRelation("PSYCHOLOGY", values)} />
+              <RelationChipPicker label="Mistakes" values={form.notionRelations.MISTAKE} suggestions={notionRelationSuggestions.MISTAKE} onChange={(values) => updateNotionRelation("MISTAKE", values)} />
+              <RelationChipPicker label="Weekly Report" single values={form.notionRelations.WEEKLY_REPORT} suggestions={notionRelationSuggestions.WEEKLY_REPORT} onChange={(values) => updateNotionRelation("WEEKLY_REPORT", values)} />
+              <RelationChipPicker label="Parent item" single values={form.notionRelations.PARENT_ITEM} suggestions={notionRelationSuggestions.PARENT_ITEM} onChange={(values) => updateNotionRelation("PARENT_ITEM", values)} />
+              <RelationChipPicker label="Sub-item" values={form.notionRelations.SUB_ITEM} suggestions={notionRelationSuggestions.SUB_ITEM} onChange={(values) => updateNotionRelation("SUB_ITEM", values)} />
+            </div>
+            <div className="mt-3">
+              <TextAreaField label="Takeaways" value={form.lessonLearned} onChange={(value) => setForm((current) => ({ ...current, lessonLearned: value }))} />
+            </div>
+          </div>
+
+          <div>
+            {sectionTitle("System", "read-only")}
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              <SnapshotRow label="ID" value={currentNotionDerived.id ?? "-"} />
+              <SnapshotRow label="Created time" value={formatDateTimeStamp(currentNotionDerived.createdTime)} />
+              <SnapshotRow label="#Duration" value={formatDurationMinutes(currentNotionDerived.durationMinutes)} />
+              <SnapshotRow label="Backtest?" value={currentNotionDerived.backtest ? "Yes" : "No" } />
+              <SnapshotRow label="Profit/Loss" value={currentNotionDerived.profitLoss ?? "-"} />
+            </div>
           </div>
         </div>
       );
@@ -2248,6 +2463,41 @@ function NumberField({ label, max, min, onChange, value }: { label: string; max?
   );
 }
 
+function CheckboxField({ checked, label, onChange }: { checked: boolean; label: string; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex h-full min-h-16 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm font-medium text-slate-700">
+      <input className="h-4 w-4 accent-slate-950" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function MultiOptionField<T extends string>({
+  label,
+  onToggle,
+  options,
+  values,
+}: {
+  label: string;
+  onToggle: (value: T) => void;
+  options: T[];
+  values: T[];
+}) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p>
+      <div className="mt-1 grid gap-2">
+        {options.map((option) => (
+          <label key={option} className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm font-medium text-slate-700">
+            <input className="h-4 w-4 accent-slate-950" type="checkbox" checked={values.includes(option)} onChange={() => onToggle(option)} />
+            <span>{option}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DateField({ label, onChange, value }: { label: string; onChange: (value: string) => void; value: string | null }) {
   return (
     <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
@@ -2288,6 +2538,80 @@ function SelectField({
         ))}
       </Select>
     </label>
+  );
+}
+
+function RelationChipPicker({
+  label,
+  onChange,
+  single,
+  suggestions,
+  values,
+}: {
+  label: string;
+  onChange: (values: string[]) => void;
+  single?: boolean;
+  suggestions: string[];
+  values: string[];
+}) {
+  const [draft, setDraft] = useState("");
+  const remainingSuggestions = suggestions.filter((suggestion) => !values.includes(suggestion)).slice(0, 6);
+
+  function commit(raw: string) {
+    const pieces = raw.split(/[,\n]/).map((value) => value.trim()).filter(Boolean);
+    if (pieces.length === 0) return;
+    const next = normalizeJournalNotionRelationValues(single ? pieces.slice(-1) : [...values, ...pieces], single ? 1 : 80);
+    onChange(next);
+    setDraft("");
+  }
+
+  return (
+    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+      <p>{label}</p>
+      <div className="mt-1 rounded-2xl border border-slate-200 bg-white px-2 py-2">
+        <div className="flex flex-wrap gap-2">
+          {values.map((value) => (
+            <button
+              key={value}
+              className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold normal-case tracking-normal text-slate-700 hover:bg-slate-200"
+              type="button"
+              onClick={() => onChange(values.filter((candidate) => candidate !== value))}
+            >
+              {value}
+              <X className="h-3 w-3" />
+            </button>
+          ))}
+        </div>
+        <Input
+          className={cn("mt-2 border-0 bg-transparent px-1 shadow-none focus-visible:ring-0", values.length === 0 && "mt-0")}
+          placeholder={single && values.length > 0 ? "Replace value" : "Type and press Enter"}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => commit(draft)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== ",") return;
+            event.preventDefault();
+            commit(draft);
+          }}
+        />
+      </div>
+      {remainingSuggestions.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {remainingSuggestions.map((suggestion) => (
+            <Button
+              key={suggestion}
+              size="sm"
+              type="button"
+              variant="outline"
+              onClick={() => onChange(normalizeJournalNotionRelationValues(single ? [suggestion] : [...values, suggestion], single ? 1 : 80))}
+            >
+              <Plus className="h-3 w-3" />
+              {suggestion}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

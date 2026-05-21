@@ -112,6 +112,25 @@ enum JournalActionStatus {
   ARCHIVED
 }
 
+enum JournalNotionRelationKind {
+  ACCOUNT
+  TYPE_OF_REVIEW
+  TYPE_OF_TRADE
+  CHART_PATTERN
+  CONFLUENCE
+  CHARACTERISTIC
+  NEWS_IMPACT
+  NARRATIVE
+  ORDER_TYPE
+  BAIS
+  PSYCHOLOGY
+  MISTAKE
+  ENTRY_PERFORMANCE
+  WEEKLY_REPORT
+  PARENT_ITEM
+  SUB_ITEM
+}
+
 model Account {
   id                String             @id @default(cuid())
   name              String
@@ -377,9 +396,12 @@ model SymbolNoteTag {
 model JournalEntry {
   id                    String                   @id @default(cuid())
   symbol                String
+  tradeTitle            String                   @default("")
   ideaDate              DateTime                 @default(now())
+  entryEndAt            DateTime?
   direction             JournalDirection         @default(LONG)
   status                JournalStatus            @default(DRAFT)
+  tradeStatus           String?
   playbookId            String?
   playbook              JournalPlaybook?         @relation(fields: [playbookId], references: [id], onDelete: SetNull)
   setup                 String?
@@ -401,6 +423,17 @@ model JournalEntry {
   plannedTarget3        Float?
   invalidationLevel     Float?
   expectedR             Float?
+  exitMarked            Boolean                  @default(false)
+  highAvat              Boolean                  @default(false)
+  indexSupportive       Boolean                  @default(false)
+  daysConsolidating     Float?
+  daysFromT             Float?
+  xFrom50Sma            Float?
+  stopLossPercent       Float?
+  riskPercent           Float?
+  maxRiskReward         Float?
+  idealExecutionOptions String[]                 @default([])
+  idealStopLossOptions  String[]                 @default([])
   actualTriggerAt       DateTime?
   followThroughDays     Int?
   mfeR                  Float?
@@ -436,10 +469,12 @@ model JournalEntry {
   links                 JournalLink[]
   ruleChecks            JournalEntryRuleCheck[]
   playbookExamples      JournalPlaybookExample[]
+  notionRelations       JournalEntryNotionRelation[]
 
   @@index([ideaDate])
   @@index([symbol, ideaDate])
   @@index([status, ideaDate])
+  @@index([tradeStatus, ideaDate])
   @@index([macroSentiment, ideaDate])
   @@index([playbookId, ideaDate])
   @@index([outcomeStatus, ideaDate])
@@ -643,4 +678,27 @@ model JournalPlaybookExample {
   @@index([playbookId, sortOrder])
   @@index([journalEntryId])
   @@index([chartId])
+}
+
+model JournalNotionRelationTag {
+  id             String                      @id @default(cuid())
+  kind           JournalNotionRelationKind
+  name           String
+  normalizedName String
+  entries        JournalEntryNotionRelation[]
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  @@unique([kind, normalizedName])
+  @@index([kind, name])
+}
+
+model JournalEntryNotionRelation {
+  journalEntryId String
+  relationTagId  String
+  journalEntry   JournalEntry              @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  relationTag    JournalNotionRelationTag  @relation(fields: [relationTagId], references: [id], onDelete: Cascade)
+
+  @@id([journalEntryId, relationTagId])
+  @@index([relationTagId])
 }
