@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { ensureMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { ensureMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
 import { bucketHistogram, buildMetrics } from "@/lib/stats/pnl";
+import { computeTradeSummaryMetrics, latestPriorEquitySnapshot } from "@/lib/stats/trade-summary-metrics";
 
 function analyticsOrZero(
   executionId: string,
@@ -403,8 +404,11 @@ export async function getClosedTrades(filters: TradeFilters) {
     const uniqueDayNotePairs = [...dayNotePairs.values()];
     const dayNoteAccountIds = [...new Set(uniqueDayNotePairs.map((pair) => pair.accountId))];
     const dayNoteDates = [...new Set(uniqueDayNotePairs.map((pair) => pair.date.toISOString()))].map((iso) => new Date(iso));
+    const groupAccountIds = [...new Set(groups.map((group) => group.accountId))];
+    const latestTradeDate =
+      groups.length > 0 ? new Date(Math.max(...groups.map((group) => group.tradeDate.getTime()))) : null;
 
-    const [dayNotes, closedTradeNotes] = await Promise.all([
+    const [dayNotes, closedTradeNotes, dailySnapshots] = await Promise.all([
       dayNoteAccountIds.length > 0 && dayNoteDates.length > 0
         ? step("query day notes", () =>
             prisma.dayNote.findMany({
@@ -431,27 +435,32 @@ export async function getClosedTrades(filters: TradeFilters) {
             }),
           )
         : Promise.resolve([]),
+      groupAccountIds.length > 0 && latestTradeDate
+        ? step("query prior equity snapshots", () =>
+            prisma.dailySnapshot.findMany({
+              where: {
+                accountId: { in: groupAccountIds },
+                date: { lt: latestTradeDate },
+                equity: { not: null },
+              },
+              select: {
+                accountId: true,
+                date: true,
+                equity: true,
+              },
+              orderBy: { date: "asc" },
+            }),
+          )
+        : Promise.resolve([]),
     ]);
 
     const dayNoteMap = new Map(dayNotes.map((note) => [`${note.accountId}:${note.date.toISOString().slice(0, 10)}`, note.content]));
     const closedNoteMap = new Map(closedTradeNotes.map((note) => [note.groupKey, note.content]));
 
-    return groups.map((group) => ({
-      groupKey: group.groupKey,
-      accountId: group.accountId,
-      accountCode: group.account.ibkrAccount,
-      symbol: group.symbol,
-      direction: group.direction as "LONG" | "SHORT",
-      openTime: group.openTime.toISOString(),
-      closeTime: group.closeTime.toISOString(),
-      avgEntryPrice: group.avgEntryPrice,
-      avgExitPrice: group.avgExitPrice,
-      tradeDate: group.tradeDate.toISOString().slice(0, 10),
-      realizedPnl: group.realizedPnl,
-      totalCommission: group.totalCommission,
-      openingQuantity: group.openingQuantity,
-      closingQuantity: group.closingQuantity,
-      executions: group.executions.map((execution) => ({
+    return groups.map((group) => {
+      const tradeDate = group.tradeDate.toISOString().slice(0, 10);
+      const direction = group.direction as "LONG" | "SHORT";
+      const executions = group.executions.map((execution) => ({
         id: execution.executionId,
         executedAt: execution.executedAt.toISOString(),
         side: execution.side,
@@ -459,10 +468,38 @@ export async function getClosedTrades(filters: TradeFilters) {
         price: execution.price,
         commission: execution.commission,
         fees: execution.fees,
-      })),
-      dayNote: dayNoteMap.get(`${group.accountId}:${group.tradeDate.toISOString().slice(0, 10)}`) ?? "",
-      tradeNote: closedNoteMap.get(group.groupKey) ?? "",
-    }));
+      }));
+      const equitySnapshot = latestPriorEquitySnapshot(dailySnapshots, group.accountId, group.tradeDate);
+      const metrics = computeTradeSummaryMetrics({
+        direction,
+        avgEntryPrice: group.avgEntryPrice,
+        avgExitPrice: group.avgExitPrice,
+        realizedPnl: group.realizedPnl,
+        executions,
+        equityBaseline: equitySnapshot?.equity ?? null,
+      });
+
+      return {
+        groupKey: group.groupKey,
+        accountId: group.accountId,
+        accountCode: group.account.ibkrAccount,
+        symbol: group.symbol,
+        direction,
+        openTime: group.openTime.toISOString(),
+        closeTime: group.closeTime.toISOString(),
+        avgEntryPrice: group.avgEntryPrice,
+        avgExitPrice: group.avgExitPrice,
+        tradeDate,
+        realizedPnl: group.realizedPnl,
+        totalCommission: group.totalCommission,
+        openingQuantity: group.openingQuantity,
+        closingQuantity: group.closingQuantity,
+        ...metrics,
+        executions,
+        dayNote: dayNoteMap.get(`${group.accountId}:${tradeDate}`) ?? "",
+        tradeNote: closedNoteMap.get(group.groupKey) ?? "",
+      };
+    });
   });
 }
 

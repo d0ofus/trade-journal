@@ -30,6 +30,12 @@ type ClosedTrade = {
   tradeDate: string;
   realizedPnl: number;
   totalCommission: number;
+  priceReturnPct: number | null;
+  largestExecutionQuantity: number;
+  largestExecutionNotional: number;
+  notionalReturnPct: number | null;
+  equityReturnPct: number | null;
+  equityBaseline: number | null;
   openingQuantity: number;
   closingQuantity: number;
   executions: Array<{
@@ -113,6 +119,18 @@ function formatPercent(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "-";
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(2)}%`;
+}
+
+function formatQuantity(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 4,
+  }).format(value);
+}
+
+function formatOptionalCurrency(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "-";
+  return formatCurrency(value);
 }
 
 function metricTone(value: number | null) {
@@ -550,6 +568,12 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                                   </p>
                                 </div>
                                 <div>
+                                  <p className="text-xs text-slate-500">Trade Return</p>
+                                  <p className={cn("text-sm font-semibold", metricTone(trade.priceReturnPct))}>
+                                    {formatPercent(trade.priceReturnPct)}
+                                  </p>
+                                </div>
+                                <div>
                                   <p className="text-xs text-slate-500">Commission</p>
                                   <p className="text-sm font-medium text-slate-800">{formatCurrency(trade.totalCommission)}</p>
                                 </div>
@@ -561,6 +585,36 @@ export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[
                                   <p className="text-xs text-slate-500">Entry / Exit</p>
                                   <p className="text-sm font-medium text-slate-800">
                                     {trade.avgEntryPrice.toFixed(2)} / {trade.avgExitPrice.toFixed(2)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Largest Size</p>
+                                  <p className="text-sm font-medium text-slate-800">
+                                    {formatQuantity(trade.largestExecutionQuantity)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Largest Notional</p>
+                                  <p className="text-sm font-medium text-slate-800">
+                                    {formatOptionalCurrency(trade.largestExecutionNotional)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">P&amp;L / Peak Notional</p>
+                                  <p className={cn("text-sm font-semibold", metricTone(trade.notionalReturnPct))}>
+                                    {formatPercent(trade.notionalReturnPct)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">P&amp;L / Equity</p>
+                                  <p className={cn("text-sm font-semibold", metricTone(trade.equityReturnPct))}>
+                                    {formatPercent(trade.equityReturnPct)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-slate-500">Equity Baseline</p>
+                                  <p className="text-sm font-medium text-slate-800">
+                                    {formatOptionalCurrency(trade.equityBaseline)}
                                   </p>
                                 </div>
                               </div>
