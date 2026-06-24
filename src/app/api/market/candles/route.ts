@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   const hasCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;
   const range = hasCustomRange ? { from: fromRaw, to: toRaw } : null;
   const limitRaw = Number(req.nextUrl.searchParams.get("limit") ?? "120");
-  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 30), 5000) : 120;
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 30), 30000) : 120;
 
   if (!symbol) {
     return NextResponse.json({ error: "symbol required" }, { status: 400 });
@@ -31,10 +31,12 @@ export async function GET(req: NextRequest) {
       symbol: primary.symbol,
       timeframe,
       candles: primary.candles,
+      source: primary.source ?? null,
       compare: compare
         ? {
             symbol: compare.symbol,
             candles: compare.candles,
+            source: compare.source ?? null,
           }
         : null,
       compareError: compare ? null : "No comparison candle data found.",
@@ -46,5 +48,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "No candle data found." }, { status: 404 });
   }
 
-  return NextResponse.json({ symbol: primary.symbol, timeframe, candles: primary.candles });
+  return NextResponse.json({ symbol: primary.symbol, timeframe, candles: primary.candles, source: primary.source ?? null });
 }

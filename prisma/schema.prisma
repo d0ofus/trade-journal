@@ -324,10 +324,45 @@ model ClosedTrade {
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
   executions       ClosedTradeExecution[]
+  chartLayouts     ClosedTradeChartLayout[]
+  annotations      ClosedTradeAnnotation[]
 
   @@index([tradeDate])
   @@index([accountId, tradeDate])
   @@index([symbol, tradeDate])
+}
+
+model ClosedTradeChartLayout {
+  id                  String      @id @default(cuid())
+  closedTradeGroupKey String
+  closedTrade         ClosedTrade @relation(fields: [closedTradeGroupKey], references: [groupKey], onDelete: Cascade)
+  layoutMode          String      @default("single")
+  panelsJson          String      @default("[]")
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@unique([closedTradeGroupKey])
+  @@index([closedTradeGroupKey])
+}
+
+model ClosedTradeAnnotation {
+  id                  String      @id @default(cuid())
+  closedTradeGroupKey String
+  closedTrade         ClosedTrade @relation(fields: [closedTradeGroupKey], references: [groupKey], onDelete: Cascade)
+  panelId             String?
+  symbol              String
+  timeframe           String?
+  scope               String      @default("TRADE")
+  type                String
+  pointsJson          String      @default("[]")
+  price               Float?
+  text                String?
+  styleJson           String      @default("{}")
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([closedTradeGroupKey, symbol, timeframe])
+  @@index([closedTradeGroupKey, scope])
 }
 
 model ClosedTradeExecution {
@@ -347,6 +382,25 @@ model ClosedTradeExecution {
   @@index([closedTradeGroupKey, sortOrder])
   @@index([executionId])
   @@index([side, executedAt])
+}
+
+model MarketCandle {
+  id        String   @id @default(cuid())
+  symbol    String
+  timeframe String
+  time      DateTime
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float?
+  source    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([symbol, timeframe, time, source])
+  @@index([symbol, timeframe, time])
+  @@index([source, updatedAt])
 }
 
 model ExecutionAnalytics {

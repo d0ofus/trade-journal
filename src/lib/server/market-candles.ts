@@ -1,15 +1,30 @@
+import { prisma } from "@/lib/prisma";
+
 export type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 export type CandleTimeframe = "5m" | "10m" | "15m" | "1h" | "1d" | "1wk";
 export type CandleRange = { from: number; to: number } | null;
 
-const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: string }> = {
-  "5m": { interval: "5m", range: "60d" },
-  "10m": { interval: "5m", range: "60d" },
-  "15m": { interval: "15m", range: "60d" },
-  "1h": { interval: "60m", range: "730d" },
-  "1d": { interval: "1d", range: "10y" },
-  "1wk": { interval: "1wk", range: "10y" },
+const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: string; defaultDays: number }> = {
+  "5m": { interval: "5m", range: "60d", defaultDays: 60 },
+  "10m": { interval: "5m", range: "60d", defaultDays: 60 },
+  "15m": { interval: "15m", range: "60d", defaultDays: 60 },
+  "1h": { interval: "60m", range: "730d", defaultDays: 730 },
+  "1d": { interval: "1d", range: "10y", defaultDays: 3650 },
+  "1wk": { interval: "1wk", range: "10y", defaultDays: 3650 },
 };
+
+const ALPACA_TIMEFRAME: Record<CandleTimeframe, string> = {
+  "5m": "5Min",
+  "10m": "10Min",
+  "15m": "15Min",
+  "1h": "1Hour",
+  "1d": "1Day",
+  "1wk": "1Week",
+};
+
+const ALPACA_SOURCE = "alpaca";
+const MAX_ALPACA_BARS_PER_PAGE = 10_000;
+const MAX_ALPACA_PAGES = 20;
 
 export const SAFE_SYMBOL_PATTERN = /^[A-Z0-9.^=_-]{1,20}$/;
 
@@ -32,6 +47,186 @@ function dedupeCandles(rows: Candle[]) {
   const byTime = new Map<number, Candle>();
   for (const row of rows) byTime.set(row.time, row);
   return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+function defaultRangeForTimeframe(timeframe: CandleTimeframe) {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - TIMEFRAME_CONFIG[timeframe].defaultDays * 24 * 60 * 60;
+  return { from, to };
+}
+
+function alpacaCredentials() {
+  const keyId = process.env.ALPACA_API_KEY_ID ?? process.env.ALPACA_API_KEY;
+  const secretKey = process.env.ALPACA_API_SECRET_KEY ?? process.env.ALPACA_SECRET_KEY;
+  if (!keyId || !secretKey) return null;
+  return {
+    keyId,
+    secretKey,
+    baseUrl: (process.env.ALPACA_DATA_BASE_URL ?? "https://data.alpaca.markets").replace(/\/+$/, ""),
+    feed: process.env.ALPACA_DATA_FEED ?? "iex",
+    adjustment: process.env.ALPACA_ADJUSTMENT ?? "raw",
+  };
+}
+
+async function readCachedCandles(input: {
+  symbol: string;
+  timeframe: CandleTimeframe;
+  range: CandleRange;
+  limit: number;
+}) {
+  const where = {
+    symbol: input.symbol,
+    timeframe: input.timeframe,
+    source: ALPACA_SOURCE,
+    time: input.range
+      ? {
+          gte: new Date(input.range.from * 1000),
+          lte: new Date(input.range.to * 1000),
+        }
+      : undefined,
+  };
+
+  const rows = await prisma.marketCandle.findMany({
+    where,
+    orderBy: input.range ? { time: "asc" } : { time: "desc" },
+    take: Math.max(1, input.limit),
+  });
+
+  return (input.range ? rows : rows.reverse()).map((row) => ({
+    time: Math.floor(row.time.getTime() / 1000),
+    open: row.open,
+    high: row.high,
+    low: row.low,
+    close: row.close,
+    volume: row.volume ?? undefined,
+  }));
+}
+
+function chunked<T>(rows: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function cacheAlpacaCandles(symbol: string, timeframe: CandleTimeframe, candles: Candle[]) {
+  const rows = dedupeCandles(candles).filter((candle) =>
+    [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite),
+  );
+  if (rows.length === 0) return;
+
+  for (const chunk of chunked(rows, 1000)) {
+    await prisma.marketCandle.createMany({
+      data: chunk.map((candle) => ({
+        symbol,
+        timeframe,
+        source: ALPACA_SOURCE,
+        time: new Date(candle.time * 1000),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: Number.isFinite(candle.volume) ? candle.volume : undefined,
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  const refreshRows = rows.slice(-50);
+  for (const candle of refreshRows) {
+    await prisma.marketCandle.upsert({
+      where: {
+        symbol_timeframe_time_source: {
+          symbol,
+          timeframe,
+          source: ALPACA_SOURCE,
+          time: new Date(candle.time * 1000),
+        },
+      },
+      update: {
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: Number.isFinite(candle.volume) ? candle.volume : undefined,
+      },
+      create: {
+        symbol,
+        timeframe,
+        source: ALPACA_SOURCE,
+        time: new Date(candle.time * 1000),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: Number.isFinite(candle.volume) ? candle.volume : undefined,
+      },
+    });
+  }
+}
+
+function parseAlpacaRows(payload: unknown, symbol: string) {
+  const bars = (payload as { bars?: Record<string, Array<{ t?: string; o?: number; h?: number; l?: number; c?: number; v?: number }>> })?.bars?.[symbol] ?? [];
+  return bars.flatMap((bar): Candle[] => {
+    const parsed = bar.t ? Date.parse(bar.t) : Number.NaN;
+    const row = {
+      time: Number.isFinite(parsed) ? Math.floor(parsed / 1000) : Number.NaN,
+      open: Number(bar.o),
+      high: Number(bar.h),
+      low: Number(bar.l),
+      close: Number(bar.c),
+      volume: Number.isFinite(bar.v) ? Number(bar.v) : undefined,
+    };
+    return [row.time, row.open, row.high, row.low, row.close].every(Number.isFinite) ? [row] : [];
+  });
+}
+
+async function loadAlpacaCandlesForSymbol(input: {
+  symbol: string;
+  timeframe: CandleTimeframe;
+  range: { from: number; to: number };
+  limit: number;
+}) {
+  const credentials = alpacaCredentials();
+  if (!credentials) return null;
+
+  const rows: Candle[] = [];
+  let pageToken: string | null = null;
+  let page = 0;
+  const targetLimit = Math.max(1, input.limit);
+
+  do {
+    const url = new URL(`${credentials.baseUrl}/v2/stocks/bars`);
+    url.searchParams.set("symbols", input.symbol);
+    url.searchParams.set("timeframe", ALPACA_TIMEFRAME[input.timeframe]);
+    url.searchParams.set("start", new Date(input.range.from * 1000).toISOString());
+    url.searchParams.set("end", new Date(input.range.to * 1000).toISOString());
+    url.searchParams.set("limit", String(Math.min(MAX_ALPACA_BARS_PER_PAGE, Math.max(1, targetLimit - rows.length))));
+    url.searchParams.set("adjustment", credentials.adjustment);
+    url.searchParams.set("feed", credentials.feed);
+    if (pageToken) url.searchParams.set("page_token", pageToken);
+
+    const res = await fetch(url.toString(), {
+      cache: "no-store",
+      headers: {
+        "APCA-API-KEY-ID": credentials.keyId,
+        "APCA-API-SECRET-KEY": credentials.secretKey,
+      },
+    });
+    if (!res.ok) return null;
+
+    const payload = await res.json();
+    rows.push(...parseAlpacaRows(payload, input.symbol));
+    pageToken = (payload as { next_page_token?: string | null }).next_page_token ?? null;
+    page += 1;
+  } while (pageToken && rows.length < targetLimit && page < MAX_ALPACA_PAGES);
+
+  const candles = dedupeCandles(rows).slice(-targetLimit);
+  if (candles.length === 0) return null;
+
+  await cacheAlpacaCandles(input.symbol, input.timeframe, candles);
+  return { symbol: input.symbol, candles, source: ALPACA_SOURCE };
 }
 
 function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleTimeframe) {
@@ -176,8 +371,24 @@ export async function loadCandlesForSymbol(input: {
   range: CandleRange;
   limit: number;
 }) {
-  const { symbol, timeframe, range, limit } = input;
+  const { timeframe, range, limit } = input;
+  const symbol = input.symbol.trim().toUpperCase();
   const config = TIMEFRAME_CONFIG[timeframe];
+  const boundedLimit = Math.max(1, limit);
+  const effectiveRange = range ?? defaultRangeForTimeframe(timeframe);
+  const alpaca = await loadAlpacaCandlesForSymbol({
+    symbol,
+    timeframe,
+    range: effectiveRange,
+    limit: boundedLimit,
+  });
+  if (alpaca) return alpaca;
+
+  const cached = await readCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
+  if (cached.length > 0) {
+    return { symbol, candles: cached.slice(-boundedLimit), source: "cache" };
+  }
+
   const yahooUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
   yahooUrl.searchParams.set("interval", config.interval);
   if (range) {
@@ -200,7 +411,7 @@ export async function loadCandlesForSymbol(input: {
         : timeframe === "10m"
           ? aggregateCandles(parsedRows, 10 * 60)
           : parsedRows;
-    if (rows.length > 0) return { symbol, candles: rows.slice(-limit) };
+    if (rows.length > 0) return { symbol, candles: rows.slice(-boundedLimit), source: "yahoo" };
   }
 
   if (timeframe === "1d") {
@@ -211,7 +422,7 @@ export async function loadCandlesForSymbol(input: {
       if (!res.ok) continue;
       const csvText = await res.text();
       const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
-      if (rows.length > 0) return { symbol: candidate.toUpperCase(), candles: rows.slice(-limit) };
+      if (rows.length > 0) return { symbol: candidate.toUpperCase(), candles: rows.slice(-boundedLimit), source: "stooq" };
     }
   }
 
