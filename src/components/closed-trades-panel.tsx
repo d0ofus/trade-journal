@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+/* eslint-disable react-hooks/set-state-in-effect */
+
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { Clock3, Save } from "lucide-react";
 import { ClosedTradeChartWorkspace } from "@/components/closed-trade-chart-workspace";
 import { RichTextEditor } from "@/components/rich-text-editor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
 
 type ClosedTrade = {
   groupKey: string;
@@ -42,30 +44,21 @@ type ClosedTrade = {
   tradeNote: string;
 };
 
-function formatExecutionDateTime(executedAt: string) {
-  return new Date(executedAt).toISOString().replace("T", " ").slice(0, 16);
-}
-
-function monthKeyFromTradeDate(tradeDate: string) {
-  return tradeDate.slice(0, 7);
-}
-
-function formatMonthLabel(tradeDate: string) {
+function formatDateLabel(tradeDate: string) {
   return new Intl.DateTimeFormat("en-US", {
-    month: "long",
+    month: "short",
+    day: "numeric",
     year: "numeric",
     timeZone: "UTC",
   }).format(new Date(`${tradeDate}T00:00:00.000Z`));
 }
 
-function sideBadgeVariant(side: "BUY" | "SELL") {
-  return side === "BUY" ? "success" : "danger";
-}
-
-function sideRowClassName(side: "BUY" | "SELL") {
-  return side === "BUY"
-    ? "border-l-4 border-l-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/70"
-    : "border-l-4 border-l-red-500 bg-red-50/40 hover:bg-red-50/70";
+function formatTimeLabel(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
 }
 
 function formatPercent(value: number | null) {
@@ -86,6 +79,17 @@ function formatOptionalCurrency(value: number | null) {
   return formatCurrency(value);
 }
 
+function formatHoldTime(openTime: string, closeTime: string) {
+  const diffMs = Math.max(0, new Date(closeTime).getTime() - new Date(openTime).getTime());
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 function metricTone(value: number | null) {
   if (value === null) return "text-slate-500";
   if (value > 0) return "text-emerald-600";
@@ -93,224 +97,226 @@ function metricTone(value: number | null) {
   return "text-slate-700";
 }
 
+function sideBadgeVariant(side: "BUY" | "SELL") {
+  return side === "BUY" ? "success" : "danger";
+}
+
 export function ClosedTradesPanel({ closedTrades }: { closedTrades: ClosedTrade[] }) {
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [tradeNotes, setTradeNotes] = useState<Record<string, string>>(
-    Object.fromEntries(closedTrades.map((trade) => [trade.groupKey, trade.tradeNote])),
+  const sortedTrades = useMemo(
+    () => [...closedTrades].sort((left, right) => right.closeTime.localeCompare(left.closeTime) || left.groupKey.localeCompare(right.groupKey)),
+    [closedTrades],
   );
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(() => sortedTrades[0]?.groupKey ?? null);
+  const [tradeNotes, setTradeNotes] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
 
-  const groupedByDate = useMemo(() => {
-    const map = new Map<string, ClosedTrade[]>();
-    for (const row of closedTrades) {
-      const list = map.get(row.tradeDate) ?? [];
-      list.push(row);
-      map.set(row.tradeDate, list);
+  useEffect(() => {
+    if (sortedTrades.length === 0) {
+      setSelectedGroupKey(null);
+      return;
     }
-    const sortedEntries = [...map.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    if (!sortedTrades.some((trade) => trade.groupKey === selectedGroupKey)) {
+      setSelectedGroupKey(sortedTrades[0].groupKey);
+    }
+  }, [selectedGroupKey, sortedTrades]);
 
-    return sortedEntries.map(([date, rows], index) => {
-      const currentMonthKey = monthKeyFromTradeDate(date);
-      const previousDate = sortedEntries[index - 1]?.[0];
-      const startsNewMonth = !previousDate || currentMonthKey !== monthKeyFromTradeDate(previousDate);
-
-      return {
-        date,
-        rows,
-        monthLabel: formatMonthLabel(date),
-        startsNewMonth,
-      };
-    });
-  }, [closedTrades]);
+  const selectedTrade = useMemo(
+    () => sortedTrades.find((trade) => trade.groupKey === selectedGroupKey) ?? sortedTrades[0] ?? null,
+    [selectedGroupKey, sortedTrades],
+  );
 
   function saveTradeNote(trade: ClosedTrade) {
-    const content = tradeNotes[trade.groupKey] ?? "";
+    const content = tradeNotes[trade.groupKey] ?? trade.tradeNote ?? "";
     startTransition(async () => {
       const res = await fetch("/api/notes/closed-trade", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ groupKey: trade.groupKey, content }),
       });
-      setStatus((prev) => ({ ...prev, [trade.groupKey]: res.ok ? "Saved notes." : "Failed to save trade note." }));
+      setStatus((prev) => ({ ...prev, [trade.groupKey]: res.ok ? "Saved." : "Save failed." }));
     });
   }
 
+  if (sortedTrades.length === 0 || !selectedTrade) {
+    return (
+      <section className="rounded-lg border border-slate-200 bg-white p-8 text-center shadow-sm">
+        <p className="text-sm font-semibold text-slate-900">No closed trades found.</p>
+        <p className="mt-1 text-sm text-slate-500">Adjust the filters to review a different date range or symbol.</p>
+      </section>
+    );
+  }
+
+  const selectedNoteValue = tradeNotes[selectedTrade.groupKey] ?? selectedTrade.tradeNote ?? "";
+
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h3 className="text-xl font-semibold tracking-tight text-slate-950">Closed Trades</h3>
-          <p className="text-sm text-slate-500">Review every closed trade with durable drawings, multi-chart layouts, and post-close bars.</p>
-        </div>
-      </div>
-      {groupedByDate.length === 0 && <p className="text-sm text-slate-500">No closed trades found in filter range.</p>}
-
-      {groupedByDate.map(({ date, rows, monthLabel, startsNewMonth }) => (
-        <div key={date} className="space-y-3">
-          {startsNewMonth && (
-            <div className="sticky top-0 z-10 flex items-center gap-3 bg-[#f7f9fc]/95 px-1 py-2 backdrop-blur">
-              <div className="h-px flex-1 bg-slate-300/80" />
-              <p className="rounded-full border border-slate-200 bg-white px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-700 shadow-sm">
-                {monthLabel}
-              </p>
-              <div className="h-px flex-1 bg-slate-300/80" />
-            </div>
-          )}
-          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 bg-slate-950 px-5 py-3 text-sm font-semibold text-white">
-              {date}
-            </div>
-            <div className="divide-y divide-slate-200">
-              {rows.map((trade) => {
-                const open = expanded === trade.groupKey;
-                const executionRows = open ? [...trade.executions].sort((a, b) => (a.executedAt < b.executedAt ? 1 : -1)) : [];
-
-                return (
-                  <div key={trade.groupKey} className="p-4">
-                    <button
-                      type="button"
-                      className="grid w-full gap-3 rounded-lg border border-slate-200 bg-white px-4 py-4 text-left hover:border-slate-300 md:grid-cols-[minmax(0,1fr)_auto]"
-                      onClick={() => setExpanded(open ? null : trade.groupKey)}
-                    >
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-lg font-semibold tracking-tight text-slate-950">{trade.symbol}</p>
-                          <Badge variant={trade.direction === "LONG" ? "success" : "danger"}>{trade.direction}</Badge>
-                          <Badge variant={trade.realizedPnl >= 0 ? "success" : "danger"}>{trade.realizedPnl >= 0 ? "Winner" : "Loser"}</Badge>
-                        </div>
-                        <div className="mt-2 grid gap-2 text-sm text-slate-500 sm:grid-cols-2 xl:grid-cols-4">
-                          <span>{trade.executions.length} executions</span>
-                          <span>Opened {formatQuantity(trade.openingQuantity)}</span>
-                          <span>Closed {formatQuantity(trade.closingQuantity)}</span>
-                          <span>Account {trade.accountCode}</span>
-                        </div>
-                      </div>
-                      <div className="text-left md:text-right">
-                        <p className={trade.realizedPnl >= 0 ? "text-2xl font-semibold tracking-tight text-emerald-600" : "text-2xl font-semibold tracking-tight text-red-600"}>
-                          {formatCurrency(trade.realizedPnl)}
-                        </p>
-                        <p className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                          {trade.avgEntryPrice.toFixed(2)} / {trade.avgExitPrice.toFixed(2)}
-                        </p>
-                      </div>
-                    </button>
-
-                    {open && (
-                      <div className="mt-4 space-y-4">
-                        <details className="rounded-lg border border-slate-200 bg-white">
-                          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
-                            Execution Details ({trade.executions.length})
-                          </summary>
-                          <div className="overflow-x-auto border-t border-slate-200 bg-white p-3">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead>Date</TableHead>
-                                  <TableHead>Account</TableHead>
-                                  <TableHead>Symbol</TableHead>
-                                  <TableHead>Side</TableHead>
-                                  <TableHead>Qty</TableHead>
-                                  <TableHead>Price</TableHead>
-                                  <TableHead>Notional</TableHead>
-                                  <TableHead>Commission</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {executionRows.map((execution) => (
-                                  <TableRow key={execution.id} className={sideRowClassName(execution.side)}>
-                                    <TableCell>{formatExecutionDateTime(execution.executedAt)}</TableCell>
-                                    <TableCell>{trade.accountCode}</TableCell>
-                                    <TableCell>{trade.symbol}</TableCell>
-                                    <TableCell>
-                                      <Badge variant={sideBadgeVariant(execution.side)} className="min-w-16 justify-center">
-                                        {execution.side}
-                                      </Badge>
-                                    </TableCell>
-                                    <TableCell>{execution.quantity}</TableCell>
-                                    <TableCell>{execution.price.toFixed(2)}</TableCell>
-                                    <TableCell
-                                      className={cn(
-                                        "font-medium",
-                                        execution.side === "BUY" ? "text-emerald-700" : "text-red-700",
-                                      )}
-                                    >
-                                      {formatSignedNotional(execution.quantity, execution.price, execution.side)}
-                                    </TableCell>
-                                    <TableCell>{formatCurrency(execution.commission)}</TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        </details>
-
-                        <ClosedTradeChartWorkspace trade={trade} />
-
-                        <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                          <div className="rounded-lg border border-slate-200 bg-white p-5">
-                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Trade Summary</p>
-                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                              <SummaryItem label="Date" value={trade.tradeDate} />
-                              <SummaryItem label="Account" value={trade.accountCode} />
-                              <SummaryItem label="Realized P&L" value={formatCurrency(trade.realizedPnl)} valueClassName={trade.realizedPnl >= 0 ? "text-emerald-600" : "text-red-600"} />
-                              <SummaryItem label="Trade Return" value={formatPercent(trade.priceReturnPct)} valueClassName={metricTone(trade.priceReturnPct)} />
-                              <SummaryItem label="Commission" value={formatCurrency(trade.totalCommission)} />
-                              <SummaryItem label="Direction" value={trade.direction} />
-                              <SummaryItem label="Entry / Exit" value={`${trade.avgEntryPrice.toFixed(2)} / ${trade.avgExitPrice.toFixed(2)}`} />
-                              <SummaryItem label="Largest Size" value={formatQuantity(trade.largestExecutionQuantity)} />
-                              <SummaryItem label="Largest Notional" value={formatOptionalCurrency(trade.largestExecutionNotional)} />
-                              <SummaryItem label="P&L / Peak Notional" value={formatPercent(trade.notionalReturnPct)} valueClassName={metricTone(trade.notionalReturnPct)} />
-                              <SummaryItem label="P&L / Equity" value={formatPercent(trade.equityReturnPct)} valueClassName={metricTone(trade.equityReturnPct)} />
-                              <SummaryItem label="Equity Baseline" value={formatOptionalCurrency(trade.equityBaseline)} />
-                            </div>
-                          </div>
-
-                          <div className="rounded-lg border border-slate-200 bg-white p-5">
-                            <p className="mb-2 text-sm font-semibold text-slate-900">Notes</p>
-                            <p className="mb-3 text-sm text-slate-500">Capture setup quality, decision clarity, and what to repeat.</p>
-                            <RichTextEditor
-                              value={tradeNotes[trade.groupKey] ?? ""}
-                              onChange={(value) => setTradeNotes((prev) => ({ ...prev, [trade.groupKey]: value }))}
-                              placeholder="Add setup quality, entry/exit rationale, and improvements."
-                            />
-                            <Button
-                              size="sm"
-                              className="mt-3"
-                              disabled={pending}
-                              onClick={() => saveTradeNote(trade)}
-                            >
-                              Save Notes
-                            </Button>
-                            {status[trade.groupKey] && <p className="mt-3 text-xs text-slate-600">{status[trade.groupKey]}</p>}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+    <section className="grid overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm xl:h-[calc(100vh-11.5rem)] xl:min-h-[720px] xl:grid-cols-[320px_minmax(0,1fr)_310px]">
+      <aside className="min-h-0 border-b border-slate-200 bg-white xl:border-b-0 xl:border-r">
+        <div className="flex h-14 items-center justify-between border-b border-slate-200 px-4">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">Closed Trades</p>
+            <p className="text-sm font-semibold text-slate-950">{sortedTrades.length.toLocaleString()} entries</p>
           </div>
+          <span className="text-xs text-slate-500">Newest</span>
         </div>
-      ))}
+        <div className="max-h-[460px] overflow-y-auto xl:h-[calc(100%-3.5rem)] xl:max-h-none">
+          {sortedTrades.map((trade) => {
+            const selected = trade.groupKey === selectedTrade.groupKey;
+            const profitable = trade.realizedPnl >= 0;
+            return (
+              <button
+                key={trade.groupKey}
+                type="button"
+                className={cn(
+                  "block w-full border-b border-slate-200 border-l-4 px-3 py-3 text-left",
+                  selected ? "border-l-teal-500 bg-cyan-50/80" : "border-l-transparent bg-white hover:bg-slate-50",
+                )}
+                onClick={() => setSelectedGroupKey(trade.groupKey)}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-base font-semibold tracking-tight text-slate-950">{trade.symbol}</p>
+                      <Badge variant={trade.direction === "LONG" ? "success" : "danger"} className="px-2 py-0.5 tracking-normal">
+                        {trade.direction}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">{formatDateLabel(trade.tradeDate)}</p>
+                  </div>
+                  <p className={cn("shrink-0 text-sm font-semibold", profitable ? "text-emerald-600" : "text-red-600")}>
+                    {formatCurrency(trade.realizedPnl)}
+                  </p>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <Metric label="Entry / Exit" value={`${trade.avgEntryPrice.toFixed(2)} / ${trade.avgExitPrice.toFixed(2)}`} />
+                  <Metric label="Executions" value={trade.executions.length.toString()} />
+                  <Metric label="Return" value={formatPercent(trade.priceReturnPct)} valueClassName={metricTone(trade.priceReturnPct)} />
+                  <Metric label="Result" value={profitable ? "Winner" : "Loser"} valueClassName={profitable ? "text-emerald-600" : "text-red-600"} />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+
+      <main className="min-w-0 overflow-auto bg-white">
+        <ClosedTradeChartWorkspace trade={selectedTrade} />
+      </main>
+
+      <TradeInspector
+        noteValue={selectedNoteValue}
+        onNoteChange={(value) => setTradeNotes((prev) => ({ ...prev, [selectedTrade.groupKey]: value }))}
+        onSave={() => saveTradeNote(selectedTrade)}
+        pending={pending}
+        status={status[selectedTrade.groupKey]}
+        trade={selectedTrade}
+      />
+    </section>
+  );
+}
+
+function Metric({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-[11px] text-slate-500">{label}</p>
+      <p className={cn("truncate font-medium text-slate-900", valueClassName)}>{value}</p>
     </div>
   );
 }
 
-function SummaryItem({
-  label,
-  value,
-  valueClassName,
-}: {
-  label: string;
-  value: string;
-  valueClassName?: string;
-}) {
+function SummaryItem({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }) {
   return (
-    <div>
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className={cn("text-sm font-medium text-slate-800", valueClassName)}>{value}</p>
+    <div className="flex items-center justify-between gap-4 border-b border-slate-100 py-2 text-sm">
+      <p className="text-slate-500">{label}</p>
+      <p className={cn("text-right font-medium text-slate-900", valueClassName)}>{value}</p>
     </div>
+  );
+}
+
+function TradeInspector({
+  noteValue,
+  onNoteChange,
+  onSave,
+  pending,
+  status,
+  trade,
+}: {
+  noteValue: string;
+  onNoteChange: (value: string) => void;
+  onSave: () => void;
+  pending: boolean;
+  status?: string;
+  trade: ClosedTrade;
+}) {
+  const executionRows = [...trade.executions].sort((left, right) => left.executedAt.localeCompare(right.executedAt));
+
+  return (
+    <aside className="min-h-0 overflow-y-auto border-t border-slate-200 bg-white xl:border-l xl:border-t-0">
+      <section className="border-b border-slate-200 p-4">
+        <p className="text-xs font-semibold uppercase text-slate-500">Trade Summary</p>
+        <div className="mt-3">
+          <SummaryItem label="Symbol" value={trade.symbol} />
+          <SummaryItem label="Direction" value={trade.direction} valueClassName={trade.direction === "LONG" ? "text-emerald-600" : "text-red-600"} />
+          <SummaryItem label="Date" value={formatDateLabel(trade.tradeDate)} />
+          <SummaryItem
+            label="Realized P&L"
+            value={formatCurrency(trade.realizedPnl)}
+            valueClassName={trade.realizedPnl >= 0 ? "text-emerald-600" : "text-red-600"}
+          />
+          <SummaryItem label="Return" value={formatPercent(trade.priceReturnPct)} valueClassName={metricTone(trade.priceReturnPct)} />
+          <SummaryItem label="Entry / Exit" value={`${trade.avgEntryPrice.toFixed(2)} / ${trade.avgExitPrice.toFixed(2)}`} />
+          <SummaryItem label="Trade Time" value={`${formatTimeLabel(trade.openTime)} - ${formatTimeLabel(trade.closeTime)}`} />
+          <SummaryItem label="Hold Time" value={formatHoldTime(trade.openTime, trade.closeTime)} />
+          <SummaryItem label="Executions" value={trade.executions.length.toString()} />
+          <SummaryItem label="Largest Size" value={formatQuantity(trade.largestExecutionQuantity)} />
+          <SummaryItem label="Largest Notional" value={formatOptionalCurrency(trade.largestExecutionNotional)} />
+          <SummaryItem label="Commission" value={formatCurrency(trade.totalCommission)} />
+          <SummaryItem label="P&L / Equity" value={formatPercent(trade.equityReturnPct)} valueClassName={metricTone(trade.equityReturnPct)} />
+        </div>
+      </section>
+
+      <section className="border-b border-slate-200 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase text-slate-500">Executions</p>
+          <Clock3 className="h-4 w-4 text-slate-400" />
+        </div>
+        <div className="mt-3 space-y-3">
+          {executionRows.map((execution) => (
+            <div key={execution.id} className="grid grid-cols-[1rem_minmax(0,1fr)_auto] gap-3 text-sm">
+              <span
+                className={cn(
+                  "mt-1.5 h-2.5 w-2.5 rounded-full",
+                  execution.side === "BUY" ? "bg-emerald-500" : "bg-red-500",
+                )}
+              />
+              <div className="min-w-0">
+                <p className="font-medium text-slate-900">
+                  {formatTimeLabel(execution.executedAt)} <span className="text-slate-400">|</span> {execution.side}
+                </p>
+                <p className="text-xs text-slate-500">Qty: {formatQuantity(execution.quantity)}</p>
+              </div>
+              <div className="text-right">
+                <Badge variant={sideBadgeVariant(execution.side)} className="justify-center px-2 py-0.5 tracking-normal">
+                  {execution.side}
+                </Badge>
+                <p className="mt-1 text-sm font-semibold text-slate-950">{execution.price.toFixed(2)}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase text-slate-500">Notes</p>
+          <Button type="button" size="sm" className="h-8 gap-2 rounded-lg" disabled={pending} onClick={onSave}>
+            <Save className="h-3.5 w-3.5" />
+            Save
+          </Button>
+        </div>
+        <RichTextEditor value={noteValue} onChange={onNoteChange} placeholder="Setup, entry, exit, mistake, lesson..." />
+        {status && <p className="mt-3 text-xs text-slate-500">{status}</p>}
+      </section>
+    </aside>
   );
 }

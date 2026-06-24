@@ -122,6 +122,7 @@ type PendingTrend = { panelId: string; time: number; price: number } | null;
 type ExecutionOverlay = {
   key: string;
   label: string;
+  detail: string;
   side: "BUY" | "SELL";
   x: number;
   y: number;
@@ -196,7 +197,7 @@ function fallbackPanel(trade: ClosedTradeChartWorkspaceTrade, index: number): Ch
     id: `panel-${index + 1}`,
     symbol: trade.symbol,
     timeframe: timeframes[index] ?? "1d",
-    compareSymbol: index === 0 ? "SPY" : null,
+    compareSymbol: null,
     rangePreset: index === 1 ? "trade" : "post",
   };
 }
@@ -205,13 +206,20 @@ function normalizePanels(trade: ClosedTradeChartWorkspaceTrade, panels: ChartPan
   const count = panelCountForLayout(layout);
   const next = panels.slice(0, count);
   while (next.length < count) next.push(fallbackPanel(trade, next.length));
-  return next.map((panel, index) => ({
-    ...fallbackPanel(trade, index),
-    ...panel,
-    id: panel.id || `panel-${index + 1}`,
-    symbol: (panel.symbol || trade.symbol).trim().toUpperCase(),
-    timeframe: normalizeTimeframe(panel.timeframe),
-  }));
+  return next.map((panel, index) => {
+    const normalized = {
+      ...fallbackPanel(trade, index),
+      ...panel,
+      id: panel.id || `panel-${index + 1}`,
+      symbol: (panel.symbol || trade.symbol).trim().toUpperCase(),
+      timeframe: normalizeTimeframe(panel.timeframe),
+      compareSymbol: null,
+    };
+    if (layout !== "single" && panel.compareSymbol && index > 0 && panel.symbol === trade.symbol) {
+      normalized.symbol = panel.compareSymbol.trim().toUpperCase();
+    }
+    return normalized;
+  });
 }
 
 function rangeForPreset(trade: ClosedTradeChartWorkspaceTrade, timeframe: ChartTimeframe, preset: RangePreset) {
@@ -444,7 +452,7 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
   const ToolIcon = toolIcon;
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div className="h-full bg-white">
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-3 py-3">
         <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
           {LAYOUT_OPTIONS.map((option) => {
@@ -612,7 +620,6 @@ function ClosedTradeChartPanel({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const compareRef = useRef<ISeriesApi<"Line"> | null>(null);
   const markerPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const smaRefs = useRef<Array<ISeriesApi<"Line">>>([]);
   const annotationLineRefs = useRef<IPriceLine[]>([]);
@@ -627,11 +634,9 @@ function ClosedTradeChartPanel({
   const commitRef = useRef(commitAnnotations);
   const setPendingTrendRef = useRef(setPendingTrend);
   const [candles, setCandles] = useState<Candle[]>([]);
-  const [compareCandles, setCompareCandles] = useState<Candle[]>([]);
   const [source, setSource] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [symbolInput, setSymbolInput] = useState(panel.symbol);
-  const [compareInput, setCompareInput] = useState(panel.compareSymbol ?? "");
   const [timeframeInput, setTimeframeInput] = useState(timeframeCommand(panel.timeframe));
   const [executionOverlays, setExecutionOverlays] = useState<ExecutionOverlay[]>([]);
   const panelAnnotations = useMemo(
@@ -651,7 +656,6 @@ function ClosedTradeChartPanel({
   }, [annotations, commitAnnotations, panel, pendingTrend, scope, setPendingTrend, tool]);
 
   useEffect(() => setSymbolInput(panel.symbol), [panel.symbol]);
-  useEffect(() => setCompareInput(panel.compareSymbol ?? ""), [panel.compareSymbol]);
   useEffect(() => setTimeframeInput(timeframeCommand(panel.timeframe)), [panel.timeframe]);
 
   useEffect(() => {
@@ -660,7 +664,6 @@ function ClosedTradeChartPanel({
     url.searchParams.set("symbol", panel.symbol);
     url.searchParams.set("timeframe", panel.timeframe);
     url.searchParams.set("limit", "30000");
-    if (panel.compareSymbol) url.searchParams.set("compare", panel.compareSymbol);
     const range = rangeForPreset(trade, panel.timeframe, panel.rangePreset);
     if (range) {
       url.searchParams.set("from", String(range.from));
@@ -676,20 +679,18 @@ function ClosedTradeChartPanel({
       })
       .then((payload) => {
         setCandles((payload.candles ?? []).filter((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)));
-        setCompareCandles(payload.compare?.candles ?? []);
         setSource(payload.source ?? null);
-        setStatus(payload.compareError ?? "");
+        setStatus("");
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setCandles([]);
-        setCompareCandles([]);
         setSource(null);
         setStatus(error instanceof Error ? error.message : "Unable to load candles.");
       });
 
     return () => controller.abort();
-  }, [panel.compareSymbol, panel.rangePreset, panel.symbol, panel.timeframe, trade]);
+  }, [panel.rangePreset, panel.symbol, panel.timeframe, trade]);
 
   const updateExecutionOverlayPositions = useCallback(() => {
     const chart = chartRef.current;
@@ -705,7 +706,7 @@ function ClosedTradeChartPanel({
       candles,
     );
     const width = container.clientWidth;
-    const laneX = Math.max(48, width - 86);
+    const laneX = Math.max(48, width - 128);
     const raw = trade.executions.flatMap((execution, index): ExecutionOverlay[] => {
       const markerTime = alignExecutionToBarTime(execution.executedAt, candles, offsetSeconds);
       if (markerTime === null) return [];
@@ -714,7 +715,8 @@ function ClosedTradeChartPanel({
       if (x === null || y === null || !Number.isFinite(x) || !Number.isFinite(y)) return [];
       return [{
         key: execution.id,
-        label: `${execution.side === "BUY" ? "B" : "S"}${index + 1}`,
+        label: `${execution.side} ${index + 1}`,
+        detail: `${execution.quantity} @ ${execution.price.toFixed(2)}`,
         side: execution.side,
         x,
         y,
@@ -725,13 +727,13 @@ function ClosedTradeChartPanel({
     });
 
     const sorted = raw.sort((left, right) => left.y - right.y);
-    const minGap = 26;
-    let lastY = 18;
+    const minGap = 42;
+    let lastY = 24;
     for (const item of sorted) {
       item.laneY = Math.max(item.y, lastY + minGap);
       lastY = item.laneY;
     }
-    const maxY = height - 22;
+    const maxY = height - 30;
     for (let index = sorted.length - 1; index >= 0; index -= 1) {
       const item = sorted[index];
       item.laneY = Math.min(item.laneY, maxY - (sorted.length - 1 - index) * minGap);
@@ -768,10 +770,6 @@ function ClosedTradeChartPanel({
         borderColor: "#cbd5e1",
         scaleMargins: { top: 0.08, bottom: 0.18 },
       },
-      leftPriceScale: {
-        visible: false,
-        borderColor: "#cbd5e1",
-      },
       timeScale: {
         borderColor: "#cbd5e1",
         rightOffset: 18,
@@ -799,14 +797,6 @@ function ClosedTradeChartPanel({
       lastValueVisible: false,
     });
     volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
-    const compareSeries = chart.addSeries(LineSeries, {
-      color: "#0f766e",
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      priceScaleId: "left",
-      title: panel.compareSymbol ?? "Compare",
-    });
     const smaSeries = SMA_CONFIG.map((config) =>
       chart.addSeries(LineSeries, {
         color: config.color,
@@ -820,7 +810,6 @@ function ClosedTradeChartPanel({
     chartRef.current = chart;
     seriesRef.current = candleSeries;
     volumeRef.current = volumeSeries;
-    compareRef.current = compareSeries;
     smaRefs.current = smaSeries;
     markerPluginRef.current = createSeriesMarkers(candleSeries);
 
@@ -906,11 +895,10 @@ function ClosedTradeChartPanel({
       chartRef.current = null;
       seriesRef.current = null;
       volumeRef.current = null;
-      compareRef.current = null;
       smaRefs.current = [];
       markerPluginRef.current = null;
     };
-  }, [height, panel.compareSymbol, panel.timeframe]);
+  }, [height, panel.timeframe]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -940,21 +928,6 @@ function ClosedTradeChartPanel({
     chartRef.current?.timeScale().fitContent();
     updateExecutionOverlayPositions();
   }, [candles, updateExecutionOverlayPositions]);
-
-  useEffect(() => {
-    const compare = compareRef.current;
-    const chart = chartRef.current;
-    if (!compare || !chart) return;
-    if (!panel.compareSymbol || compareCandles.length === 0) {
-      compare.setData([]);
-      chart.applyOptions({ leftPriceScale: { visible: false } });
-      return;
-    }
-    const first = compareCandles.find((candle) => Number.isFinite(candle.close))?.close;
-    if (!first) return;
-    chart.applyOptions({ leftPriceScale: { visible: true } });
-    compare.setData(compareCandles.map((candle) => ({ time: candle.time as UTCTimestamp, value: ((candle.close - first) / first) * 100 })));
-  }, [compareCandles, panel.compareSymbol]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -1035,11 +1008,6 @@ function ClosedTradeChartPanel({
     if (next) updatePanel(panel.id, { symbol: next });
   }
 
-  function commitCompare() {
-    const next = compareInput.trim().toUpperCase();
-    updatePanel(panel.id, { compareSymbol: next || null });
-  }
-
   function commitTimeframe() {
     updatePanel(panel.id, { timeframe: normalizeTimeframe(timeframeInput) });
   }
@@ -1066,17 +1034,6 @@ function ClosedTradeChartPanel({
             if (event.key === "Enter") event.currentTarget.blur();
           }}
           aria-label="Timeframe"
-        />
-        <Input
-          className="h-8 w-24 rounded-lg px-2 text-xs"
-          value={compareInput}
-          onBlur={commitCompare}
-          onChange={(event) => setCompareInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
-          }}
-          placeholder="Compare"
-          aria-label="Compare symbol"
         />
         <div className="flex items-center gap-1 overflow-x-auto">
           {RANGE_PRESETS.map((preset) => (
@@ -1122,13 +1079,14 @@ function ClosedTradeChartPanel({
             <div
               key={item.key}
               className={cn(
-                "absolute flex h-6 min-w-10 items-center justify-center rounded-md border px-2 text-[11px] font-bold text-white shadow-sm",
+                "absolute flex h-9 min-w-[7rem] flex-col items-center justify-center rounded-md border px-2 text-[10px] font-bold leading-tight text-white shadow-sm",
                 item.side === "BUY" ? "border-emerald-700 bg-emerald-600" : "border-red-700 bg-red-600",
               )}
-              style={{ left: item.laneX, top: item.laneY - 12 }}
+              style={{ left: item.laneX, top: item.laneY - 18 }}
               title={`${item.label} @ ${item.price.toFixed(2)}`}
             >
-              {item.label}
+              <span>{item.label}</span>
+              <span className="font-medium opacity-90">{item.detail}</span>
             </div>
           ))}
         </div>

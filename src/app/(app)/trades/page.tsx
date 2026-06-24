@@ -1,11 +1,10 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { ArrowDownToLine, CandlestickChart } from "lucide-react";
+import { Download } from "lucide-react";
 import { ClosedTradesPanel } from "@/components/closed-trades-panel";
 import { TradesFilters } from "@/components/trades-filters";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { PageHeader } from "@/components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getClosedTrades, getTrades } from "@/lib/server/queries";
 import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
@@ -35,25 +34,20 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
   };
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        eyebrow="Execution Ledger"
-        title="Review every filled order and every closed idea."
-        description="Filter by symbol, strategy, side, and date ranges without changing the underlying ingestion or PnL logic."
-        actions={
-          <>
-            <Link className="rounded-2xl border border-white/14 bg-white/10 px-4 py-3 text-sm font-medium text-white backdrop-blur hover:bg-white/16" href="#closed-trades-section">
-              <CandlestickChart className="mr-2 inline h-4 w-4" />
-              Closed Trades
-            </Link>
-            <Link className="rounded-2xl border border-white/14 bg-white/10 px-4 py-3 text-sm font-medium text-white backdrop-blur hover:bg-white/16" href="#trades-list-section">
-              <ArrowDownToLine className="mr-2 inline h-4 w-4" />
-              Trades List
-            </Link>
-          </>
-        }
-      />
-
+    <div className="space-y-4 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-950">Trades</h1>
+          <p className="text-sm text-slate-500">Review closed trades, annotate context, and compare chart layouts.</p>
+        </div>
+        <Link
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300"
+          href="/import"
+        >
+          <Download className="h-4 w-4" />
+          Import
+        </Link>
+      </div>
       <TradesFilters filters={filters} />
 
       <div id="closed-trades-section">
@@ -126,7 +120,7 @@ async function TradesTableSection({
   }
 
   return (
-    <Card id="trades-list-section" className="overflow-hidden">
+    <Card id="trades-list-section" className="overflow-hidden rounded-lg border-slate-200 bg-white shadow-sm backdrop-blur-none">
       <CardContent className="pt-6">
         <div className="mb-4 flex justify-end">
           <Link className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-white" href="#closed-trades-section">
@@ -242,18 +236,18 @@ function ClosedTradesFallback() {
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">Closed Trades</h3>
-      <div className="h-40 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
-      <div className="h-40 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
+      <div className="h-40 animate-pulse rounded-lg border border-slate-200 bg-white" />
+      <div className="h-40 animate-pulse rounded-lg border border-slate-200 bg-white" />
     </div>
   );
 }
 
 function TradesTableFallback() {
   return (
-    <Card id="trades-list-section">
+    <Card id="trades-list-section" className="rounded-lg border-slate-200 bg-white shadow-sm backdrop-blur-none">
       <CardContent className="space-y-4 pt-6">
         <div className="h-8 w-40 animate-pulse rounded bg-slate-200" />
-        <div className="h-96 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
+        <div className="h-96 animate-pulse rounded-lg border border-slate-200 bg-white" />
       </CardContent>
     </Card>
   );

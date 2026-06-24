@@ -4,11 +4,12 @@
 
 import { endOfDay, format, startOfDay, subDays, subMonths, subWeeks, subYears } from "date-fns";
 import { usePathname, useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 
 type TradeFilters = {
   from?: string;
@@ -20,10 +21,10 @@ type TradeFilters = {
 };
 
 const QUICK_RANGES = [
-  { key: "5d", label: "5 Days", days: 4 },
-  { key: "2w", label: "2 Weeks", weeks: 2 },
-  { key: "1m", label: "1 Month", months: 1 },
-  { key: "1y", label: "1 Year", years: 1 },
+  { key: "5d", label: "5D", days: 4 },
+  { key: "2w", label: "2W", weeks: 2 },
+  { key: "1m", label: "1M", months: 1 },
+  { key: "1y", label: "1Y", years: 1 },
 ] as const;
 
 function toDateParam(date: Date) {
@@ -170,86 +171,95 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
   }
 
   return (
-    <Card className="overflow-hidden">
-      <CardHeader className="border-b border-slate-200/80 px-5 py-4">
-        <CardTitle className="text-base">Filters</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4 px-5 pb-5 pt-5">
-        <div className="flex flex-wrap gap-2">
+    <section className="rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
+      <form
+        ref={formRef}
+        className="grid gap-3 md:grid-cols-2 xl:grid-cols-[10rem_10rem_10rem_10rem_10rem_10rem_auto]"
+        method="get"
+        onSubmit={handleSubmit}
+      >
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">From</span>
+          <Input
+            className="h-9 rounded-lg px-3 text-xs"
+            name="from"
+            type="date"
+            value={draftFrom}
+            onChange={(event) => {
+              setDraftFrom(event.target.value);
+            }}
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">To</span>
+          <Input
+            className="h-9 rounded-lg px-3 text-xs"
+            name="to"
+            type="date"
+            value={draftTo}
+            onChange={(event) => {
+              setDraftTo(event.target.value);
+            }}
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Symbol</span>
+          <Input className="h-9 rounded-lg px-3 text-xs" name="symbol" placeholder="All symbols" defaultValue={filters.symbol} />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Side</span>
+          <Select className="h-9 rounded-lg px-3 text-xs" name="side" defaultValue={filters.side ?? ""}>
+            <option value="">All sides</option>
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </Select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Tag</span>
+          <Input className="h-9 rounded-lg px-3 text-xs" name="tag" placeholder="All tags" defaultValue={filters.tag} />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Strategy</span>
+          <Input className="h-9 rounded-lg px-3 text-xs" name="strategy" placeholder="All setups" defaultValue={filters.strategy} />
+        </label>
+
+        <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-1">
+          <Button type="submit" size="sm" disabled={isPending} className="h-9 gap-2 rounded-lg">
+            <SlidersHorizontal className="h-4 w-4" />
+            Apply
+          </Button>
           <Button
             type="button"
             size="sm"
             variant={activeQuickRange === "all" ? "default" : "outline"}
             disabled={isPending}
+            className="h-9 rounded-lg"
             onClick={() => {
               setDraftFrom("");
               setDraftTo("");
               applyFilters({ from: "", to: "" });
             }}
           >
-            All Time
+            All
           </Button>
           {QUICK_RANGES.map((range) => (
-            <Button
+            <button
               key={range.key}
               type="button"
-              size="sm"
-              variant={activeQuickRange === range.key ? "default" : "outline"}
               disabled={isPending}
+              className={cn(
+                "h-9 rounded-lg border px-3 text-xs font-semibold",
+                activeQuickRange === range.key
+                  ? "border-slate-950 bg-slate-950 text-white"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+              )}
               onClick={() => applyQuickRange(range)}
             >
               {range.label}
-            </Button>
+            </button>
           ))}
         </div>
-        <form ref={formRef} className="grid gap-3 md:grid-cols-2 xl:grid-cols-6" method="get" onSubmit={handleSubmit}>
-          <label className="space-y-1.5">
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">From</span>
-            <Input
-              name="from"
-              type="date"
-              value={draftFrom}
-              onChange={(event) => {
-                setDraftFrom(event.target.value);
-              }}
-            />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">To</span>
-            <Input
-              name="to"
-              type="date"
-              value={draftTo}
-              onChange={(event) => {
-                setDraftTo(event.target.value);
-              }}
-            />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Symbol</span>
-            <Input name="symbol" placeholder="AAPL, TSLA..." defaultValue={filters.symbol} />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Side</span>
-            <Select name="side" defaultValue={filters.side ?? ""}>
-              <option value="">All sides</option>
-              <option value="BUY">BUY</option>
-              <option value="SELL">SELL</option>
-            </Select>
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Tag</span>
-            <Input name="tag" placeholder="Momentum, news..." defaultValue={filters.tag} />
-          </label>
-          <label className="space-y-1.5">
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Strategy</span>
-            <Input name="strategy" placeholder="Opening drive..." defaultValue={filters.strategy} />
-          </label>
-          <Button type="submit" size="sm" disabled={isPending} className="md:col-span-2 xl:col-span-6 xl:justify-self-start">
-            Apply Filters
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
+      </form>
+    </section>
   );
 }
