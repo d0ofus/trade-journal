@@ -32,6 +32,7 @@ import {
   LayoutPanelLeft,
   LineChart,
   Minus,
+  RotateCcw,
   Rows2,
   Save,
   StickyNote,
@@ -161,6 +162,14 @@ const RANGE_PRESETS: Array<{ value: RangePreset; label: string }> = [
   { value: "1y", label: "1Y" },
   { value: "ytd", label: "YTD" },
   { value: "all", label: "All" },
+];
+
+const TIMEFRAME_OPTIONS: Array<{ value: ChartTimeframe; label: string }> = [
+  { value: "5m", label: "5M" },
+  { value: "15m", label: "15M" },
+  { value: "1h", label: "1H" },
+  { value: "1d", label: "1D" },
+  { value: "1wk", label: "1W" },
 ];
 
 const SMA_CONFIG = [
@@ -322,6 +331,8 @@ function serializeForApi(annotation: ChartAnnotation) {
 export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWorkspaceTrade }) {
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("single");
   const [panels, setPanels] = useState<ChartPanelState[]>(() => [fallbackPanel(trade, 0)]);
+  const [activePanelId, setActivePanelId] = useState("panel-1");
+  const [resetRequests, setResetRequests] = useState<Record<string, number>>({});
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [undoStack, setUndoStack] = useState<ChartAnnotation[][]>([]);
   const [tool, setTool] = useState<Tool>("cursor");
@@ -339,6 +350,8 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
     setAnnotationsLoaded(false);
     setLayoutMode("single");
     setPanels([fallbackPanel(trade, 0)]);
+    setActivePanelId("panel-1");
+    setResetRequests({});
     setAnnotations([]);
     setUndoStack([]);
     setPendingTrend(null);
@@ -404,6 +417,37 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
   const updatePanel = useCallback((panelId: string, patch: Partial<ChartPanelState>) => {
     setPanels((current) => current.map((panel) => (panel.id === panelId ? { ...panel, ...patch } : panel)));
   }, []);
+
+  const resetActivePanelView = useCallback(() => {
+    const targetPanelId = normalizedPanels.some((panel) => panel.id === activePanelId)
+      ? activePanelId
+      : (normalizedPanels[0]?.id ?? "panel-1");
+    setActivePanelId(targetPanelId);
+    setResetRequests((current) => ({
+      ...current,
+      [targetPanelId]: (current[targetPanelId] ?? 0) + 1,
+    }));
+  }, [activePanelId, normalizedPanels]);
+
+  useEffect(() => {
+    const activeStillVisible = normalizedPanels.some((panel) => panel.id === activePanelId);
+    if (!activeStillVisible && normalizedPanels[0]) {
+      setActivePanelId(normalizedPanels[0].id);
+    }
+  }, [activePanelId, normalizedPanels]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.key.toLowerCase() !== "r") {
+        return;
+      }
+      event.preventDefault();
+      resetActivePanelView();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [resetActivePanelView]);
 
   function selectLayout(nextLayout: LayoutMode) {
     setLayoutMode(nextLayout);
@@ -514,6 +558,10 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
         <Button size="sm" variant="outline" onClick={undo} disabled={undoStack.length === 0} title="Undo">
           <Undo2 className="h-4 w-4" />
         </Button>
+        <Button size="sm" variant="outline" onClick={resetActivePanelView} title="Reset active chart view (Alt+R)">
+          <RotateCcw className="h-4 w-4" />
+          Reset
+        </Button>
         <Button size="sm" variant="outline" onClick={clearDrawings} title="Clear drawings">
           <Eraser className="h-4 w-4" />
         </Button>
@@ -538,12 +586,15 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
           <ClosedTradeChartPanel
             annotations={annotations}
             commitAnnotations={commitAnnotations}
+            active={normalizedPanels[0].id === activePanelId}
             panel={normalizedPanels[0]}
             pendingTrend={pendingTrend}
+            resetSignal={resetRequests[normalizedPanels[0].id] ?? 0}
             scope={scope}
             setPendingTrend={setPendingTrend}
             tool={tool}
             trade={trade}
+            onActivate={setActivePanelId}
             updatePanel={updatePanel}
           />
           <div className="grid gap-3">
@@ -552,13 +603,16 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
                 key={panel.id}
                 annotations={annotations}
                 commitAnnotations={commitAnnotations}
+                active={panel.id === activePanelId}
                 compact
                 panel={panel}
                 pendingTrend={pendingTrend}
+                resetSignal={resetRequests[panel.id] ?? 0}
                 scope={scope}
                 setPendingTrend={setPendingTrend}
                 tool={tool}
                 trade={trade}
+                onActivate={setActivePanelId}
                 updatePanel={updatePanel}
               />
             ))}
@@ -577,13 +631,16 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
               key={panel.id}
               annotations={annotations}
               commitAnnotations={commitAnnotations}
+              active={panel.id === activePanelId}
               compact={layoutMode === "three-horizontal" || layoutMode === "three-vertical"}
               panel={panel}
               pendingTrend={pendingTrend}
+              resetSignal={resetRequests[panel.id] ?? 0}
               scope={scope}
               setPendingTrend={setPendingTrend}
               tool={tool}
               trade={trade}
+              onActivate={setActivePanelId}
               updatePanel={updatePanel}
             />
           ))}
@@ -596,9 +653,12 @@ export function ClosedTradeChartWorkspace({ trade }: { trade: ClosedTradeChartWo
 function ClosedTradeChartPanel({
   annotations,
   commitAnnotations,
+  active,
   compact = false,
+  onActivate,
   panel,
   pendingTrend,
+  resetSignal,
   scope,
   setPendingTrend,
   tool,
@@ -607,9 +667,12 @@ function ClosedTradeChartPanel({
 }: {
   annotations: ChartAnnotation[];
   commitAnnotations: (annotations: ChartAnnotation[]) => void;
+  active: boolean;
   compact?: boolean;
+  onActivate: (panelId: string) => void;
   panel: ChartPanelState;
   pendingTrend: PendingTrend;
+  resetSignal: number;
   scope: AnnotationScope;
   setPendingTrend: (trend: PendingTrend) => void;
   tool: Tool;
@@ -706,7 +769,9 @@ function ClosedTradeChartPanel({
       candles,
     );
     const width = container.clientWidth;
-    const laneX = Math.max(48, width - 128);
+    const labelWidth = 136;
+    const priceAxisReserve = 56;
+    const laneX = Math.max(48, width - labelWidth - priceAxisReserve);
     const raw = trade.executions.flatMap((execution, index): ExecutionOverlay[] => {
       const markerTime = alignExecutionToBarTime(execution.executedAt, candles, offsetSeconds);
       if (markerTime === null) return [];
@@ -727,19 +792,24 @@ function ClosedTradeChartPanel({
     });
 
     const sorted = raw.sort((left, right) => left.y - right.y);
-    const minGap = 42;
-    let lastY = 24;
+    const minGap = 48;
+    const minY = 28;
+    const maxY = height - 32;
+    let lastY = minY - minGap;
     for (const item of sorted) {
-      item.laneY = Math.max(item.y, lastY + minGap);
+      item.laneY = Math.min(maxY, Math.max(item.y, lastY + minGap));
       lastY = item.laneY;
     }
-    const maxY = height - 30;
-    for (let index = sorted.length - 1; index >= 0; index -= 1) {
-      const item = sorted[index];
-      item.laneY = Math.min(item.laneY, maxY - (sorted.length - 1 - index) * minGap);
+    const overflow = (sorted.at(-1)?.laneY ?? maxY) - maxY;
+    if (overflow > 0) {
+      for (const item of sorted) {
+        item.laneY = Math.max(minY, item.laneY - overflow);
+      }
     }
-    for (let index = 1; index < sorted.length; index += 1) {
-      sorted[index].laneY = Math.max(sorted[index].laneY, sorted[index - 1].laneY + minGap);
+    lastY = minY - minGap;
+    for (const item of sorted) {
+      item.laneY = Math.max(minY, Math.max(item.laneY, lastY + minGap));
+      lastY = item.laneY;
     }
     setExecutionOverlays(sorted);
   }, [candles, height, trade.executions]);
@@ -909,6 +979,12 @@ function ClosedTradeChartPanel({
   }, [updateExecutionOverlayPositions]);
 
   useEffect(() => {
+    if (resetSignal === 0) return;
+    chartRef.current?.timeScale().fitContent();
+    window.requestAnimationFrame(() => updateExecutionOverlayPositionsRef.current());
+  }, [resetSignal]);
+
+  useEffect(() => {
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((candle) => ({ ...candle, time: candle.time as UTCTimestamp })));
     volumeRef.current?.setData(
@@ -1004,16 +1080,31 @@ function ClosedTradeChartPanel({
   }, [candles, panelAnnotations, trade.executions]);
 
   function commitSymbol() {
+    onActivate(panel.id);
     const next = symbolInput.trim().toUpperCase();
     if (next) updatePanel(panel.id, { symbol: next });
   }
 
   function commitTimeframe() {
+    onActivate(panel.id);
     updatePanel(panel.id, { timeframe: normalizeTimeframe(timeframeInput) });
   }
 
+  function selectTimeframe(timeframe: ChartTimeframe) {
+    onActivate(panel.id);
+    updatePanel(panel.id, { timeframe });
+  }
+
   return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
+    <section
+      className={cn(
+        "min-w-0 overflow-hidden rounded-lg border bg-white",
+        active ? "border-slate-400 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.12)]" : "border-slate-200",
+      )}
+      tabIndex={0}
+      onFocusCapture={() => onActivate(panel.id)}
+      onPointerDown={() => onActivate(panel.id)}
+    >
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50/70 px-3 py-2">
         <Input
           className="h-8 w-24 rounded-lg px-2 text-xs font-semibold"
@@ -1035,6 +1126,22 @@ function ClosedTradeChartPanel({
           }}
           aria-label="Timeframe"
         />
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+          {TIMEFRAME_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={cn(
+                "h-7 rounded-md px-2 text-xs font-semibold text-slate-600",
+                panel.timeframe === option.value && "bg-slate-950 text-white",
+              )}
+              onClick={() => selectTimeframe(option.value)}
+              title={`Switch to ${option.label}`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-1 overflow-x-auto">
           {RANGE_PRESETS.map((preset) => (
             <button
@@ -1079,7 +1186,7 @@ function ClosedTradeChartPanel({
             <div
               key={item.key}
               className={cn(
-                "absolute flex h-9 min-w-[7rem] flex-col items-center justify-center rounded-md border px-2 text-[10px] font-bold leading-tight text-white shadow-sm",
+                "absolute flex h-9 w-[8.5rem] flex-col items-center justify-center rounded-md border px-2 text-[10px] font-bold leading-tight text-white shadow-sm",
                 item.side === "BUY" ? "border-emerald-700 bg-emerald-600" : "border-red-700 bg-red-600",
               )}
               style={{ left: item.laneX, top: item.laneY - 18 }}

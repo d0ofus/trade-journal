@@ -19,6 +19,39 @@ describe("execution marker alignment", () => {
     expect(alignExecutionToBarTime(isoFromSeconds(1_420), candles)).toBe(1_300);
   });
 
+  it("aligns a 5 minute execution to the exact containing candle", () => {
+    const base = Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000);
+    const candles: AlignmentCandle[] = [
+      { time: base, open: 100, high: 101, low: 99.5, close: 100.4 },
+      { time: base + 300, open: 100.4, high: 102, low: 100.2, close: 101.8 },
+      { time: base + 600, open: 101.8, high: 103, low: 101.6, close: 102.4 },
+    ];
+
+    expect(alignExecutionToBarTime(isoFromSeconds(base + 440), candles)).toBe(base + 300);
+  });
+
+  it("aligns an hourly execution to the containing hourly candle", () => {
+    const base = Math.floor(Date.parse("2026-06-17T13:00:00.000Z") / 1000);
+    const candles: AlignmentCandle[] = [
+      { time: base, open: 100, high: 101, low: 99.5, close: 100.4 },
+      { time: base + 3600, open: 100.4, high: 102, low: 100.2, close: 101.8 },
+      { time: base + 7200, open: 101.8, high: 103, low: 101.6, close: 102.4 },
+    ];
+
+    expect(alignExecutionToBarTime(isoFromSeconds(base + 5310), candles)).toBe(base + 3600);
+  });
+
+  it("aligns a daily execution to the correct trading day candle", () => {
+    const june17 = Math.floor(Date.parse("2026-06-17T00:00:00.000Z") / 1000);
+    const candles: AlignmentCandle[] = [
+      { time: june17 - 86400, open: 96, high: 99, low: 95, close: 98 },
+      { time: june17, open: 100, high: 106, low: 99, close: 104 },
+      { time: june17 + 86400, open: 104, high: 108, low: 102, close: 103 },
+    ];
+
+    expect(alignExecutionToBarTime("2026-06-17T15:45:00.000Z", candles)).toBe(june17);
+  });
+
   it("does not assign executions that fall into a market gap", () => {
     const candles: AlignmentCandle[] = [
       {

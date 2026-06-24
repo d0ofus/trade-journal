@@ -61,6 +61,14 @@ function formatTimeLabel(value: string) {
   }).format(new Date(value));
 }
 
+function formatDateTimeLabel(value: string) {
+  return `${new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value))} ${formatTimeLabel(value)}`;
+}
+
 function formatPercent(value: number | null) {
   if (value === null || !Number.isFinite(value)) return "-";
   const sign = value > 0 ? "+" : "";
@@ -290,9 +298,8 @@ function TradeInspector({
                 )}
               />
               <div className="min-w-0">
-                <p className="font-medium text-slate-900">
-                  {formatTimeLabel(execution.executedAt)} <span className="text-slate-400">|</span> {execution.side}
-                </p>
+                <p className="font-medium text-slate-900">{formatDateTimeLabel(execution.executedAt)}</p>
+                <p className="text-xs font-semibold text-slate-600">{execution.side}</p>
                 <p className="text-xs text-slate-500">Qty: {formatQuantity(execution.quantity)}</p>
               </div>
               <div className="text-right">
