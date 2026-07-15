@@ -2675,6 +2675,93 @@ test("chart workstation waits for saved layout before loading candles", async ({
   expect(browserErrors).toEqual([]);
 });
 
+test("chart workstation derives 15M candles from the seeded 5M cache", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  let layoutVersion = 40;
+
+  await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
+    const request = route.request();
+    const groupKey = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-2) ?? "derived-15m-group");
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "derived-15m-layout",
+            groupKey,
+            layoutMode: "single",
+            panels: [{ id: "panel-1", symbol: "DEMOA", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null }],
+            version: layoutVersion,
+          },
+        }),
+      });
+      return;
+    }
+    if (request.method() === "PUT") {
+      const body = request.postDataJSON() as { layoutMode?: string; panels?: ChartPanelLayout[] };
+      layoutVersion += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "derived-15m-layout",
+            groupKey,
+            layoutMode: body.layoutMode ?? "single",
+            panels: body.panels ?? [],
+            version: layoutVersion,
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  try {
+    await signIn(page);
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}&symbol=DEMOA`);
+    const trade = page.locator('button[data-account-code="DEMO-WORKSTATION"]').filter({ hasText: /DEMOA/ }).first();
+    const groupKey = await trade.getAttribute("data-group-key");
+    expect(groupKey).toBeTruthy();
+    await trade.click();
+    await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", groupKey!);
+
+    const panel = page.getByTestId("closed-trade-chart-panel").first();
+    const plot = panel.getByTestId("closed-trade-chart-plot");
+    await expect(panel).toHaveAttribute("data-timeframe", "5m");
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true", { timeout: 15_000 });
+    const responsePromise = page.waitForResponse(
+      (response) => response.url().includes("/api/market/candles") && response.url().includes("timeframe=15m"),
+    );
+
+    await panel.locator('button[title="Switch to 15M"]').click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(200);
+    const payload = await response.json() as {
+      candles?: Array<{ time?: number }>;
+      metadata?: { barIntervalSeconds?: number | null };
+      source?: string | null;
+      timeframe?: string;
+    };
+    expect(payload.timeframe).toBe("15m");
+    expect(payload.source).toBe("cache");
+    expect(payload.candles?.length ?? 0).toBeGreaterThan(0);
+    expect(payload.metadata?.barIntervalSeconds).toBe(15 * 60);
+    await expect(panel).toHaveAttribute("data-timeframe", "15m");
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await expect.poll(async () => Number(await panel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
+    await expect(panel.getByTestId("chart-warning")).not.toContainText("No candles returned");
+    await expectFirstCanvasPainted(page);
+    await expectChartSavesSettled(page);
+  } finally {
+    await page.unroute("**/api/closed-trades/*/chart-layout");
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
 test("chart workstation persists layout reset state and locks drawings on stale conflicts", async ({ page }) => {
   const browserErrors = collectBrowserErrors(page);
   const demoBCandles = [
@@ -3235,6 +3322,322 @@ test("chart workstation blocks trade switches while layout saves are pending", a
   expect(browserErrors).toEqual([]);
 });
 
+test("chart workstation persists an in-flight layout reversion as the latest intent", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  const layoutPutBodies: Array<{ layoutMode?: string; panels?: ChartPanelLayout[]; version?: number }> = [];
+  let firstReleased = false;
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstRelease = new Promise<void>((resolve) => {
+    releaseFirst = () => {
+      firstReleased = true;
+      resolve();
+    };
+  });
+  const secondRelease = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let serverLayout: { layoutMode: string; panels: ChartPanelLayout[]; version: number } = {
+    layoutMode: "single",
+    panels: [{ id: "panel-1", symbol: "DEMOC", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null }],
+    version: 10,
+  };
+
+  await signIn(page);
+  await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
+    const request = route.request();
+    const routeMatch = new URL(request.url()).pathname.match(/\/api\/closed-trades\/([^/]+)\/chart-layout$/);
+    if (!routeMatch) {
+      await route.continue();
+      return;
+    }
+    const routeGroupKey = decodeURIComponent(routeMatch[1]);
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ layout: { id: "layout-reversion", groupKey: routeGroupKey, ...serverLayout } }),
+      });
+      return;
+    }
+    if (request.method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+
+    const body = request.postDataJSON() as { layoutMode?: string; panels?: ChartPanelLayout[]; version?: number };
+    layoutPutBodies.push(body);
+    if (layoutPutBodies.length === 1) await firstRelease;
+    if (layoutPutBodies.length === 2) {
+      expect(firstReleased).toBe(true);
+      await secondRelease;
+    }
+    const version = 10 + layoutPutBodies.length;
+    serverLayout = {
+      layoutMode: body.layoutMode ?? "single",
+      panels: body.panels ?? [],
+      version,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ layout: { id: "layout-reversion", groupKey: routeGroupKey, ...serverLayout } }),
+    });
+  });
+
+  try {
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}`);
+    const tradeButtons = page.locator('button[data-account-code="DEMO-WORKSTATION"]');
+    const firstTrade = tradeButtons.filter({ hasText: /DEMOC/ }).first();
+    const secondTrade = tradeButtons.filter({ hasText: /DEMOB/ }).first();
+    const firstGroupKey = await firstTrade.getAttribute("data-group-key");
+    expect(firstGroupKey).toBeTruthy();
+    await firstTrade.click();
+    await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", firstGroupKey!);
+    await expectFirstCanvasPainted(page);
+    await expectChartSavesSettled(page);
+
+    const workspace = page.getByTestId("closed-trade-chart-workspace");
+    const firstPanel = page.getByTestId("closed-trade-chart-panel").first();
+    await firstPanel.locator('button[title="Switch to 1H"]').click();
+    await expect.poll(() => layoutPutBodies.length).toBe(1);
+    expect(layoutPutBodies[0].version).toBe(10);
+    expect(layoutPutBodies[0].panels?.[0]?.timeframe).toBe("1h");
+    await expect(workspace).toHaveAttribute("data-layout-save-state", "saving");
+
+    await firstPanel.locator('button[title="Switch to 5M"]').click();
+    await expect(workspace).toHaveAttribute("data-layout-save-state", "queued");
+    await secondTrade.click();
+    await expect(page.getByTestId("chart-save-guard")).toContainText(/layout/i);
+    await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", firstGroupKey!);
+
+    releaseFirst();
+    await expect.poll(() => layoutPutBodies.length).toBe(2);
+    expect(layoutPutBodies[1].version).toBe(11);
+    expect(layoutPutBodies[1].panels?.[0]?.timeframe).toBe("5m");
+    await expect(workspace).toHaveAttribute("data-layout-save-state", "saving");
+    await expect(page.getByTestId("chart-save-guard")).toBeVisible();
+
+    releaseSecond();
+    await expectChartSavesSettled(page);
+    await expect(page.getByTestId("chart-save-guard")).toHaveCount(0);
+    expect(serverLayout.version).toBe(12);
+    expect(serverLayout.panels[0]?.timeframe).toBe("5m");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByLabel("Timeframe").first()).toHaveValue("5M");
+    await page.waitForTimeout(800);
+    expect(layoutPutBodies).toHaveLength(2);
+  } finally {
+    await page.unroute("**/api/closed-trades/*/chart-layout");
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("chart workstation cancels and persists annotation reversions", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  const annotationPutBodies: Array<{ annotations?: Array<{ type?: string }>; version?: number }> = [];
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstRelease = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const secondRelease = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  let serverAnnotations: Array<{ type?: string }> = [];
+  let serverVersion = 20;
+
+  await signIn(page);
+  await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
+    const request = route.request();
+    const routeMatch = new URL(request.url()).pathname.match(/\/api\/closed-trades\/([^/]+)\/chart-layout$/);
+    if (!routeMatch || request.method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        layout: {
+          id: "annotation-reversion-layout",
+          groupKey: decodeURIComponent(routeMatch[1]),
+          layoutMode: "single",
+          panels: [{ id: "panel-1", symbol: "DEMOA", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null }],
+          version: 30,
+        },
+      }),
+    });
+  });
+  await page.route("**/api/closed-trades/*/annotations", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ annotations: serverAnnotations, version: serverVersion, updatedAt: "2026-06-26T00:00:00.000Z" }),
+      });
+      return;
+    }
+    if (request.method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+
+    const body = request.postDataJSON() as { annotations?: Array<{ type?: string }>; version?: number };
+    annotationPutBodies.push(body);
+    if (annotationPutBodies.length === 1) await firstRelease;
+    if (annotationPutBodies.length === 2) await secondRelease;
+    serverVersion = 20 + annotationPutBodies.length;
+    serverAnnotations = body.annotations ?? [];
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ annotations: serverAnnotations, version: serverVersion, updatedAt: "2026-06-26T00:01:00.000Z" }),
+    });
+  });
+
+  try {
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}&symbol=DEMOA`);
+    const firstTrade = page.locator('button[data-account-code="DEMO-WORKSTATION"]').filter({ hasText: /DEMOA/ }).first();
+    await expect(firstTrade).toBeVisible();
+    const firstGroupKey = await firstTrade.getAttribute("data-group-key");
+    expect(firstGroupKey).toBeTruthy();
+    await firstTrade.click();
+    await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", firstGroupKey!);
+    await expectFirstCanvasPainted(page);
+    await expect(page.getByText("Drawings ready.").first()).toBeVisible();
+
+    const workspace = page.getByTestId("closed-trade-chart-workspace");
+    const firstPlot = page.getByTestId("closed-trade-chart-panel").first().getByTestId("closed-trade-chart-plot");
+    await firstPlot.scrollIntoViewIfNeeded();
+    await expect(firstPlot).toHaveAttribute("data-candle-fresh", "true");
+    const box = await firstPlot.boundingBox();
+    expect(box).toBeTruthy();
+    await page.getByTitle("Horizontal").click();
+
+    await page.mouse.click(box!.x + box!.width * 0.1, box!.y + box!.height * 0.42);
+    await expect(page.getByTitle("Undo")).toBeEnabled();
+    await page.getByTitle("Undo").click();
+    await page.waitForTimeout(850);
+    expect(annotationPutBodies).toHaveLength(0);
+    await expect(workspace).toHaveAttribute("data-annotation-save-state", "clean");
+
+    await page.mouse.click(box!.x + box!.width * 0.18, box!.y + box!.height * 0.56);
+    await expect.poll(() => annotationPutBodies.length).toBe(1);
+    expect(annotationPutBodies[0].version).toBe(20);
+    expect(annotationPutBodies[0].annotations?.filter((annotation) => annotation.type === "horizontal")).toHaveLength(1);
+    await page.getByTitle("Undo").click();
+    await expect(workspace).toHaveAttribute("data-annotation-save-state", "queued");
+
+    releaseFirst();
+    await expect.poll(() => annotationPutBodies.length).toBe(2);
+    expect(annotationPutBodies[1].version).toBe(21);
+    expect(annotationPutBodies[1].annotations).toEqual([]);
+    await expect(workspace).toHaveAttribute("data-annotation-save-state", "saving");
+
+    releaseSecond();
+    await expectChartSavesSettled(page);
+    expect(serverVersion).toBe(22);
+    expect(serverAnnotations).toEqual([]);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText("Drawings ready.").first()).toBeVisible();
+    await page.waitForTimeout(850);
+    expect(annotationPutBodies).toHaveLength(2);
+  } finally {
+    await page.unroute("**/api/closed-trades/*/chart-layout");
+    await page.unroute("**/api/closed-trades/*/annotations");
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("chart workstation retries the latest layout reversion after a failed save", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page, ["503"]);
+  const layoutPutBodies: Array<{ layoutMode?: string; panels?: ChartPanelLayout[]; version?: number }> = [];
+  let releaseFailure!: () => void;
+  const failureRelease = new Promise<void>((resolve) => {
+    releaseFailure = resolve;
+  });
+
+  await signIn(page);
+  await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
+    const request = route.request();
+    const routeMatch = new URL(request.url()).pathname.match(/\/api\/closed-trades\/([^/]+)\/chart-layout$/);
+    if (!routeMatch) {
+      await route.continue();
+      return;
+    }
+    const groupKey = decodeURIComponent(routeMatch[1]);
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "failed-layout-reversion",
+            groupKey,
+            layoutMode: "single",
+            panels: [{ id: "panel-1", symbol: "DEMOC", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null }],
+            version: 10,
+          },
+        }),
+      });
+      return;
+    }
+    if (request.method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+
+    const body = request.postDataJSON() as { layoutMode?: string; panels?: ChartPanelLayout[]; version?: number };
+    layoutPutBodies.push(body);
+    if (layoutPutBodies.length === 1) {
+      await failureRelease;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Layout save failed." }) });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ layout: { id: "failed-layout-reversion", groupKey, layoutMode: body.layoutMode, panels: body.panels, version: 11 } }),
+    });
+  });
+
+  try {
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}`);
+    const trades = page.locator('button[data-account-code="DEMO-WORKSTATION"]');
+    const firstTrade = trades.filter({ hasText: /DEMOC/ }).first();
+    const secondTrade = trades.filter({ hasText: /DEMOB/ }).first();
+    const firstGroupKey = await firstTrade.getAttribute("data-group-key");
+    await firstTrade.click();
+    await expectFirstCanvasPainted(page);
+
+    const firstPanel = page.getByTestId("closed-trade-chart-panel").first();
+    await firstPanel.locator('button[title="Switch to 1H"]').click();
+    await expect.poll(() => layoutPutBodies.length).toBe(1);
+    await firstPanel.locator('button[title="Switch to 5M"]').click();
+    releaseFailure();
+    await expect(page.getByText("Layout save failed. Retry.").first()).toBeVisible();
+    await expect(page.getByTestId("closed-trade-chart-workspace")).toHaveAttribute("data-layout-save-state", "error");
+    await secondTrade.click();
+    await expect(page.getByTestId("chart-save-guard")).toContainText(/layout/i);
+    await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", firstGroupKey!);
+
+    await page.getByRole("button", { name: "Retry layout save" }).click();
+    await expect.poll(() => layoutPutBodies.length).toBe(2);
+    expect(layoutPutBodies[1].version).toBe(10);
+    expect(layoutPutBodies[1].panels?.[0]?.timeframe).toBe("5m");
+    await expectChartSavesSettled(page);
+  } finally {
+    await page.unroute("**/api/closed-trades/*/chart-layout");
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
 test("chart workstation uses server-returned layout version for queued layout saves", async ({ page }) => {
   const browserErrors = collectBrowserErrors(page);
 
@@ -3340,6 +3743,8 @@ test("chart workstation uses server-returned layout version for queued layout sa
     expect(layoutPutBodies[1].panels?.find((panel) => panel.id === "panel-1")?.timeframe).toBe("1d");
     await expect(page.getByText("Layout changed in another tab.")).toHaveCount(0);
     await expectChartSavesSettled(page);
+    await page.waitForTimeout(800);
+    expect(layoutPutBodies).toHaveLength(2);
   } finally {
     await page.unroute("**/api/closed-trades/*/chart-layout");
   }
@@ -3506,6 +3911,8 @@ test("chart workstation uses server-returned drawing version for queued annotati
     expect(annotationPutBodies[1].annotations?.filter((annotation) => annotation.type === "horizontal")).toHaveLength(2);
     await expect(page.getByText("Drawings changed in another tab.")).toHaveCount(0);
     await expectChartSavesSettled(page);
+    await page.waitForTimeout(850);
+    expect(annotationPutBodies).toHaveLength(2);
   } finally {
     await page.unroute("**/api/closed-trades/*/chart-layout");
     await page.unroute("**/api/market/candles**");

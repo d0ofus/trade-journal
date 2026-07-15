@@ -215,6 +215,39 @@ async function readCachedCandlesWithRetry(input: {
   }
 }
 
+function aggregateCachePlan(timeframe: CandleTimeframe) {
+  if (timeframe === "10m") return { bucketSeconds: 10 * 60, sourceTimeframe: "5m" as const };
+  if (timeframe === "15m") return { bucketSeconds: 15 * 60, sourceTimeframe: "5m" as const };
+  return null;
+}
+
+async function readAggregatedCachedCandles(input: {
+  symbol: string;
+  timeframe: CandleTimeframe;
+  range: CandleRange;
+  limit: number;
+}) {
+  const plan = aggregateCachePlan(input.timeframe);
+  if (!plan) return [];
+
+  const sourceIntervalSeconds = timeframeIntervalSeconds(plan.sourceTimeframe);
+  const sourceBarsPerTargetBar = Math.ceil(plan.bucketSeconds / sourceIntervalSeconds);
+  const sourceRange = input.range
+    ? {
+        from: Math.floor(input.range.from / plan.bucketSeconds) * plan.bucketSeconds,
+        to: input.range.to,
+      }
+    : null;
+  const sourceCandles = await readCachedCandlesWithRetry({
+    symbol: input.symbol,
+    timeframe: plan.sourceTimeframe,
+    range: sourceRange,
+    limit: input.limit * sourceBarsPerTargetBar,
+  });
+
+  return aggregateCandles(sourceCandles, plan.bucketSeconds).slice(-input.limit);
+}
+
 function chunked<T>(rows: T[], size: number) {
   const chunks: T[][] = [];
   for (let index = 0; index < rows.length; index += size) {
@@ -502,6 +535,16 @@ export async function loadCandlesForSymbol(input: {
   }
   if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
     return { symbol, candles: cached.slice(-boundedLimit), source: "cache" };
+  }
+  if (!cacheReadFailed && cached.length === 0 && aggregateCachePlan(timeframe)) {
+    try {
+      cached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
+    } catch {
+      cacheReadFailed = true;
+    }
+    if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
+      return { symbol, candles: cached, source: "cache" };
+    }
   }
 
   const effectiveRange = range ?? defaultRangeForTimeframe(timeframe);

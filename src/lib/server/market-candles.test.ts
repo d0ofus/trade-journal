@@ -192,6 +192,63 @@ describe("loadCandlesForSymbol", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("derives 15 minute candles from a covering 5 minute cache", async () => {
+    withoutAlpacaCredentials();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const start = 1_800_000_000;
+    const sourceCandles = makeCandles(start, 60);
+    const range = { from: start, to: sourceCandles.at(-1)!.time };
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(sourceCandles) : [],
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range,
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({ symbol: "DEMOA", source: "cache" });
+    expect(result.candles).toHaveLength(20);
+    expect(result.candles[0]).toEqual({
+      time: start,
+      open: 100,
+      high: 103,
+      low: 99,
+      close: 102.5,
+      volume: 3003,
+    });
+    expect(mocks.findMany.mock.calls.map(([args]) => args.where.timeframe)).toEqual(["15m", "5m"]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("uses partial aggregated 15 minute cache when live providers fail", async () => {
+    withoutAlpacaCredentials();
+    const start = 1_800_000_000;
+    const sourceCandles = makeCandles(start, 6);
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(sourceCandles) : [],
+    );
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNRESET")));
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: start + 24 * 60 * 60 },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({
+      symbol: "DEMOA",
+      source: "cache",
+      warnings: ["Yahoo candle provider unavailable; showing cached candles."],
+    });
+    expect(result.candles).toHaveLength(2);
+    expect(result.candles.map((candle) => candle.time)).toEqual([start, start + 15 * 60]);
+  });
+
   it("retries a transient cache read failure before falling through to live providers", async () => {
     withoutAlpacaCredentials();
     const fetch = vi.fn();

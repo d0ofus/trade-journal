@@ -46,6 +46,7 @@ import {
   getExecutionCandleDiagnostics,
 } from "@/lib/charts/execution-candle-diagnostics";
 import { buildPercentChangeSeries } from "@/lib/charts/relative-strength";
+import { nextPendingSaveAfterSuccess, reconcileDesiredSave } from "@/lib/charts/save-queue-reconciliation";
 import { cn, formatCurrency } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -700,6 +701,7 @@ export function ClosedTradeChartWorkspace({
   const lastSavedLayoutStructureSignatureRef = useRef("");
   const lastQueuedLayoutSignatureRef = useRef("");
   const lastSavedAnnotationSignatureRef = useRef("");
+  const lastQueuedAnnotationSignatureRef = useRef("");
   const tradeGroupKey = trade.groupKey;
   const tradeSymbol = trade.symbol;
   const tradeIsStale = Boolean(trade.isStale);
@@ -871,6 +873,7 @@ export function ClosedTradeChartWorkspace({
     pendingLayoutSaveRef.current = null;
     pendingAnnotationSaveRef.current = null;
     lastQueuedLayoutSignatureRef.current = "";
+    lastQueuedAnnotationSignatureRef.current = "";
     setPendingVisibleRangePanelIds([]);
   }, [clearAnnotationSaveTimer, clearLayoutSaveTimer]);
 
@@ -908,6 +911,7 @@ export function ClosedTradeChartWorkspace({
       setLayoutStateGroupKey(tradeGroupKey);
       lastSavedLayoutSignatureRef.current = layoutSignature(nextLayoutMode, nextPanels);
       lastSavedLayoutStructureSignatureRef.current = layoutStructureSignature(nextLayoutMode, nextPanels);
+      lastQueuedLayoutSignatureRef.current = "";
       skipNextLayoutSaveRef.current = true;
       setLayoutSaveState("clean");
       setLayoutLoaded(true);
@@ -940,6 +944,7 @@ export function ClosedTradeChartWorkspace({
       setAnnotations(nextAnnotations);
       setAnnotationStateGroupKey(tradeGroupKey);
       lastSavedAnnotationSignatureRef.current = annotationSignature(nextAnnotations);
+      lastQueuedAnnotationSignatureRef.current = "";
       const nextVersion = typeof payload.version === "number" ? payload.version : 1;
       annotationVersionRef.current = nextVersion;
       setAnnotationVersion(nextVersion);
@@ -997,6 +1002,10 @@ export function ClosedTradeChartWorkspace({
         setLayoutVersion(nextVersion);
         lastSavedLayoutSignatureRef.current = job.signature;
         lastSavedLayoutStructureSignatureRef.current = job.structureSignature;
+        pendingLayoutSaveRef.current = nextPendingSaveAfterSuccess<LayoutSaveJob>(
+          job.signature,
+          pendingLayoutSaveRef.current,
+        );
         const hasQueuedLayoutSave = Boolean(pendingLayoutSaveRef.current);
         if (!hasQueuedLayoutSave) lastQueuedLayoutSignatureRef.current = "";
         setLayoutSaveState(hasQueuedLayoutSave ? "queued" : "clean");
@@ -1079,7 +1088,12 @@ export function ClosedTradeChartWorkspace({
         annotationVersionRef.current = nextVersion;
         setAnnotationVersion(nextVersion);
         lastSavedAnnotationSignatureRef.current = job.signature;
+        pendingAnnotationSaveRef.current = nextPendingSaveAfterSuccess<AnnotationSaveJob>(
+          job.signature,
+          pendingAnnotationSaveRef.current,
+        );
         const hasQueuedAnnotationSave = Boolean(pendingAnnotationSaveRef.current);
+        if (!hasQueuedAnnotationSave) lastQueuedAnnotationSignatureRef.current = "";
         setAnnotationSaveState(hasQueuedAnnotationSave ? "queued" : "clean");
         setAnnotationStatus(hasQueuedAnnotationSave ? "Drawing save queued." : "Drawings saved.");
         shouldFlushNext = hasQueuedAnnotationSave;
@@ -1153,6 +1167,7 @@ export function ClosedTradeChartWorkspace({
 
   const queueAnnotationSave = useCallback((job: AnnotationSaveJob) => {
     pendingAnnotationSaveRef.current = job;
+    lastQueuedAnnotationSignatureRef.current = job.signature;
     const message = annotationSaveInFlightRef.current ? "Drawing save queued." : "Drawing save pending.";
     onSaveActivityChange?.({
       blocking: true,
@@ -1342,17 +1357,21 @@ export function ClosedTradeChartWorkspace({
     }
     const signature = layoutSignature(layoutMode, normalizedPanels);
     const structureSignature = currentLayoutStructureSignature;
-    if (signature === lastSavedLayoutSignatureRef.current) {
-      if (pendingLayoutSaveRef.current && !layoutSaveInFlightRef.current) {
-        pendingLayoutSaveRef.current = null;
-        lastQueuedLayoutSignatureRef.current = "";
-        clearLayoutSaveTimer();
-        setLayoutSaveState("clean");
-        setLayoutStatus(tradeIsStale ? "Stale trade: layout read-only." : "Layout ready.");
-      }
+    const action = reconcileDesiredSave({
+      desiredSignature: signature,
+      inFlight: layoutSaveInFlightRef.current,
+      queuedSignature: lastQueuedLayoutSignatureRef.current,
+      savedSignature: lastSavedLayoutSignatureRef.current,
+    });
+    if (action === "cancel") {
+      pendingLayoutSaveRef.current = null;
+      lastQueuedLayoutSignatureRef.current = "";
+      clearLayoutSaveTimer();
+      setLayoutSaveState("clean");
+      setLayoutStatus(tradeIsStale ? "Stale trade: layout read-only." : "Layout ready.");
       return;
     }
-    if (signature === lastQueuedLayoutSignatureRef.current) return;
+    if (action === "ignore") return;
     queueLayoutSave({
       epoch: workspaceEpochRef.current,
       groupKey: tradeGroupKey,
@@ -1381,14 +1400,37 @@ export function ClosedTradeChartWorkspace({
       return;
     }
     const signature = annotationSignature(annotations);
-    if (signature === lastSavedAnnotationSignatureRef.current) return;
+    const action = reconcileDesiredSave({
+      desiredSignature: signature,
+      inFlight: annotationSaveInFlightRef.current,
+      queuedSignature: lastQueuedAnnotationSignatureRef.current,
+      savedSignature: lastSavedAnnotationSignatureRef.current,
+    });
+    if (action === "cancel") {
+      pendingAnnotationSaveRef.current = null;
+      lastQueuedAnnotationSignatureRef.current = "";
+      clearAnnotationSaveTimer();
+      setAnnotationSaveState("clean");
+      setAnnotationStatus(tradeIsStale ? "Stale trade: drawings read-only." : "Drawings ready.");
+      return;
+    }
+    if (action === "ignore") return;
     queueAnnotationSave({
       epoch: workspaceEpochRef.current,
       groupKey: tradeGroupKey,
       signature,
       annotations,
     });
-  }, [annotationStateGroupKey, annotations, annotationsLoaded, queueAnnotationSave, readOnly, tradeGroupKey]);
+  }, [
+    annotationStateGroupKey,
+    annotations,
+    annotationsLoaded,
+    clearAnnotationSaveTimer,
+    queueAnnotationSave,
+    readOnly,
+    tradeGroupKey,
+    tradeIsStale,
+  ]);
 
   const commitAnnotations = useCallback((next: ChartAnnotation[]) => {
     if (readOnly) return;
