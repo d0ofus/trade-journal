@@ -4,6 +4,7 @@ import { calculateJournalOutcomeFromCandles } from "@/lib/journal/outcome";
 import { prisma } from "@/lib/prisma";
 import { getJournalEntry } from "@/lib/server/journal";
 import { loadCandlesForSymbol, parseCandleTimeframe } from "@/lib/server/market-candles";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 type Params = Promise<{ id: string }>;
 
@@ -17,6 +18,9 @@ function rangeForEntry(entry: { ideaDate: Date; reviewDueAt: Date | null; follow
 }
 
 export async function POST(req: NextRequest, props: { params: Params }) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const { id } = await props.params;
   const body = await req.json().catch(() => ({}));
   const parsed = journalOutcomeCalculatePayloadSchema.safeParse(body);
@@ -55,8 +59,13 @@ export async function POST(req: NextRequest, props: { params: Params }) {
     return NextResponse.json({ calculation });
   }
 
-  await prisma.journalEntry.update({
-    where: { id },
+  if (!parsed.data.expectedUpdatedAt) {
+    return NextResponse.json({ error: "expectedUpdatedAt is required when applying calculated outcomes." }, { status: 409 });
+  }
+
+  const expectedUpdatedAt = new Date(parsed.data.expectedUpdatedAt);
+  const updatedRows = await prisma.journalEntry.updateMany({
+    where: { id, updatedAt: expectedUpdatedAt },
     data: {
       actualTriggerAt: calculation.actualTriggerAt ? new Date(calculation.actualTriggerAt) : null,
       mfeR: calculation.mfeR,
@@ -68,6 +77,16 @@ export async function POST(req: NextRequest, props: { params: Params }) {
       outcomeNotes: calculation.reason,
     },
   });
+  if (updatedRows.count !== 1) {
+    const current = await prisma.journalEntry.findUnique({ where: { id }, select: { updatedAt: true } });
+    return NextResponse.json(
+      {
+        error: "Journal entry changed in another tab. Refresh before applying the calculated outcome.",
+        currentUpdatedAt: current?.updatedAt.toISOString() ?? null,
+      },
+      { status: 409 },
+    );
+  }
   const updated = await getJournalEntry(id);
   return NextResponse.json({ calculation, entry: updated });
 }

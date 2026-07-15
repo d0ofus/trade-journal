@@ -30,6 +30,12 @@ import {
 } from "@/lib/journal/schema";
 
 type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
+type CandleResponse = {
+  candles?: Candle[];
+  compare?: { candles?: Candle[]; metadata?: { warnings?: string[] } | null } | null;
+  metadata?: { warnings?: string[] } | null;
+  error?: string;
+};
 type MarkerType = (typeof JOURNAL_MARKER_TYPES)[number];
 type Tool = "cursor" | "horizontal" | "horizontalRay" | "trend" | MarkerType;
 type Marker = { markerType: MarkerType; time: string | null; price: number | null; label: string | null; metadataJson?: string | null };
@@ -68,6 +74,7 @@ type PlanOverlay = {
 
 type CommonChartEditorProps = {
   chartHeight?: number;
+  disabled?: boolean;
   symbol: string;
   initialTimeframe?: JournalTimeframe;
   sectorEtf?: string | null;
@@ -75,8 +82,8 @@ type CommonChartEditorProps = {
 };
 
 type JournalChartEditorProps = CommonChartEditorProps & (
-  | { mode?: "persist"; entryId: string; onSaved: () => void; onStageChart?: never }
-  | { mode: "stage"; entryId?: never; onSaved?: never; onStageChart: (payload: JournalChartStagePayload) => void }
+  | { mode?: "persist"; entryId: string; expectedEntryUpdatedAt: string; onConflict?: () => void; onSaved: (entryUpdatedAt?: string | null) => void; onStageChart?: never }
+  | { mode: "stage"; entryId?: never; expectedEntryUpdatedAt?: never; onConflict?: never; onSaved?: never; onStageChart: (payload: JournalChartStagePayload) => void }
 );
 
 const SMA_CONFIG = [
@@ -135,12 +142,15 @@ function canvasToDataUrl(canvas: HTMLCanvasElement) {
 
 export function JournalChartEditor({
   chartHeight = 560,
+  disabled = false,
   entryId,
+  expectedEntryUpdatedAt,
   mode = "persist",
   symbol,
   initialTimeframe = "1D",
   sectorEtf,
   plan,
+  onConflict,
   onStageChart,
   onSaved,
 }: JournalChartEditorProps) {
@@ -172,6 +182,7 @@ export function JournalChartEditor({
   const [tool, setTool] = useState<Tool>("cursor");
   const [caption, setCaption] = useState("");
   const [status, setStatus] = useState("");
+  const [candleWarnings, setCandleWarnings] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [pendingTrend, setPendingTrend] = useState<{ time: number; price: number } | null>(null);
 
@@ -227,27 +238,46 @@ export function JournalChartEditor({
     });
   };
 
+  const chartStatus = status || candleWarnings.join(" ") || `${symbol} ${timeframe} | ${candles.length} bars`;
+
   useEffect(() => {
     const url = new URL("/api/market/candles", window.location.origin);
     url.searchParams.set("symbol", symbol);
     url.searchParams.set("timeframe", apiTimeframe(timeframe));
     url.searchParams.set("limit", "1200");
     if (compareSymbol) url.searchParams.set("compare", compareSymbol);
-    if (rangeStart) url.searchParams.set("from", String(Math.floor(new Date(`${rangeStart}T00:00:00Z`).getTime() / 1000)));
-    if (rangeEnd) url.searchParams.set("to", String(Math.floor(new Date(`${rangeEnd}T23:59:59Z`).getTime() / 1000)));
+    if (rangeStart && rangeEnd) {
+      url.searchParams.set("from", String(Math.floor(new Date(`${rangeStart}T00:00:00Z`).getTime() / 1000)));
+      url.searchParams.set("to", String(Math.floor(new Date(`${rangeEnd}T23:59:59Z`).getTime() / 1000)));
+    }
 
     let cancelled = false;
     setStatus("Loading chart...");
+    setCandleWarnings([]);
     fetch(url.toString())
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Unable to load candles."))))
+      .then(async (res) => {
+        const payload = (await res.json().catch(() => ({}))) as CandleResponse;
+        if (!res.ok) throw new Error(payload.error || "Unable to load candles.");
+        return payload;
+      })
       .then((data) => {
         if (cancelled) return;
         setCandles((data.candles ?? []) as Candle[]);
         setCompareCandles((data.compare?.candles ?? []) as Candle[]);
+        const warnings = [
+          ...(Array.isArray(data.metadata?.warnings) ? data.metadata.warnings : []),
+          ...(Array.isArray(data.compare?.metadata?.warnings)
+            ? data.compare.metadata.warnings.map((warning) => `Compare: ${warning}`)
+            : []),
+        ];
+        setCandleWarnings(warnings);
         setStatus("");
       })
       .catch((error) => {
-        if (!cancelled) setStatus(error instanceof Error ? error.message : "Unable to load candles.");
+        if (!cancelled) {
+          setCandleWarnings([]);
+          setStatus(error instanceof Error ? error.message : "Unable to load candles.");
+        }
       });
     return () => {
       cancelled = true;
@@ -536,6 +566,7 @@ export function JournalChartEditor({
   }
 
   async function saveChart() {
+    if (disabled) return;
     const payload = buildChartPayload();
     if (!payload) return;
     if (mode === "stage") {
@@ -552,21 +583,22 @@ export function JournalChartEditor({
       const res = await fetch(`/api/journal/${entryId}/charts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, expectedUpdatedAt: expectedEntryUpdatedAt }),
       });
+      const responseBody = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const errorPayload = await res.json().catch(() => null);
         const errorMessage =
-          typeof errorPayload?.error === "string"
-            ? errorPayload.error
-            : errorPayload?.error
-              ? JSON.stringify(errorPayload.error)
+          typeof responseBody?.error === "string"
+            ? responseBody.error
+            : responseBody?.error
+              ? JSON.stringify(responseBody.error)
               : "Failed to save chart.";
+        if (res.status === 409) onConflict?.();
         throw new Error(errorMessage);
       }
       resetMarkup();
       setStatus("Saved chart.");
-      onSaved();
+      onSaved(typeof responseBody.entryUpdatedAt === "string" ? responseBody.entryUpdatedAt : null);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Failed to save chart.");
     } finally {
@@ -645,11 +677,11 @@ export function JournalChartEditor({
           </label>
           <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             From
-            <input className="mt-1 h-9 rounded-xl border border-slate-200 px-3 text-sm" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} />
+            <input suppressHydrationWarning className="mt-1 h-9 rounded-xl border border-slate-200 px-3 text-sm" type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} />
           </label>
           <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
             To
-            <input className="mt-1 h-9 rounded-xl border border-slate-200 px-3 text-sm" type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} />
+            <input suppressHydrationWarning className="mt-1 h-9 rounded-xl border border-slate-200 px-3 text-sm" type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} />
           </label>
         </div>
       </div>
@@ -688,7 +720,7 @@ export function JournalChartEditor({
           <Flag className="h-4 w-4" />
           Follow-through
         </Button>
-        <Button size="sm" className="ml-auto" disabled={saving || candles.length === 0} onClick={saveChart}>
+        <Button size="sm" className="ml-auto" disabled={disabled || saving || candles.length === 0} onClick={saveChart}>
           {saving ? <Save className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
           {mode === "stage" ? "Attach Chart" : "Save Chart"}
         </Button>
@@ -696,9 +728,9 @@ export function JournalChartEditor({
       <div className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white p-2 shadow-[0_20px_50px_-34px_rgba(15,23,42,0.28)]">
         <div ref={containerRef} className="w-full rounded-xl" />
       </div>
-      <Textarea value={caption} onChange={(event) => setCaption(event.target.value)} placeholder="Chart caption" />
+      <Textarea suppressHydrationWarning value={caption} onChange={(event) => setCaption(event.target.value)} placeholder="Chart caption" />
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-        <span>{status || `${symbol} ${timeframe} | ${candles.length} bars`}</span>
+        <span className={candleWarnings.length > 0 && !status ? "text-amber-700" : undefined}>{chartStatus}</span>
         <span>{pendingTrend ? "Select second trend point" : `${markers.length} markers | ${annotations.length} drawings`}</span>
       </div>
     </div>

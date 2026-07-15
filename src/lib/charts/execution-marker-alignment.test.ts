@@ -28,6 +28,7 @@ describe("execution marker alignment", () => {
     ];
 
     expect(alignExecutionToBarTime(isoFromSeconds(base + 440), candles)).toBe(base + 300);
+    expect(alignExecutionToBarTime(isoFromSeconds(base + 440), candles, 0, 300)).toBe(base + 300);
   });
 
   it("aligns an hourly execution to the containing hourly candle", () => {
@@ -105,6 +106,7 @@ describe("execution marker alignment", () => {
     ];
 
     expect(inferExecutionOffsetSeconds(executions, candles)).toBe(-14 * 60 * 60);
+    expect(inferExecutionOffsetSeconds(executions, candles, 300)).toBe(-14 * 60 * 60);
     expect(alignExecutionToBarTime(executions[0].executedAt, candles, -14 * 60 * 60)).toBe(correctBase);
   });
 });

@@ -32,12 +32,18 @@ function barEndTime(candles: AlignmentCandle[], index: number, intervalSeconds: 
   return Math.min(fallbackEnd, next.time);
 }
 
-function candleIndexForTimestamp(targetTs: number, candles: AlignmentCandle[]) {
+function normalizedBarIntervalSeconds(candles: AlignmentCandle[], intervalSeconds?: number | null) {
+  return typeof intervalSeconds === "number" && Number.isFinite(intervalSeconds) && intervalSeconds > 0
+    ? intervalSeconds
+    : inferBarIntervalSeconds(candles);
+}
+
+function candleIndexForTimestamp(targetTs: number, candles: AlignmentCandle[], intervalSeconds?: number | null) {
   if (candles.length === 0) return null;
 
-  const intervalSeconds = inferBarIntervalSeconds(candles);
+  const normalizedIntervalSeconds = normalizedBarIntervalSeconds(candles, intervalSeconds);
   const firstStart = candles[0].time;
-  const lastEnd = barEndTime(candles, candles.length - 1, intervalSeconds);
+  const lastEnd = barEndTime(candles, candles.length - 1, normalizedIntervalSeconds);
 
   if (targetTs < firstStart || targetTs >= lastEnd) {
     return null;
@@ -65,10 +71,10 @@ function candleIndexForTimestamp(targetTs: number, candles: AlignmentCandle[]) {
     return null;
   }
 
-  return targetTs < barEndTime(candles, right, intervalSeconds) ? right : null;
+  return targetTs < barEndTime(candles, right, normalizedIntervalSeconds) ? right : null;
 }
 
-function priceDistanceFromCandle(price: number, candle: AlignmentCandle) {
+export function priceDistanceFromCandle(price: number, candle: AlignmentCandle) {
   const epsilon = Math.max(0.0001, Math.max(Math.abs(price), Math.abs(candle.high), Math.abs(candle.low), 1) * 1e-6);
 
   if (price < candle.low - epsilon) {
@@ -99,21 +105,32 @@ export function alignExecutionToBarTime(
   executedAt: string,
   candles: AlignmentCandle[],
   offsetSeconds = 0,
+  intervalSeconds?: number | null,
 ) {
   const targetTs = toUnixSeconds(executedAt);
   if (targetTs === null) {
     return null;
   }
 
-  const candleIndex = candleIndexForTimestamp(targetTs + offsetSeconds, candles);
+  const candleIndex = candleIndexForTimestamp(targetTs + offsetSeconds, candles, intervalSeconds);
   return candleIndex === null ? null : candles[candleIndex].time;
 }
 
 export function inferExecutionOffsetSeconds(
   executions: ExecutionAlignmentInput[],
   candles: AlignmentCandle[],
+  intervalSeconds?: number | null,
 ) {
   if (executions.length === 0 || candles.length === 0) {
+    return 0;
+  }
+
+  const normalizedIntervalSeconds = normalizedBarIntervalSeconds(candles, intervalSeconds);
+  const parsedExecutions = executions.flatMap((execution) => {
+    const targetTs = toUnixSeconds(execution.executedAt);
+    return targetTs === null ? [] : [{ ...execution, targetTs }];
+  });
+  if (parsedExecutions.length === 0) {
     return 0;
   }
 
@@ -127,13 +144,8 @@ export function inferExecutionOffsetSeconds(
     let priceMatches = 0;
     let totalPriceDistance = 0;
 
-    for (const execution of executions) {
-      const targetTs = toUnixSeconds(execution.executedAt);
-      if (targetTs === null) {
-        continue;
-      }
-
-      const candleIndex = candleIndexForTimestamp(targetTs + candidate, candles);
+    for (const execution of parsedExecutions) {
+      const candleIndex = candleIndexForTimestamp(execution.targetTs + candidate, candles, normalizedIntervalSeconds);
       if (candleIndex === null) {
         continue;
       }

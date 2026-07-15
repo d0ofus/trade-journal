@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireBearerSecret } from "@/lib/server/api-auth";
 import { runFlexImport } from "@/lib/server/flex-service";
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  const authHeader = req.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-
-  if (secret && token !== secret) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
+  const authError = requireBearerSecret(req, "CRON_SECRET");
+  if (authError) return authError;
 
   try {
     const result = await runFlexImport();

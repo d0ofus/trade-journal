@@ -131,6 +131,20 @@ enum JournalNotionRelationKind {
   SUB_ITEM
 }
 
+enum ImportBatchStatus {
+  STARTED
+  SUCCEEDED
+  FAILED
+  ROWS_APPLIED
+  MATERIALIZED
+  MATERIALIZATION_FAILED
+}
+
+enum PositionSnapshotMode {
+  PARTIAL
+  FULL
+}
+
 model Account {
   id                String             @id @default(cuid())
   name              String
@@ -164,17 +178,84 @@ model Instrument {
 }
 
 model ImportBatch {
-  id           String      @id @default(cuid())
-  filename     String
-  fileType     String
-  importedAt   DateTime    @default(now())
-  accountId    String?
-  account      Account?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  rowsSeen     Int         @default(0)
-  rowsImported Int         @default(0)
-  rowsSkipped  Int         @default(0)
-  notes        String?
-  executions   Execution[]
+  id                   String                @id @default(cuid())
+  filename             String
+  fileType             String
+  status               ImportBatchStatus     @default(STARTED)
+  importedAt           DateTime              @default(now())
+  accountId            String?
+  account              Account?              @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  rowsSeen             Int                   @default(0)
+  rowsImported         Int                   @default(0)
+  rowsSkipped          Int                   @default(0)
+  rawSha256            String?
+  rawBytes             Int?
+  rawStorageKey        String?
+  parserVersion        String?
+  positionSnapshotMode PositionSnapshotMode?
+  errorMessage         String?
+  notes                String?
+  executions           Execution[]
+  rowErrors            ImportRowError[]
+  rawArtifact          ImportArtifact?       @relation(fields: [rawStorageKey], references: [storageKey], onDelete: SetNull)
+
+  @@index([status, importedAt])
+  @@index([rawSha256])
+}
+
+model ImportRowError {
+  id            String      @id @default(cuid())
+  importBatchId String
+  importBatch   ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  rowNumber     Int?
+  severity      String      @default("ERROR")
+  code          String
+  message       String
+  rawJson       String      @default("{}")
+  createdAt     DateTime    @default(now())
+
+  @@index([importBatchId])
+  @@index([code])
+}
+
+model ImportArtifact {
+  storageKey String        @id
+  rawSha256  String        @unique
+  rawBytes   Int
+  content    String
+  createdAt  DateTime      @default(now())
+  batches    ImportBatch[]
+}
+
+model MaterializationWatermark {
+  key              String   @id
+  sourceSignature  String
+  sourceCountsJson String   @default("{}")
+  refreshedAt      DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model BackupAudit {
+  id                       String    @id @default(cuid())
+  sha256                   String
+  exportedAt               DateTime
+  verifiedAt               DateTime  @default(now())
+  payloadBytes             Int
+  totalRows                Int
+  tableCount               Int
+  strippedFieldCount       Int       @default(0)
+  warningCount             Int       @default(0)
+  errorCount               Int       @default(0)
+  sourceSignature          String?
+  sourceCountsJson         String    @default("{}")
+  sourceLatestDataChangeAt DateTime?
+  createdAt                DateTime  @default(now())
+
+  @@index([verifiedAt])
+  @@index([exportedAt])
+  @@index([sha256])
+  @@index([sourceSignature])
 }
 
 model Execution {
@@ -196,6 +277,7 @@ model Execution {
   orderId               String?
   strategy              String?
   createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
   tradeNote             TradeNote?
   tags                  ExecutionTag[]
   closedTradeExecutions ClosedTradeExecution[]
@@ -233,6 +315,7 @@ model PositionSnapshot {
   unrealizedPnl Float?
   currency      String     @default("USD")
   createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
   @@unique([accountId, instrumentId, date])
   @@index([accountId, date])
@@ -261,6 +344,7 @@ model Tag {
   dayNoteTags      DayNoteTag[]
   symbolNoteTags   SymbolNoteTag[]
   journalEntryTags JournalEntryTag[]
+  closedTradeTags  ClosedTradeTag[]
 }
 
 model ExecutionTag {
@@ -295,19 +379,26 @@ model DayNote {
 }
 
 model ClosedTradeNote {
-  id        String   @id @default(cuid())
-  groupKey  String   @unique
-  content   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String   @id @default(cuid())
+  groupKey    String   @unique
+  content     String
+  setup       String   @default("")
+  thesis      String   @default("")
+  entryReview String   @default("")
+  exitReview  String   @default("")
+  mistake     String   @default("")
+  lesson      String   @default("")
+  followUp    String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model ClosedTrade {
-  groupKey         String                 @id
+  groupKey         String                      @id
   accountId        String
-  account          Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account          Account                     @relation(fields: [accountId], references: [id], onDelete: Cascade)
   instrumentId     String
-  instrument       Instrument             @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  instrument       Instrument                  @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
   symbol           String
   direction        String
   openTime         DateTime
@@ -321,15 +412,21 @@ model ClosedTrade {
   closingQuantity  Float
   realizedPnl      Float
   totalCommission  Float
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
+  isStale          Boolean                     @default(false)
+  staleAt          DateTime?
+  staleReason      String?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
   executions       ClosedTradeExecution[]
   chartLayouts     ClosedTradeChartLayout[]
   annotations      ClosedTradeAnnotation[]
+  annotationState  ClosedTradeAnnotationState?
+  tags             ClosedTradeTag[]
 
   @@index([tradeDate])
   @@index([accountId, tradeDate])
   @@index([symbol, tradeDate])
+  @@index([isStale, tradeDate])
 }
 
 model ClosedTradeChartLayout {
@@ -338,11 +435,30 @@ model ClosedTradeChartLayout {
   closedTrade         ClosedTrade @relation(fields: [closedTradeGroupKey], references: [groupKey], onDelete: Cascade)
   layoutMode          String      @default("single")
   panelsJson          String      @default("[]")
+  version             Int         @default(1)
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
   @@unique([closedTradeGroupKey])
   @@index([closedTradeGroupKey])
+}
+
+model ClosedTradeTag {
+  closedTradeGroupKey String
+  tagId               String
+  closedTrade         ClosedTrade @relation(fields: [closedTradeGroupKey], references: [groupKey], onDelete: Cascade)
+  tag                 Tag         @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([closedTradeGroupKey, tagId])
+  @@index([tagId])
+}
+
+model ClosedTradeAnnotationState {
+  closedTradeGroupKey String      @id
+  closedTrade         ClosedTrade @relation(fields: [closedTradeGroupKey], references: [groupKey], onDelete: Cascade)
+  version             Int         @default(1)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 }
 
 model ClosedTradeAnnotation {
@@ -379,6 +495,8 @@ model ClosedTradeExecution {
   commission          Float       @default(0)
   fees                Float       @default(0)
 
+  @@unique([closedTradeGroupKey, executionId], map: "ClosedTradeExecution_closedTradeGroupKey_executionId_key")
+  @@unique([closedTradeGroupKey, sortOrder], map: "ClosedTradeExecution_closedTradeGroupKey_sortOrder_key")
   @@index([closedTradeGroupKey, sortOrder])
   @@index([executionId])
   @@index([side, executedAt])
@@ -448,82 +566,82 @@ model SymbolNoteTag {
 }
 
 model JournalEntry {
-  id                    String                   @id @default(cuid())
-  symbol                String
-  tradeTitle            String                   @default("")
-  ideaDate              DateTime                 @default(now())
-  entryEndAt            DateTime?
-  direction             JournalDirection         @default(LONG)
-  status                JournalStatus            @default(DRAFT)
-  tradeStatus           String?
-  playbookId            String?
-  playbook              JournalPlaybook?         @relation(fields: [playbookId], references: [id], onDelete: SetNull)
-  setup                 String?
-  timeframe             String                   @default("1D")
-  macroSentiment        MacroSentiment           @default(NEUTRAL)
-  thesis                String                   @default("")
-  trigger               String                   @default("")
-  riskPlan              String                   @default("")
-  idealExecutionPlan    String                   @default("")
-  missedReason          String                   @default("")
-  marketContext         String                   @default("")
-  peerContext           String                   @default("")
-  rating                Int?
-  lessonLearned         String                   @default("")
-  plannedEntry          Float?
-  plannedStop           Float?
-  plannedTarget1        Float?
-  plannedTarget2        Float?
-  plannedTarget3        Float?
-  invalidationLevel     Float?
-  expectedR             Float?
-  exitMarked            Boolean                  @default(false)
-  highAvat              Boolean                  @default(false)
-  indexSupportive       Boolean                  @default(false)
-  daysConsolidating     Float?
-  daysFromT             Float?
-  xFrom50Sma            Float?
-  stopLossPercent       Float?
-  riskPercent           Float?
-  maxRiskReward         Float?
-  idealExecutionOptions String[]                 @default([])
-  idealStopLossOptions  String[]                 @default([])
-  actualTriggerAt       DateTime?
-  followThroughDays     Int?
-  mfeR                  Float?
-  maeR                  Float?
-  bestExitR             Float?
-  outcomeStatus         JournalOutcomeStatus     @default(UNREVIEWED)
-  outcomeNotes          String                   @default("")
-  confidenceScore       Int?
-  planClarityScore      Int?
-  preparationScore      Int?
-  patienceScore         Int?
-  ruleAdherenceScore    Int?
-  emotionalState        String?
-  wouldTakeAgain        Boolean?
-  marketRegime          JournalMarketRegime      @default(UNKNOWN)
-  spyTrend              JournalTrendState        @default(UNKNOWN)
-  qqqTrend              JournalTrendState        @default(UNKNOWN)
-  iwmTrend              JournalTrendState        @default(UNKNOWN)
-  sectorTrend           JournalTrendState        @default(UNKNOWN)
-  sectorEtf             String?
-  breadthNotes          String                   @default("")
-  catalystNotes         String                   @default("")
-  relativeStrengthNotes String                   @default("")
-  autoDraft             Boolean                  @default(false)
-  reviewDueAt           DateTime?
-  outcomeCalculatedAt   DateTime?
+  id                     String                       @id @default(cuid())
+  symbol                 String
+  tradeTitle             String                       @default("")
+  ideaDate               DateTime                     @default(now())
+  entryEndAt             DateTime?
+  direction              JournalDirection             @default(LONG)
+  status                 JournalStatus                @default(DRAFT)
+  tradeStatus            String?
+  playbookId             String?
+  playbook               JournalPlaybook?             @relation(fields: [playbookId], references: [id], onDelete: SetNull)
+  setup                  String?
+  timeframe              String                       @default("1D")
+  macroSentiment         MacroSentiment               @default(NEUTRAL)
+  thesis                 String                       @default("")
+  trigger                String                       @default("")
+  riskPlan               String                       @default("")
+  idealExecutionPlan     String                       @default("")
+  missedReason           String                       @default("")
+  marketContext          String                       @default("")
+  peerContext            String                       @default("")
+  rating                 Int?
+  lessonLearned          String                       @default("")
+  plannedEntry           Float?
+  plannedStop            Float?
+  plannedTarget1         Float?
+  plannedTarget2         Float?
+  plannedTarget3         Float?
+  invalidationLevel      Float?
+  expectedR              Float?
+  exitMarked             Boolean                      @default(false)
+  highAvat               Boolean                      @default(false)
+  indexSupportive        Boolean                      @default(false)
+  daysConsolidating      Float?
+  daysFromT              Float?
+  xFrom50Sma             Float?
+  stopLossPercent        Float?
+  riskPercent            Float?
+  maxRiskReward          Float?
+  idealExecutionOptions  String[]                     @default([])
+  idealStopLossOptions   String[]                     @default([])
+  actualTriggerAt        DateTime?
+  followThroughDays      Int?
+  mfeR                   Float?
+  maeR                   Float?
+  bestExitR              Float?
+  outcomeStatus          JournalOutcomeStatus         @default(UNREVIEWED)
+  outcomeNotes           String                       @default("")
+  confidenceScore        Int?
+  planClarityScore       Int?
+  preparationScore       Int?
+  patienceScore          Int?
+  ruleAdherenceScore     Int?
+  emotionalState         String?
+  wouldTakeAgain         Boolean?
+  marketRegime           JournalMarketRegime          @default(UNKNOWN)
+  spyTrend               JournalTrendState            @default(UNKNOWN)
+  qqqTrend               JournalTrendState            @default(UNKNOWN)
+  iwmTrend               JournalTrendState            @default(UNKNOWN)
+  sectorTrend            JournalTrendState            @default(UNKNOWN)
+  sectorEtf              String?
+  breadthNotes           String                       @default("")
+  catalystNotes          String                       @default("")
+  relativeStrengthNotes  String                       @default("")
+  autoDraft              Boolean                      @default(false)
+  reviewDueAt            DateTime?
+  outcomeCalculatedAt    DateTime?
   outcomeCalculationJson String?
-  createdAt             DateTime                 @default(now())
-  updatedAt             DateTime                 @updatedAt
-  charts                JournalChart[]
-  tags                  JournalEntryTag[]
-  contextSnapshots      JournalContextSnapshot[]
-  links                 JournalLink[]
-  ruleChecks            JournalEntryRuleCheck[]
-  playbookExamples      JournalPlaybookExample[]
-  notionRelations       JournalEntryNotionRelation[]
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+  charts                 JournalChart[]
+  tags                   JournalEntryTag[]
+  contextSnapshots       JournalContextSnapshot[]
+  links                  JournalLink[]
+  ruleChecks             JournalEntryRuleCheck[]
+  playbookExamples       JournalPlaybookExample[]
+  notionRelations        JournalEntryNotionRelation[]
 
   @@index([ideaDate])
   @@index([symbol, ideaDate])
@@ -538,26 +656,26 @@ model JournalEntry {
 }
 
 model JournalChart {
-  id                    String               @id @default(cuid())
+  id                    String                   @id @default(cuid())
   journalEntryId        String
-  journalEntry          JournalEntry         @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  journalEntry          JournalEntry             @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
   symbol                String
-  timeframe             String               @default("1D")
-  purpose               JournalChartPurpose  @default(CUSTOM)
+  timeframe             String                   @default("1D")
+  purpose               JournalChartPurpose      @default(CUSTOM)
   compareSymbol         String?
   rangeStart            DateTime?
   rangeEnd              DateTime?
   tradingViewLayoutJson String?
   screenshotKey         String?
   screenshotUrl         String?
-  caption               String               @default("")
+  caption               String                   @default("")
   width                 Int?
   height                Int?
   mimeType              String?
   markers               JournalChartMarker[]
   playbookExamples      JournalPlaybookExample[]
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
 
   @@index([journalEntryId, createdAt])
   @@index([symbol, timeframe])
@@ -618,16 +736,16 @@ model JournalLink {
 }
 
 model JournalPlaybook {
-  id                String                @id @default(cuid())
-  name              String                @unique
+  id                String                   @id @default(cuid())
+  name              String                   @unique
   setupType         String?
-  description       String                @default("")
-  idealConditions   String                @default("")
-  invalidationRules String                @default("")
-  marketRegimeFit   String                @default("")
-  archived          Boolean               @default(false)
-  createdAt         DateTime              @default(now())
-  updatedAt         DateTime              @updatedAt
+  description       String                   @default("")
+  idealConditions   String                   @default("")
+  invalidationRules String                   @default("")
+  marketRegimeFit   String                   @default("")
+  archived          Boolean                  @default(false)
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
   entries           JournalEntry[]
   rules             JournalPlaybookRule[]
   examples          JournalPlaybookExample[]
@@ -735,13 +853,13 @@ model JournalPlaybookExample {
 }
 
 model JournalNotionRelationTag {
-  id             String                      @id @default(cuid())
+  id             String                       @id @default(cuid())
   kind           JournalNotionRelationKind
   name           String
   normalizedName String
   entries        JournalEntryNotionRelation[]
-  createdAt      DateTime                    @default(now())
-  updatedAt      DateTime                    @updatedAt
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
 
   @@unique([kind, normalizedName])
   @@index([kind, name])
@@ -750,8 +868,8 @@ model JournalNotionRelationTag {
 model JournalEntryNotionRelation {
   journalEntryId String
   relationTagId  String
-  journalEntry   JournalEntry              @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
-  relationTag    JournalNotionRelationTag  @relation(fields: [relationTagId], references: [id], onDelete: Cascade)
+  journalEntry   JournalEntry             @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  relationTag    JournalNotionRelationTag @relation(fields: [relationTagId], references: [id], onDelete: Cascade)
 
   @@id([journalEntryId, relationTagId])
   @@index([relationTagId])

@@ -1,0 +1,16 @@
+ALTER TABLE "Execution"
+ADD COLUMN "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+ALTER TABLE "PositionSnapshot"
+ADD COLUMN "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+CREATE TABLE "MaterializationWatermark" (
+    "key" TEXT NOT NULL,
+    "sourceSignature" TEXT NOT NULL,
+    "sourceCountsJson" TEXT NOT NULL DEFAULT '{}',
+    "refreshedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "MaterializationWatermark_pkey" PRIMARY KEY ("key")
+);

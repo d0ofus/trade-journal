@@ -1,26 +1,95 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadCandlesForSymbol, parseCandleTimeframe, SAFE_SYMBOL_PATTERN } from "@/lib/server/market-candles";
+import { requireApiSession } from "@/lib/server/api-auth";
+import {
+  type Candle,
+  type CandleRange,
+  type CandleTimeframe,
+  loadCandlesForSymbol,
+  parseCandleTimeframe,
+  SAFE_SYMBOL_PATTERN,
+  summarizeCandleResponse,
+} from "@/lib/server/market-candles";
+
+export const dynamic = "force-dynamic";
+
+const CANDLE_SERVICE_UNAVAILABLE_WARNING = "Candle service unavailable; no candle data returned.";
+
+function buildCandlePayload(input: {
+  candles: Candle[];
+  limit: number;
+  range: CandleRange;
+  warnings?: string[];
+}) {
+  const returnedCandles = input.candles.slice(-input.limit);
+  const metadata = summarizeCandleResponse({
+    candles: returnedCandles,
+    range: input.range,
+    limit: input.limit,
+    loadedCount: input.candles.length,
+  });
+  return {
+    candles: returnedCandles,
+    metadata: {
+      ...metadata,
+      warnings: [...metadata.warnings, ...(input.warnings ?? [])],
+    },
+  };
+}
+
+async function loadCandlesForRoute(input: {
+  symbol: string;
+  timeframe: CandleTimeframe;
+  range: CandleRange;
+  limit: number;
+}) {
+  const loaded = await loadCandlesForSymbol({
+    ...input,
+    limit: input.limit + 1,
+  }).catch(() => ({
+    symbol: input.symbol,
+    candles: [],
+    source: null,
+    warnings: [CANDLE_SERVICE_UNAVAILABLE_WARNING],
+  }));
+  if (!loaded) return null;
+  const payload = buildCandlePayload({ candles: loaded.candles, range: input.range, limit: input.limit, warnings: loaded.warnings });
+  return { ...loaded, ...payload };
+}
 
 export async function GET(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const symbol = (req.nextUrl.searchParams.get("symbol") ?? "").trim().toUpperCase();
   const timeframe = parseCandleTimeframe(req.nextUrl.searchParams.get("timeframe"));
   const compareSymbolRaw = (req.nextUrl.searchParams.get("compare") ?? "").trim().toUpperCase();
-  const compareSymbol = SAFE_SYMBOL_PATTERN.test(compareSymbolRaw) ? compareSymbolRaw : null;
+  const hasCompareSymbol = compareSymbolRaw.length > 0;
+  const compareSymbol = hasCompareSymbol && SAFE_SYMBOL_PATTERN.test(compareSymbolRaw) ? compareSymbolRaw : null;
+  const hasRangeParams = req.nextUrl.searchParams.has("from") || req.nextUrl.searchParams.has("to");
   const fromRaw = Number(req.nextUrl.searchParams.get("from") ?? "");
   const toRaw = Number(req.nextUrl.searchParams.get("to") ?? "");
-  const hasCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;
-  const range = hasCustomRange ? { from: fromRaw, to: toRaw } : null;
+  const hasValidCustomRange = Number.isFinite(fromRaw) && Number.isFinite(toRaw) && fromRaw > 0 && toRaw > fromRaw;
+  const range = hasRangeParams && hasValidCustomRange ? { from: fromRaw, to: toRaw } : null;
   const limitRaw = Number(req.nextUrl.searchParams.get("limit") ?? "120");
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.floor(limitRaw), 30), 30000) : 120;
 
   if (!symbol) {
     return NextResponse.json({ error: "symbol required" }, { status: 400 });
   }
+  if (!SAFE_SYMBOL_PATTERN.test(symbol)) {
+    return NextResponse.json({ error: "invalid symbol" }, { status: 400 });
+  }
+  if (hasCompareSymbol && !compareSymbol) {
+    return NextResponse.json({ error: "invalid compare symbol" }, { status: 400 });
+  }
+  if (hasRangeParams && !hasValidCustomRange) {
+    return NextResponse.json({ error: "invalid candle range" }, { status: 400 });
+  }
 
   if (compareSymbol) {
     const [primary, compare] = await Promise.all([
-      loadCandlesForSymbol({ symbol, timeframe, range, limit }),
-      loadCandlesForSymbol({ symbol: compareSymbol, timeframe, range, limit }),
+      loadCandlesForRoute({ symbol, timeframe, range, limit }),
+      loadCandlesForRoute({ symbol: compareSymbol, timeframe, range, limit }),
     ]);
 
     if (!primary) {
@@ -32,21 +101,29 @@ export async function GET(req: NextRequest) {
       timeframe,
       candles: primary.candles,
       source: primary.source ?? null,
+      metadata: primary.metadata,
       compare: compare
         ? {
             symbol: compare.symbol,
             candles: compare.candles,
             source: compare.source ?? null,
+            metadata: compare.metadata,
           }
         : null,
       compareError: compare ? null : "No comparison candle data found.",
     });
   }
 
-  const primary = await loadCandlesForSymbol({ symbol, timeframe, range, limit });
+  const primary = await loadCandlesForRoute({ symbol, timeframe, range, limit });
   if (!primary) {
     return NextResponse.json({ error: "No candle data found." }, { status: 404 });
   }
 
-  return NextResponse.json({ symbol: primary.symbol, timeframe, candles: primary.candles, source: primary.source ?? null });
+  return NextResponse.json({
+    symbol: primary.symbol,
+    timeframe,
+    candles: primary.candles,
+    source: primary.source ?? null,
+    metadata: primary.metadata,
+  });
 }

@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listJournalVisual } from "@/lib/server/journal";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 export async function GET(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const params = req.nextUrl.searchParams;
   const rows = await listJournalVisual({
     q: params.get("q"),

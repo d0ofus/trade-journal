@@ -1,9 +1,20 @@
-import { endOfDay, endOfMonth, endOfYear, format, startOfDay, startOfMonth, startOfWeek, startOfYear, subDays } from "date-fns";
+import { endOfDay, endOfMonth, endOfYear, startOfDay, startOfMonth, startOfYear, subDays } from "date-fns";
+import type { Prisma } from "@prisma/client";
 import { withDiagnostics } from "@/lib/server/diagnostics";
 import { prisma } from "@/lib/prisma";
 import { ensureMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
+import { buildClosedTradeWhere, normalizeTradeTagName, type TradeFilters } from "@/lib/server/closed-trade-filters";
 import { ensureMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
-import { bucketHistogram, buildMetrics } from "@/lib/stats/pnl";
+import {
+  buildBackupReadinessManifest,
+  buildImportArtifactBackupManifest,
+  buildJournalScreenshotBackupAssets,
+  inspectInlineDataUrl,
+} from "@/lib/server/backup-assets";
+import { BACKUP_RELEVANT_TIMESTAMP_SOURCES, buildBackupSourceMetadata } from "@/lib/server/backup-freshness";
+import { buildBackupTableManifestFromRowCounts, type BackupTableKey } from "@/lib/server/backup-contract";
+import { aggregateCalendarPerformance } from "@/lib/stats/calendar-performance";
+import { aggregateDashboardData } from "@/lib/stats/dashboard-aggregation";
 import { computeTradeSummaryMetrics, latestPriorEquitySnapshot } from "@/lib/stats/trade-summary-metrics";
 
 function analyticsOrZero(
@@ -32,6 +43,7 @@ function analyticsOrZero(
 export async function getDashboardData(filters?: { from?: string; to?: string }) {
   return withDiagnostics("getDashboardData", async (step) => {
     await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
+    await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
     const dashboardTo = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
     const rangeStart = filters?.from ? startOfDay(new Date(filters.from)) : undefined;
@@ -71,146 +83,114 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
       }),
     );
 
-    const pnlRows = await step("load analytics", () =>
-      executions.map((exec) => analyticsOrZero(exec.id, exec.analytics)),
+    const closedTrades = await step("query closed trades", () =>
+      prisma.closedTrade.findMany({
+        where: {
+          isStale: false,
+          closeTime: dashboardTo ? { lte: dashboardTo } : undefined,
+        },
+        select: {
+          groupKey: true,
+          openTime: true,
+          closeTime: true,
+          tradeDate: true,
+          realizedPnl: true,
+          grossRealizedPnl: true,
+          totalCommission: true,
+          totalQuantity: true,
+        },
+        orderBy: [{ closeTime: "asc" }, { groupKey: "asc" }],
+      }),
     );
 
-    return step("aggregate dashboard", () => {
-      const executionById = new Map(executions.map((execution) => [execution.id, execution]));
-      const filteredExecutions: typeof executions = [];
-      const filteredPnlRows: typeof pnlRows = [];
-      const daily = new Map<string, number>();
-      const grossDailyMap = new Map<string, number>();
-      const dailyTradeCountMap = new Map<string, number>();
-      const dailyVolumeMap = new Map<string, number>();
-      const returnValues: number[] = [];
-      const scatter: Array<{ time: string; symbol: string; price: number; side: (typeof executions)[number]["side"] }> = [];
-
-      let filteredCommissions = 0;
-      let firstFilteredExecutionAt: Date | undefined;
-      let realizedDay = 0;
-      let realizedWeek = 0;
-      let realizedMonth = 0;
-      let winningHoldMsTotal = 0;
-      let losingHoldMsTotal = 0;
-      let winningRowsCount = 0;
-      let losingRowsCount = 0;
-
-      const anchorDate = rangeEnd ?? new Date();
-      const dayStart = startOfDay(anchorDate);
-      const weekStart = startOfWeek(anchorDate, { weekStartsOn: 1 });
-      const monthStart = startOfMonth(anchorDate);
-
-      for (let index = 0; index < executions.length; index += 1) {
-        const exec = executions[index];
-        const pnl = pnlRows[index];
-        const executedAt = exec.executedAt;
-
-        if (rangeStart && executedAt < rangeStart) continue;
-        if (rangeEnd && executedAt > rangeEnd) continue;
-
-        filteredExecutions.push(exec);
-        filteredPnlRows.push(pnl);
-        filteredCommissions += exec.commission + exec.fees;
-        firstFilteredExecutionAt ??= executedAt;
-
-        if (executedAt >= dayStart) realizedDay += pnl.realizedPnl;
-        if (executedAt >= weekStart) realizedWeek += pnl.realizedPnl;
-        if (executedAt >= monthStart) realizedMonth += pnl.realizedPnl;
-
-        const dayKey = format(executedAt, "yyyy-MM-dd");
-        daily.set(dayKey, (daily.get(dayKey) ?? 0) + pnl.realizedPnl);
-        dailyTradeCountMap.set(dayKey, (dailyTradeCountMap.get(dayKey) ?? 0) + 1);
-        dailyVolumeMap.set(dayKey, (dailyVolumeMap.get(dayKey) ?? 0) + Math.abs(exec.quantity));
-        scatter.push({
-          time: format(executedAt, "HH:mm"),
-          symbol: exec.instrument.symbol,
-          price: exec.price,
-          side: exec.side,
-        });
-
-        if (pnl.matchedQuantity > 0) {
-          returnValues.push(pnl.realizedPnl);
-          grossDailyMap.set(dayKey, (grossDailyMap.get(dayKey) ?? 0) + pnl.grossRealizedPnl);
-
-          if (pnl.realizedPnl > 0) {
-            winningHoldMsTotal += pnl.avgHoldTimeMs;
-            winningRowsCount += 1;
-          } else if (pnl.realizedPnl < 0) {
-            losingHoldMsTotal += pnl.avgHoldTimeMs;
-            losingRowsCount += 1;
-          }
-        }
-      }
-
-      let equityBaseline = 0;
-      if (firstFilteredExecutionAt) {
-        for (const row of pnlRows) {
-          const exec = executionById.get(row.executionId);
-          if (!exec || exec.executedAt >= firstFilteredExecutionAt) break;
-          equityBaseline = row.cumulativePnl;
-        }
-      }
-
-      const dailyPnl = [...daily.entries()].map(([date, pnl]) => ({ date, pnl }));
-      const grossDailyPnl = [...grossDailyMap.entries()]
-        .map(([date, pnl]) => ({ date, pnl }))
-        .sort((a, b) => (a.date < b.date ? -1 : 1));
-      let grossRunning = 0;
-      const grossCumulativePnl = grossDailyPnl.map((row) => {
-        grossRunning += row.pnl;
-        return { date: row.date, pnl: grossRunning };
-      });
-      const dailyTradeCounts = [...dailyTradeCountMap.entries()]
-        .map(([date, trades]) => ({ date, trades }))
-        .sort((a, b) => (a.date < b.date ? -1 : 1));
-      const volumeDays = [...dailyVolumeMap.values()];
-      const avgDailyVolume =
-        volumeDays.length > 0 ? volumeDays.reduce((sum, value) => sum + value, 0) / volumeDays.length : 0;
-      const metrics = buildMetrics(filteredPnlRows, filteredCommissions);
-      const closedRows = filteredPnlRows.filter((row) => row.matchedQuantity > 0);
-      const largestGain = closedRows.length > 0 ? Math.max(...closedRows.map((row) => row.realizedPnl)) : 0;
-      const largestLoss = closedRows.length > 0 ? Math.min(...closedRows.map((row) => row.realizedPnl)) : 0;
-      const histogram = bucketHistogram(returnValues, 12);
-      const equityCurve = filteredPnlRows.map((row) => {
-        const exec = executionById.get(row.executionId)!;
-        return {
-          at: format(exec.executedAt, "yyyy-MM-dd HH:mm"),
-          equity: row.cumulativePnl - equityBaseline,
-        };
-      });
-
-      return {
-        cards: {
-          totalTrades: filteredExecutions.length,
-          largestGain: returnValues.length > 0 ? largestGain : 0,
-          largestLoss: returnValues.length > 0 ? largestLoss : 0,
-          avgWinHoldMs: winningRowsCount > 0 ? winningHoldMsTotal / winningRowsCount : 0,
-          avgLossHoldMs: losingRowsCount > 0 ? losingHoldMsTotal / losingRowsCount : 0,
-          avgDailyVolume,
-          realizedDay,
-          realizedWeek,
-          realizedMonth,
-          ...metrics,
-        },
-        charts: {
-          dailyPnl,
-          grossDailyPnl,
-          grossCumulativePnl,
-          dailyTradeCounts,
-          equityCurve,
-          histogram,
-          scatter,
-        },
-      };
-    });
+    return step("aggregate dashboard", () =>
+      aggregateDashboardData({
+        closedTrades,
+        executions,
+        rangeEnd,
+        rangeStart,
+      }),
+    );
   });
+}
+
+function latestDate(...values: Array<Date | null | undefined>) {
+  const timestamps = values
+    .filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()))
+    .map((value) => value.getTime());
+  if (timestamps.length === 0) return null;
+  return new Date(Math.max(...timestamps));
+}
+
+type TimestampDelegate = {
+  findFirst(input: {
+    orderBy: Record<string, "desc">;
+    select: Record<string, true>;
+  }): Promise<Record<string, Date | null> | null>;
+};
+type BackupFreshnessClient = typeof prisma | Prisma.TransactionClient;
+
+function prismaDelegateName(prismaModel: string) {
+  return `${prismaModel.charAt(0).toLowerCase()}${prismaModel.slice(1)}`;
+}
+
+async function latestTimestampForModelField(client: BackupFreshnessClient, prismaModel: string, field: string) {
+  const delegateName = prismaDelegateName(prismaModel);
+  const delegate = (client as unknown as Record<string, TimestampDelegate | undefined>)[delegateName];
+  if (!delegate) {
+    throw new Error(`Backup freshness source is configured for unknown Prisma model ${prismaModel}.`);
+  }
+
+  const row = await delegate.findFirst({
+    orderBy: { [field]: "desc" },
+    select: { [field]: true },
+  });
+  const value = row?.[field];
+  return value instanceof Date && !Number.isNaN(value.getTime()) ? value : null;
+}
+
+async function getDatabaseSizeBytes() {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ bytes: bigint | number | string | null }>>`
+      SELECT pg_database_size(current_database())::bigint AS bytes
+    `;
+    const raw = rows[0]?.bytes;
+    if (typeof raw === "bigint") return Number(raw);
+    if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+    if (typeof raw === "string") {
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getLatestBackupRelevantUpdateAt(client: BackupFreshnessClient = prisma) {
+  const latestTimestamps = await Promise.all(
+    BACKUP_RELEVANT_TIMESTAMP_SOURCES.flatMap((source) =>
+      source.timestampFields.map((field) => latestTimestampForModelField(client, source.prismaModel, field)),
+    ),
+  );
+
+  return latestDate(...latestTimestamps);
+}
+
+async function getLatestStaleClosedTradeAt() {
+  const row = await prisma.closedTrade.findFirst({
+    where: { staleAt: { not: null } },
+    orderBy: { staleAt: "desc" },
+    select: { staleAt: true },
+  });
+  return row?.staleAt ?? null;
 }
 
 export async function getTrades(filters: {
   from?: string;
   to?: string;
   symbol?: string;
+  account?: string;
   side?: string;
   tag?: string;
   strategy?: string;
@@ -236,12 +216,18 @@ export async function getTrades(filters: {
       where.instrument = { symbol: { equals: filters.symbol } };
     }
 
+    const account = filters.account?.trim();
+    if (account) {
+      where.account = { ibkrAccount: { equals: account } };
+    }
+
     if (filters.side) {
       where.side = filters.side;
     }
 
-    if (filters.tag) {
-      where.tags = { some: { tag: { name: { equals: filters.tag } } } };
+    const tag = normalizeTradeTagName(filters.tag);
+    if (tag) {
+      where.tags = { some: { tag: { name: { equals: tag } } } };
     }
 
     if (filters.strategy) {
@@ -303,49 +289,11 @@ export async function getTrades(filters: {
   });
 }
 
-type TradeFilters = {
-  from?: string;
-  to?: string;
-  symbol?: string;
-  side?: string;
-  tag?: string;
-  strategy?: string;
-};
-
 export async function getClosedTrades(filters: TradeFilters) {
   return withDiagnostics("getClosedTrades", async (step) => {
     await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
-    const where: Record<string, unknown> = {};
-    if (filters.from || filters.to) {
-      where.tradeDate = {
-        gte: filters.from ? startOfDay(new Date(filters.from)) : undefined,
-        lte: filters.to ? endOfDay(new Date(filters.to)) : undefined,
-      };
-    }
-    if (filters.symbol) {
-      where.symbol = { equals: filters.symbol };
-    }
-
-    const executionFilters: Record<string, unknown> = {};
-    if (filters.side) {
-      executionFilters.side = filters.side;
-    }
-    if (filters.tag) {
-      executionFilters.execution = {
-        ...(executionFilters.execution as Record<string, unknown> | undefined),
-        tags: { some: { tag: { name: { equals: filters.tag } } } },
-      };
-    }
-    if (filters.strategy) {
-      executionFilters.execution = {
-        ...(executionFilters.execution as Record<string, unknown> | undefined),
-        strategy: { equals: filters.strategy },
-      };
-    }
-    if (Object.keys(executionFilters).length > 0) {
-      where.executions = { some: executionFilters };
-    }
+    const where = buildClosedTradeWhere(filters);
 
     const groups = await step("query materialized groups", () =>
       prisma.closedTrade.findMany({
@@ -366,6 +314,9 @@ export async function getClosedTrades(filters: TradeFilters) {
           closingQuantity: true,
           realizedPnl: true,
           totalCommission: true,
+          isStale: true,
+          staleAt: true,
+          staleReason: true,
           account: {
             select: {
               ibkrAccount: true,
@@ -383,8 +334,18 @@ export async function getClosedTrades(filters: TradeFilters) {
             },
             orderBy: { sortOrder: "asc" },
           },
+          tags: {
+            select: {
+              tag: {
+                select: {
+                  name: true,
+                },
+              },
+            },
+            orderBy: { tag: { name: "asc" } },
+          },
         },
-        orderBy: [{ closeTime: "desc" }, { groupKey: "asc" }],
+        orderBy: [{ isStale: "asc" }, { closeTime: "desc" }, { groupKey: "asc" }],
       }),
     );
 
@@ -408,7 +369,7 @@ export async function getClosedTrades(filters: TradeFilters) {
     const latestTradeDate =
       groups.length > 0 ? new Date(Math.max(...groups.map((group) => group.tradeDate.getTime()))) : null;
 
-    const [dayNotes, closedTradeNotes, dailySnapshots] = await Promise.all([
+    const [dayNotes, closedTradeNotes, journalLinks, dailySnapshots] = await Promise.all([
       dayNoteAccountIds.length > 0 && dayNoteDates.length > 0
         ? step("query day notes", () =>
             prisma.dayNote.findMany({
@@ -431,7 +392,28 @@ export async function getClosedTrades(filters: TradeFilters) {
               select: {
                 groupKey: true,
                 content: true,
+                setup: true,
+                thesis: true,
+                entryReview: true,
+                exitReview: true,
+                mistake: true,
+                lesson: true,
+                followUp: true,
+                updatedAt: true,
               },
+            }),
+          )
+        : Promise.resolve([]),
+      groupKeys.length > 0
+        ? step("query closed-trade journal links", () =>
+            prisma.journalLink.findMany({
+              where: {
+                linkType: "REVIEW_SOURCE",
+                targetType: "CLOSED_TRADE",
+                targetId: { in: groupKeys },
+              },
+              select: { targetId: true, journalEntryId: true },
+              orderBy: { createdAt: "asc" },
             }),
           )
         : Promise.resolve([]),
@@ -455,7 +437,13 @@ export async function getClosedTrades(filters: TradeFilters) {
     ]);
 
     const dayNoteMap = new Map(dayNotes.map((note) => [`${note.accountId}:${note.date.toISOString().slice(0, 10)}`, note.content]));
-    const closedNoteMap = new Map(closedTradeNotes.map((note) => [note.groupKey, note.content]));
+    const closedNoteMap = new Map(closedTradeNotes.map((note) => [note.groupKey, note]));
+    const journalEntryIdByGroupKey = new Map<string, string>();
+    for (const link of journalLinks) {
+      if (link.targetId && !journalEntryIdByGroupKey.has(link.targetId)) {
+        journalEntryIdByGroupKey.set(link.targetId, link.journalEntryId);
+      }
+    }
 
     return groups.map((group) => {
       const tradeDate = group.tradeDate.toISOString().slice(0, 10);
@@ -492,12 +480,25 @@ export async function getClosedTrades(filters: TradeFilters) {
         tradeDate,
         realizedPnl: group.realizedPnl,
         totalCommission: group.totalCommission,
+        isStale: group.isStale,
+        staleAt: group.staleAt?.toISOString() ?? null,
+        staleReason: group.staleReason,
         openingQuantity: group.openingQuantity,
         closingQuantity: group.closingQuantity,
         ...metrics,
         executions,
         dayNote: dayNoteMap.get(`${group.accountId}:${tradeDate}`) ?? "",
-        tradeNote: closedNoteMap.get(group.groupKey) ?? "",
+        tradeNote: closedNoteMap.get(group.groupKey)?.content ?? "",
+        reviewSetup: closedNoteMap.get(group.groupKey)?.setup ?? "",
+        reviewThesis: closedNoteMap.get(group.groupKey)?.thesis ?? "",
+        reviewEntry: closedNoteMap.get(group.groupKey)?.entryReview ?? "",
+        reviewExit: closedNoteMap.get(group.groupKey)?.exitReview ?? "",
+        reviewMistake: closedNoteMap.get(group.groupKey)?.mistake ?? "",
+        reviewLesson: closedNoteMap.get(group.groupKey)?.lesson ?? "",
+        reviewFollowUp: closedNoteMap.get(group.groupKey)?.followUp ?? "",
+        reviewUpdatedAt: closedNoteMap.get(group.groupKey)?.updatedAt.toISOString() ?? null,
+        closedTradeTags: group.tags.map((tag) => tag.tag.name),
+        journalEntryId: journalEntryIdByGroupKey.get(group.groupKey) ?? null,
       };
     });
   });
@@ -620,58 +621,45 @@ export async function getPositions() {
 }
 
 export async function getCalendarNotes(month?: Date) {
-  await ensureMaterializedExecutionAnalytics();
+  await ensureMaterializedClosedTrades();
   const target = month ?? new Date();
   const from = startOfMonth(target);
   const to = endOfMonth(target);
-  const [notes, executions] = await Promise.all([
+  const [notes, closedTrades] = await Promise.all([
     prisma.dayNote.findMany({
       where: { date: { gte: from, lte: to } },
       include: { tags: { include: { tag: true } }, account: true },
       orderBy: { date: "asc" },
     }),
-    prisma.execution.findMany({
-      where: { executedAt: { lte: to } },
+    prisma.closedTrade.findMany({
+      where: {
+        isStale: false,
+        tradeDate: {
+          gte: from,
+          lte: to,
+        },
+      },
       select: {
-        id: true,
         accountId: true,
-        instrumentId: true,
-        executedAt: true,
-        side: true,
-        quantity: true,
-        price: true,
-        commission: true,
-        fees: true,
+        tradeDate: true,
+        realizedPnl: true,
         account: {
           select: {
             ibkrAccount: true,
           },
         },
-        instrument: {
-          select: {
-            symbol: true,
-          },
-        },
-        analytics: {
-          select: {
-            executionId: true,
-            realizedPnl: true,
-          },
-        },
       },
-      orderBy: { executedAt: "asc" },
+      orderBy: { tradeDate: "asc" },
     }),
   ]);
 
-  const pnlByExecution = new Map(executions.map((execution) => [execution.id, execution.analytics?.realizedPnl ?? 0]));
   const dailyPnlByAccountDate = new Map<string, number>();
-  const accountById = new Map(executions.map((execution) => [execution.accountId, execution.account]));
+  const accountById = new Map(closedTrades.map((trade) => [trade.accountId, trade.account]));
 
-  for (const execution of executions) {
-    if (execution.executedAt < from) continue;
-    const day = execution.executedAt.toISOString().slice(0, 10);
-    const key = `${execution.accountId}:${day}`;
-    dailyPnlByAccountDate.set(key, (dailyPnlByAccountDate.get(key) ?? 0) + (pnlByExecution.get(execution.id) ?? 0));
+  for (const trade of closedTrades) {
+    const day = trade.tradeDate.toISOString().slice(0, 10);
+    const key = `${trade.accountId}:${day}`;
+    dailyPnlByAccountDate.set(key, (dailyPnlByAccountDate.get(key) ?? 0) + trade.realizedPnl);
   }
 
   const notesByAccountDate = new Map(notes.map((note) => [`${note.accountId}:${note.date.toISOString().slice(0, 10)}`, note]));
@@ -698,43 +686,27 @@ export async function getCalendarNotes(month?: Date) {
 
 export async function getCalendarPerformance(target?: Date) {
   return withDiagnostics("getCalendarPerformance", async (step) => {
-    await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
+    await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
     const focus = target ?? new Date();
     const from = startOfYear(focus);
     const to = endOfYear(focus);
 
-    const [executions, snapshots, notes] = await Promise.all([
-      step("query executions", () =>
-        prisma.execution.findMany({
-          where: { executedAt: { lte: to } },
-          select: {
-            id: true,
-            accountId: true,
-            instrumentId: true,
-            executedAt: true,
-            side: true,
-            quantity: true,
-            price: true,
-            commission: true,
-            fees: true,
-            instrument: {
-              select: {
-                symbol: true,
-              },
-            },
-            analytics: {
-              select: {
-                executionId: true,
-                realizedPnl: true,
-                grossRealizedPnl: true,
-                cumulativePnl: true,
-                matchedQuantity: true,
-                avgHoldTimeMs: true,
-              },
+    const [closedTrades, snapshots, notes] = await Promise.all([
+      step("query closed trades", () =>
+        prisma.closedTrade.findMany({
+          where: {
+            isStale: false,
+            tradeDate: {
+              gte: from,
+              lte: to,
             },
           },
-          orderBy: { executedAt: "asc" },
+          select: {
+            tradeDate: true,
+            realizedPnl: true,
+          },
+          orderBy: { tradeDate: "asc" },
         }),
       ),
       step("query snapshots", () =>
@@ -781,89 +753,310 @@ export async function getCalendarPerformance(target?: Date) {
       ),
     ]);
 
-    const pnlRows = await step("load analytics", () =>
-      executions.map((exec) => analyticsOrZero(exec.id, exec.analytics)),
-    );
-
-    return step("aggregate calendar", () => {
-      const executionById = new Map(executions.map((exec) => [exec.id, exec]));
-      const realizedByDay = new Map<string, number>();
-
-      for (const row of pnlRows) {
-        const exec = executionById.get(row.executionId);
-        if (!exec || exec.executedAt < from) continue;
-        const day = exec.executedAt.toISOString().slice(0, 10);
-        realizedByDay.set(day, (realizedByDay.get(day) ?? 0) + row.realizedPnl);
-      }
-
-      const mtmByDay = new Map<string, number>();
-      const prevUnrealizedByKey = new Map<string, number>();
-
-      for (const snapshot of snapshots) {
-        const key = `${snapshot.accountId}:${snapshot.instrumentId}`;
-        const currentUnrealized = snapshot.unrealizedPnl ?? 0;
-        const prevUnrealized = prevUnrealizedByKey.get(key) ?? 0;
-        if (snapshot.date >= from) {
-          const day = snapshot.date.toISOString().slice(0, 10);
-          const delta = currentUnrealized - prevUnrealized;
-          mtmByDay.set(day, (mtmByDay.get(day) ?? 0) + delta);
-        }
-        prevUnrealizedByKey.set(key, currentUnrealized);
-      }
-
-      const notesByDay = new Map<string, typeof notes>();
-      for (const note of notes) {
-        const day = note.date.toISOString().slice(0, 10);
-        const dayNotes = notesByDay.get(day) ?? [];
-        dayNotes.push(note);
-        notesByDay.set(day, dayNotes);
-      }
-
-      const dayKeys = new Set<string>([...realizedByDay.keys(), ...mtmByDay.keys(), ...notesByDay.keys()]);
-      const monthlyTotals = new Map<string, { realized: number; mtm: number; total: number }>();
-
-      const days = [...dayKeys]
-        .map((date) => {
-          const realized = realizedByDay.get(date) ?? 0;
-          const mtm = mtmByDay.get(date) ?? 0;
-          const total = realized + mtm;
-          const month = date.slice(0, 7);
-          const monthTotals = monthlyTotals.get(month) ?? { realized: 0, mtm: 0, total: 0 };
-          monthTotals.realized += realized;
-          monthTotals.mtm += mtm;
-          monthTotals.total += total;
-          monthlyTotals.set(month, monthTotals);
-          return {
-            date,
-            realized,
-            mtm,
-            total,
-            notes: (notesByDay.get(date) ?? []).map((note) => ({
-              id: note.id,
-              accountCode: note.account.ibkrAccount,
-              content: note.content,
-              tags: note.tags.map((tag) => tag.tag.name),
-            })),
-          };
-        })
-        .sort((a, b) => (a.date < b.date ? -1 : 1));
-
-      return {
-        year: from.getFullYear(),
-        days,
-        monthlyTotals: [...monthlyTotals.entries()]
-          .map(([month, totals]) => ({ month, ...totals }))
-          .sort((a, b) => (a.month < b.month ? -1 : 1)),
-      };
-    });
+    return step("aggregate calendar", () => aggregateCalendarPerformance({ closedTrades, from, notes, snapshots }));
   });
 }
 
-export async function getSettingsData() {
-  const [accounts, batches] = await Promise.all([
-    prisma.account.findMany({ orderBy: { createdAt: "asc" } }),
-    prisma.importBatch.findMany({ orderBy: { importedAt: "desc" }, take: 20 }),
+async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>> {
+  const [
+    accounts,
+    instruments,
+    tags,
+    importArtifacts,
+    materializationWatermarks,
+    backupAudits,
+    importBatches,
+    importRowErrors,
+    executions,
+    positions,
+    positionSnapshots,
+    dailySnapshots,
+    executionAnalytics,
+    executionTags,
+    tradeNotes,
+    dayNotes,
+    dayNoteTags,
+    symbolNotes,
+    symbolNoteTags,
+    closedTrades,
+    closedTradeNotes,
+    closedTradeLayouts,
+    closedTradeAnnotationStates,
+    closedTradeAnnotations,
+    closedTradeTags,
+    closedTradeExecutions,
+    marketCandles,
+    playbooks,
+    playbookRules,
+    journalEntries,
+    journalNotionRelationTags,
+    journalEntryTags,
+    journalCharts,
+    journalChartMarkers,
+    journalContextSnapshots,
+    journalLinks,
+    journalEntryNotionRelations,
+    journalRuleChecks,
+    journalReviews,
+    journalReviewActions,
+    journalSavedViews,
+    playbookExamples,
+  ] = await Promise.all([
+    prisma.account.count(),
+    prisma.instrument.count(),
+    prisma.tag.count(),
+    prisma.importArtifact.count(),
+    prisma.materializationWatermark.count(),
+    prisma.backupAudit.count(),
+    prisma.importBatch.count(),
+    prisma.importRowError.count(),
+    prisma.execution.count(),
+    prisma.position.count(),
+    prisma.positionSnapshot.count(),
+    prisma.dailySnapshot.count(),
+    prisma.executionAnalytics.count(),
+    prisma.executionTag.count(),
+    prisma.tradeNote.count(),
+    prisma.dayNote.count(),
+    prisma.dayNoteTag.count(),
+    prisma.symbolNote.count(),
+    prisma.symbolNoteTag.count(),
+    prisma.closedTrade.count(),
+    prisma.closedTradeNote.count(),
+    prisma.closedTradeChartLayout.count(),
+    prisma.closedTradeAnnotationState.count(),
+    prisma.closedTradeAnnotation.count(),
+    prisma.closedTradeTag.count(),
+    prisma.closedTradeExecution.count(),
+    prisma.marketCandle.count(),
+    prisma.journalPlaybook.count(),
+    prisma.journalPlaybookRule.count(),
+    prisma.journalEntry.count(),
+    prisma.journalNotionRelationTag.count(),
+    prisma.journalEntryTag.count(),
+    prisma.journalChart.count(),
+    prisma.journalChartMarker.count(),
+    prisma.journalContextSnapshot.count(),
+    prisma.journalLink.count(),
+    prisma.journalEntryNotionRelation.count(),
+    prisma.journalEntryRuleCheck.count(),
+    prisma.journalReview.count(),
+    prisma.journalReviewAction.count(),
+    prisma.journalSavedView.count(),
+    prisma.journalPlaybookExample.count(),
   ]);
 
-  return { accounts, batches };
+  return {
+    accounts,
+    instruments,
+    tags,
+    importArtifacts,
+    materializationWatermarks,
+    backupAudits,
+    importBatches,
+    importRowErrors,
+    executions,
+    positions,
+    positionSnapshots,
+    dailySnapshots,
+    executionAnalytics,
+    executionTags,
+    tradeNotes,
+    dayNotes,
+    dayNoteTags,
+    symbolNotes,
+    symbolNoteTags,
+    closedTrades,
+    closedTradeNotes,
+    closedTradeLayouts,
+    closedTradeAnnotationStates,
+    closedTradeAnnotations,
+    closedTradeTags,
+    closedTradeExecutions,
+    marketCandles,
+    playbooks,
+    playbookRules,
+    journalEntries,
+    journalNotionRelationTags,
+    journalEntryTags,
+    journalCharts,
+    journalChartMarkers,
+    journalContextSnapshots,
+    journalLinks,
+    journalEntryNotionRelations,
+    journalRuleChecks,
+    journalReviews,
+    journalReviewActions,
+    journalSavedViews,
+    playbookExamples,
+  };
+}
+
+export async function getSettingsData(options: { includeBackupReadiness?: boolean } = {}) {
+  const [
+    accounts,
+    batches,
+    executionCount,
+    activeClosedTradeCount,
+    staleClosedTradeCount,
+    allClosedTradeCount,
+    annotationCount,
+    journalEntryCount,
+    journalChartCount,
+    marketCandleCount,
+    failedImportBatchCount,
+    materializationFailedImportBatchCount,
+    skippedImportBatchCount,
+    importRowErrorCount,
+    screenshotRefs,
+    rawImportBytes,
+    rawArchivedBytes,
+    importArtifactCount,
+    missingRawArchiveCount,
+    legacyRawArchiveCount,
+    databaseSizeBytes,
+    latestBackupRelevantUpdateAt,
+    latestStaleClosedTradeAt,
+    latestBackupAudit,
+  ] = await Promise.all([
+    prisma.account.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.importBatch.findMany({
+      orderBy: { importedAt: "desc" },
+      take: 20,
+      include: {
+        _count: { select: { rowErrors: true } },
+        rowErrors: {
+          orderBy: [{ rowNumber: "asc" }, { createdAt: "asc" }],
+          take: 5,
+          select: { id: true, rowNumber: true, code: true, message: true },
+        },
+      },
+    }),
+    prisma.execution.count(),
+    prisma.closedTrade.count({ where: { isStale: false } }),
+    prisma.closedTrade.count({ where: { isStale: true } }),
+    prisma.closedTrade.count(),
+    prisma.closedTradeAnnotation.count(),
+    prisma.journalEntry.count(),
+    prisma.journalChart.count(),
+    prisma.marketCandle.count(),
+    prisma.importBatch.count({ where: { status: "FAILED" } }),
+    prisma.importBatch.count({ where: { status: "MATERIALIZATION_FAILED" } }),
+    prisma.importBatch.count({ where: { rowsSkipped: { gt: 0 } } }),
+    prisma.importRowError.count(),
+    prisma.journalChart.findMany({
+      where: {
+        OR: [
+          { screenshotUrl: { not: null } },
+          { screenshotKey: { not: null } },
+        ],
+      },
+      select: { id: true, journalEntryId: true, screenshotKey: true, screenshotUrl: true, mimeType: true },
+    }),
+    prisma.importBatch.aggregate({ _sum: { rawBytes: true } }),
+    prisma.importArtifact.aggregate({ _sum: { rawBytes: true } }),
+    prisma.importArtifact.count(),
+    prisma.importBatch.count({
+      where: {
+        rawSha256: { not: null },
+        rawStorageKey: null,
+      },
+    }),
+    prisma.importBatch.count({ where: { rawSha256: null } }),
+    getDatabaseSizeBytes(),
+    getLatestBackupRelevantUpdateAt(),
+    getLatestStaleClosedTradeAt(),
+    prisma.backupAudit.findFirst({ orderBy: { verifiedAt: "desc" } }),
+  ]);
+
+  const inlineScreenshotRefs = screenshotRefs.filter((chart) => chart.screenshotUrl?.startsWith("data:"));
+  const inlineScreenshotInspections = inlineScreenshotRefs.map((chart) => inspectInlineDataUrl(chart.screenshotUrl ?? ""));
+
+  const backupReadiness = options.includeBackupReadiness
+    ? await (async () => {
+        const [journalScreenshotAssets, importBatchesForBackup, importArtifactsForBackup, tableRowCounts] = await Promise.all([
+          buildJournalScreenshotBackupAssets(screenshotRefs, { includeDataUrl: false }),
+          prisma.importBatch.findMany({
+            select: { id: true, filename: true, rawSha256: true, rawBytes: true, rawStorageKey: true },
+            orderBy: { importedAt: "asc" },
+          }),
+          prisma.importArtifact.findMany({
+            select: { storageKey: true, rawSha256: true, rawBytes: true, content: true },
+            orderBy: { createdAt: "asc" },
+          }),
+          getBackupTableRowCounts(),
+        ]);
+
+        const tableManifest = buildBackupTableManifestFromRowCounts(tableRowCounts);
+        const source = buildBackupSourceMetadata({
+          latestDataChangeAt: latestBackupRelevantUpdateAt,
+          rowCounts: tableManifest.rowCounts,
+        });
+
+        return buildBackupReadinessManifest({
+          generatedAt: new Date().toISOString(),
+          journalScreenshotAssets,
+          importArtifactManifest: buildImportArtifactBackupManifest(importBatchesForBackup, importArtifactsForBackup),
+          tableManifest,
+          source,
+        });
+      })()
+    : undefined;
+
+  const backupSource = backupReadiness?.source;
+
+  return {
+    accounts,
+    batches,
+    backupReadiness,
+    health: {
+      executionCount,
+      activeClosedTradeCount,
+      staleClosedTradeCount,
+      allClosedTradeCount,
+      annotationCount,
+      journalEntryCount,
+      journalChartCount,
+      marketCandleCount,
+      failedImportBatchCount,
+      materializationFailedImportBatchCount,
+      skippedImportBatchCount,
+      importRowErrorCount,
+      inlineScreenshotCount: inlineScreenshotRefs.length,
+      inlineScreenshotBytes: inlineScreenshotInspections.reduce((sum, parsed) => sum + (parsed?.bytes ?? 0), 0),
+      invalidInlineScreenshotCount: inlineScreenshotInspections.filter((parsed) => !parsed).length,
+      localScreenshotCount: screenshotRefs.filter((chart) => chart.screenshotKey?.startsWith("local:")).length,
+      externalScreenshotCount: screenshotRefs.filter((chart) => {
+        if (chart.screenshotUrl?.startsWith("data:")) return false;
+        if (chart.screenshotKey?.startsWith("local:")) return false;
+        return Boolean(chart.screenshotKey || chart.screenshotUrl);
+      }).length,
+      rawImportBytes: rawImportBytes._sum.rawBytes ?? 0,
+      rawArchivedBytes: rawArchivedBytes._sum.rawBytes ?? 0,
+      importArtifactCount,
+      missingRawArchiveCount,
+      legacyRawArchiveCount,
+      databaseSizeBytes,
+      latestBackupRelevantUpdateAt: latestBackupRelevantUpdateAt?.toISOString() ?? null,
+      latestStaleClosedTradeAt: latestStaleClosedTradeAt?.toISOString() ?? null,
+      backupSourceSignature: backupSource?.signature ?? null,
+      backupSourceLatestDataChangeAt: backupSource?.latestDataChangeAt ?? null,
+      latestBackupAudit: latestBackupAudit
+        ? {
+            id: latestBackupAudit.id,
+            sha256: latestBackupAudit.sha256,
+            exportedAt: latestBackupAudit.exportedAt.toISOString(),
+            verifiedAt: latestBackupAudit.verifiedAt.toISOString(),
+            payloadBytes: latestBackupAudit.payloadBytes,
+            totalRows: latestBackupAudit.totalRows,
+            tableCount: latestBackupAudit.tableCount,
+            strippedFieldCount: latestBackupAudit.strippedFieldCount,
+            warningCount: latestBackupAudit.warningCount,
+            errorCount: latestBackupAudit.errorCount,
+            sourceSignature: latestBackupAudit.sourceSignature,
+            sourceLatestDataChangeAt: latestBackupAudit.sourceLatestDataChangeAt?.toISOString() ?? null,
+          }
+        : null,
+    },
+  };
 }

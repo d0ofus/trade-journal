@@ -22,6 +22,11 @@ import { computeJournalAnalytics, computeRuleFitScore } from "@/lib/journal/anal
 
 type JournalTagBuckets = Partial<Record<JournalTagCategoryValue, string[]>>;
 
+const journalTransactionOptions = {
+  maxWait: 10_000,
+  timeout: 30_000,
+};
+
 const journalInclude = {
   playbook: {
     include: {
@@ -61,9 +66,82 @@ const journalInclude = {
   },
 } satisfies Prisma.JournalEntryInclude;
 
+export class JournalStaleWriteError extends Error {
+  currentUpdatedAt: string | null;
+
+  constructor(resource: string, currentUpdatedAt: Date | null, message?: string) {
+    super(message ?? `${resource} changed in another tab. Refresh before saving again.`);
+    this.name = "JournalStaleWriteError";
+    this.currentUpdatedAt = currentUpdatedAt?.toISOString() ?? null;
+  }
+}
+
+export class JournalMissingVersionError extends JournalStaleWriteError {
+  constructor(resource: string) {
+    super(resource, null, `${resource} update requires expectedUpdatedAt.`);
+    this.name = "JournalMissingVersionError";
+  }
+}
+
+export class ClosedTradeJournalBridgeError extends Error {
+  code: "CLOSED_TRADE_NOT_FOUND" | "STALE_CLOSED_TRADE" | "CLOSED_TRADE_REVIEW_CHANGED";
+  status: number;
+  currentReviewUpdatedAt?: string | null;
+
+  constructor(
+    code: "CLOSED_TRADE_NOT_FOUND" | "STALE_CLOSED_TRADE" | "CLOSED_TRADE_REVIEW_CHANGED",
+    message: string,
+    status: number,
+    options: { currentReviewUpdatedAt?: Date | null } = {},
+  ) {
+    super(message);
+    this.name = "ClosedTradeJournalBridgeError";
+    this.code = code;
+    this.status = status;
+    if ("currentReviewUpdatedAt" in options) {
+      this.currentReviewUpdatedAt = options.currentReviewUpdatedAt?.toISOString() ?? null;
+    }
+  }
+}
+
 export type JournalEntryWithRelations = Prisma.JournalEntryGetPayload<{
   include: typeof journalInclude;
 }>;
+
+const CLOSED_TRADE_JOURNAL_LINK_TYPE = "REVIEW_SOURCE";
+const CLOSED_TRADE_JOURNAL_TARGET_TYPE = "CLOSED_TRADE";
+
+type ClosedTradeJournalBridgeOptions = {
+  expectedReviewUpdatedAt?: string | null;
+};
+
+function isUniqueConstraintError(error: unknown) {
+  if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "P2002") return true;
+  return error instanceof Error && error.message.includes("JournalLink_closed_trade_review_source_unique");
+}
+
+async function getClosedTradeJournalEntryByLink(client: Prisma.TransactionClient | typeof prisma, groupKey: string) {
+  const existingLink = await client.journalLink.findFirst({
+    where: {
+      linkType: CLOSED_TRADE_JOURNAL_LINK_TYPE,
+      targetType: CLOSED_TRADE_JOURNAL_TARGET_TYPE,
+      targetId: groupKey,
+    },
+    select: { journalEntryId: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  return existingLink
+    ? client.journalEntry.findUniqueOrThrow({ where: { id: existingLink.journalEntryId }, include: journalInclude })
+    : null;
+}
+
+function requiredExpectedUpdatedAtFromInput(input: Record<string, unknown>, resource: string) {
+  if (typeof input.expectedUpdatedAt !== "string") throw new JournalMissingVersionError(resource);
+  const parsed = new Date(input.expectedUpdatedAt);
+  if (Number.isNaN(parsed.getTime())) throw new JournalMissingVersionError(resource);
+  return parsed;
+}
 
 function knownOption<T extends readonly string[]>(options: T, value: string | null | undefined): T[number] | null {
   return typeof value === "string" && options.includes(value) ? value : null;
@@ -402,19 +480,187 @@ export async function createJournalEntry(input: JournalEntryMutationInput) {
     await syncJournalTags(tx, created.id, input.tags ?? {});
     await syncJournalNotionRelations(tx, created.id, input.notionRelations ?? {});
     return tx.journalEntry.findUniqueOrThrow({ where: { id: created.id }, include: journalInclude });
-  });
+  }, journalTransactionOptions);
 
   return serializeJournalEntry(entry);
+}
+
+function closedTradeJournalOutcomeNotes(input: {
+  symbol: string;
+  direction: string;
+  realizedPnl: number;
+  totalCommission: number;
+  followUp?: string | null;
+  content?: string | null;
+}) {
+  return [
+    `${input.symbol} ${input.direction} closed trade. Realized P&L: ${input.realizedPnl.toFixed(2)}. Commission: ${input.totalCommission.toFixed(2)}.`,
+    input.followUp ? `Follow-up: ${input.followUp}` : "",
+    input.content ? `General note: ${input.content}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function assertExpectedClosedTradeReview(
+  review: { updatedAt: Date } | null,
+  options: ClosedTradeJournalBridgeOptions,
+) {
+  const expectedReviewUpdatedAt = options.expectedReviewUpdatedAt;
+  if (expectedReviewUpdatedAt === undefined) {
+    throw new ClosedTradeJournalBridgeError(
+      "CLOSED_TRADE_REVIEW_CHANGED",
+      "Closed-trade review version is required. Reload before creating a journal review.",
+      409,
+      { currentReviewUpdatedAt: review?.updatedAt ?? null },
+    );
+  }
+
+  if (expectedReviewUpdatedAt === null) {
+    if (review) {
+      throw new ClosedTradeJournalBridgeError(
+        "CLOSED_TRADE_REVIEW_CHANGED",
+        "Closed-trade review changed in another tab. Reload before creating a journal review.",
+        409,
+        { currentReviewUpdatedAt: review.updatedAt },
+      );
+    }
+    return;
+  }
+
+  const expectedDate = new Date(expectedReviewUpdatedAt);
+  if (Number.isNaN(expectedDate.getTime()) || !review || review.updatedAt.getTime() !== expectedDate.getTime()) {
+    throw new ClosedTradeJournalBridgeError(
+      "CLOSED_TRADE_REVIEW_CHANGED",
+      "Closed-trade review changed in another tab. Reload before creating a journal review.",
+      409,
+      { currentReviewUpdatedAt: review?.updatedAt ?? null },
+    );
+  }
+}
+
+export async function createJournalEntryFromClosedTrade(groupKey: string, options: ClosedTradeJournalBridgeOptions = {}) {
+  let result: {
+    created: boolean;
+    entry: Prisma.JournalEntryGetPayload<{ include: typeof journalInclude }>;
+  };
+
+  try {
+    result = await prisma.$transaction(async (tx) => {
+      const existingEntry = await getClosedTradeJournalEntryByLink(tx, groupKey);
+
+      if (existingEntry) {
+        return {
+          created: false,
+          entry: existingEntry,
+        };
+      }
+
+      const [closedTrade, review] = await Promise.all([
+        tx.closedTrade.findUnique({
+          where: { groupKey },
+          select: {
+            groupKey: true,
+            symbol: true,
+            direction: true,
+            openTime: true,
+            closeTime: true,
+            realizedPnl: true,
+            totalCommission: true,
+            isStale: true,
+            account: { select: { ibkrAccount: true } },
+            tags: { select: { tag: { select: { name: true } } }, orderBy: { tag: { name: "asc" } } },
+          },
+        }),
+        tx.closedTradeNote.findUnique({ where: { groupKey } }),
+      ]);
+
+      if (!closedTrade) {
+        throw new ClosedTradeJournalBridgeError("CLOSED_TRADE_NOT_FOUND", "Closed trade not found.", 404);
+      }
+      if (closedTrade.isStale) {
+        throw new ClosedTradeJournalBridgeError("STALE_CLOSED_TRADE", "Cannot create a journal review for a stale closed trade.", 409);
+      }
+      assertExpectedClosedTradeReview(review, options);
+
+      const direction = closedTrade.direction === "SHORT" ? "SHORT" : "LONG";
+      const title = `${closedTrade.symbol} ${direction} closed trade review`;
+      const created = await tx.journalEntry.create({
+        data: {
+          symbol: closedTrade.symbol,
+          tradeTitle: title,
+          ideaDate: closedTrade.openTime,
+          entryEndAt: closedTrade.closeTime,
+          direction,
+          status: "DRAFT",
+          tradeStatus: "Closed Manually",
+          setup: review?.setup || null,
+          timeframe: "5min",
+          macroSentiment: "NEUTRAL",
+          thesis: review?.thesis ?? "",
+          trigger: review?.entryReview ?? "",
+          idealExecutionPlan: review?.exitReview ?? "",
+          missedReason: review?.mistake ?? "",
+          lessonLearned: review?.lesson ?? "",
+          actualTriggerAt: closedTrade.openTime,
+          outcomeStatus: "UNREVIEWED",
+          outcomeNotes: closedTradeJournalOutcomeNotes({
+            symbol: closedTrade.symbol,
+            direction,
+            realizedPnl: closedTrade.realizedPnl,
+            totalCommission: closedTrade.totalCommission,
+            followUp: review?.followUp,
+            content: review?.content,
+          }),
+          autoDraft: false,
+        },
+        select: { id: true },
+      });
+
+      const tagNames = closedTrade.tags.map((row) => row.tag.name);
+      await syncJournalTags(tx, created.id, { CUSTOM: tagNames });
+      await syncJournalNotionRelations(tx, created.id, {
+        ACCOUNT: [closedTrade.account.ibkrAccount],
+        TYPE_OF_REVIEW: ["Closed Trade Review"],
+      });
+      await tx.journalLink.create({
+        data: {
+          journalEntryId: created.id,
+          linkType: CLOSED_TRADE_JOURNAL_LINK_TYPE,
+          targetType: CLOSED_TRADE_JOURNAL_TARGET_TYPE,
+          targetId: groupKey,
+          label: title,
+        },
+      });
+
+      return {
+        created: true,
+        entry: await tx.journalEntry.findUniqueOrThrow({ where: { id: created.id }, include: journalInclude }),
+      };
+    }, journalTransactionOptions);
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const existingEntry = await getClosedTradeJournalEntryByLink(prisma, groupKey);
+    if (!existingEntry) throw error;
+    result = {
+      created: false,
+      entry: existingEntry,
+    };
+  }
+
+  return {
+    created: result.created,
+    entry: serializeJournalEntry(result.entry),
+  };
 }
 
 export async function updateJournalEntry(
   id: string,
   input: JournalEntryMutationInput,
 ) {
+  const expectedUpdatedAt = requiredExpectedUpdatedAtFromInput(input, "Journal entry");
   const entry = await prisma.$transaction(async (tx) => {
-    await tx.journalEntry.update({
-      where: { id },
-      data: {
+    const data = {
         symbol: input.symbol as string | undefined,
         tradeTitle: input.tradeTitle as string | undefined,
         ideaDate: input.ideaDate as Date | undefined,
@@ -480,18 +726,29 @@ export async function updateJournalEntry(
         reviewDueAt: input.reviewDueAt as Date | null | undefined,
         outcomeCalculatedAt: input.outcomeCalculatedAt as Date | null | undefined,
         outcomeCalculationJson: input.outcomeCalculationJson as string | null | undefined,
-      },
-      select: { id: true },
+      };
+    const updated = await tx.journalEntry.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data,
     });
+    if (updated.count !== 1) {
+      const current = await tx.journalEntry.findUnique({ where: { id }, select: { updatedAt: true } });
+      throw new JournalStaleWriteError("Journal entry", current?.updatedAt ?? null);
+    }
     if (input.tags) await syncJournalTags(tx, id, input.tags);
     if (input.notionRelations) await syncJournalNotionRelations(tx, id, input.notionRelations);
     return tx.journalEntry.findUniqueOrThrow({ where: { id }, include: journalInclude });
-  });
+  }, journalTransactionOptions);
   return serializeJournalEntry(entry);
 }
 
-export async function deleteJournalEntry(id: string) {
-  await prisma.journalEntry.delete({ where: { id } });
+export async function deleteJournalEntry(id: string, options: { expectedUpdatedAt?: string } = {}) {
+  const expectedUpdatedAt = requiredExpectedUpdatedAtFromInput(options, "Journal entry");
+  const deleted = await prisma.journalEntry.deleteMany({ where: { id, updatedAt: expectedUpdatedAt } });
+  if (deleted.count !== 1) {
+    const current = await prisma.journalEntry.findUnique({ where: { id }, select: { updatedAt: true } });
+    throw new JournalStaleWriteError("Journal entry", current?.updatedAt ?? null);
+  }
 }
 
 export function mapJournalPayloadToData(payload: {
@@ -727,15 +984,14 @@ export async function createJournalPlaybook(input: JournalPlaybookMutationInput)
     });
     await syncPlaybookRules(tx, created.id, input.rules ?? []);
     return tx.journalPlaybook.findUniqueOrThrow({ where: { id: created.id }, include: playbookInclude });
-  });
+  }, journalTransactionOptions);
   return serializePlaybook(playbook);
 }
 
 export async function updateJournalPlaybook(id: string, input: JournalPlaybookMutationInput) {
+  const expectedUpdatedAt = requiredExpectedUpdatedAtFromInput(input, "Playbook");
   const playbook = await prisma.$transaction(async (tx) => {
-    await tx.journalPlaybook.update({
-      where: { id },
-      data: {
+    const data = {
         name: input.name as string | undefined,
         setupType: input.setupType as string | null | undefined,
         description: input.description as string | undefined,
@@ -743,12 +999,18 @@ export async function updateJournalPlaybook(id: string, input: JournalPlaybookMu
         invalidationRules: input.invalidationRules as string | undefined,
         marketRegimeFit: input.marketRegimeFit as string | undefined,
         archived: input.archived as boolean | undefined,
-      },
-      select: { id: true },
+      };
+    const updated = await tx.journalPlaybook.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data,
     });
+    if (updated.count !== 1) {
+      const current = await tx.journalPlaybook.findUnique({ where: { id }, select: { updatedAt: true } });
+      throw new JournalStaleWriteError("Playbook", current?.updatedAt ?? null);
+    }
     if (input.rules) await syncPlaybookRules(tx, id, input.rules);
     return tx.journalPlaybook.findUniqueOrThrow({ where: { id }, include: playbookInclude });
-  });
+  }, journalTransactionOptions);
   return serializePlaybook(playbook);
 }
 
@@ -791,11 +1053,13 @@ export async function deleteJournalPlaybookExample(playbookId: string, exampleId
 export async function syncJournalRuleChecks(
   journalEntryId: string,
   checks: Array<{ playbookRuleId: string; status: "PASS" | "FAIL" | "NA"; notes?: string }>,
+  options: { expectedUpdatedAt?: string } = {},
 ) {
-  await prisma.journalEntry.findUniqueOrThrow({ where: { id: journalEntryId }, select: { id: true } });
-  await prisma.$transaction(
-    checks.map((check) =>
-      prisma.journalEntryRuleCheck.upsert({
+  const entry = await prisma.$transaction(async (tx) => {
+    await claimJournalEntryVersion(tx, journalEntryId, options);
+
+    for (const check of checks) {
+      await tx.journalEntryRuleCheck.upsert({
         where: {
           journalEntryId_playbookRuleId: {
             journalEntryId,
@@ -812,10 +1076,32 @@ export async function syncJournalRuleChecks(
           status: check.status,
           notes: check.notes ?? "",
         },
-      }),
-    ),
-  );
-  return getJournalEntry(journalEntryId);
+      });
+    }
+
+    return tx.journalEntry.findUniqueOrThrow({ where: { id: journalEntryId }, include: journalInclude });
+  }, journalTransactionOptions);
+  return serializeJournalEntry(entry);
+}
+
+export async function claimJournalEntryVersion(
+  client: Prisma.TransactionClient | typeof prisma,
+  journalEntryId: string,
+  options: { expectedUpdatedAt?: string } = {},
+) {
+  const expectedUpdatedAt = requiredExpectedUpdatedAtFromInput(options, "Journal entry");
+  const nextUpdatedAt = new Date(Math.max(Date.now(), expectedUpdatedAt.getTime() + 1));
+
+  const updated = await client.journalEntry.updateMany({
+    where: { id: journalEntryId, updatedAt: expectedUpdatedAt },
+    data: { updatedAt: nextUpdatedAt },
+  });
+  if (updated.count !== 1) {
+    const current = await client.journalEntry.findUnique({ where: { id: journalEntryId }, select: { updatedAt: true } });
+    throw new JournalStaleWriteError("Journal entry", current?.updatedAt ?? null);
+  }
+
+  return nextUpdatedAt;
 }
 
 const reviewInclude = {
@@ -895,17 +1181,22 @@ export async function createJournalReview(input: JournalReviewMutationInput) {
       await tx.journalReviewAction.createMany({ data: actionRows(created.id, input.actions) });
     }
     return tx.journalReview.findUniqueOrThrow({ where: { id: created.id }, include: reviewInclude });
-  });
+  }, journalTransactionOptions);
   return serializeReview(review);
 }
 
 export async function updateJournalReview(id: string, input: JournalReviewMutationInput) {
+  const expectedUpdatedAt = requiredExpectedUpdatedAtFromInput(input, "Journal review");
   const review = await prisma.$transaction(async (tx) => {
-    await tx.journalReview.update({
-      where: { id },
-      data: reviewData(input) as Prisma.JournalReviewUncheckedUpdateInput,
-      select: { id: true },
+    const data = reviewData(input) as Prisma.JournalReviewUncheckedUpdateInput;
+    const updated = await tx.journalReview.updateMany({
+      where: { id, updatedAt: expectedUpdatedAt },
+      data,
     });
+    if (updated.count !== 1) {
+      const current = await tx.journalReview.findUnique({ where: { id }, select: { updatedAt: true } });
+      throw new JournalStaleWriteError("Journal review", current?.updatedAt ?? null);
+    }
     if (input.actions) {
       await tx.journalReviewAction.deleteMany({ where: { reviewId: id } });
       if (input.actions.length > 0) {
@@ -913,7 +1204,7 @@ export async function updateJournalReview(id: string, input: JournalReviewMutati
       }
     }
     return tx.journalReview.findUniqueOrThrow({ where: { id }, include: reviewInclude });
-  });
+  }, journalTransactionOptions);
   return serializeReview(review);
 }
 
@@ -1106,7 +1397,7 @@ export async function bulkUpdateJournalEntries(input: {
         });
       }
     }
-  });
+  }, journalTransactionOptions);
 
   return listJournalEntries({ limit: 1000 });
 }
@@ -1132,7 +1423,7 @@ export async function renameJournalTag(input: { category: JournalTagCategoryValu
         skipDuplicates: true,
       });
     }
-  });
+  }, journalTransactionOptions);
   return listJournalTags();
 }
 

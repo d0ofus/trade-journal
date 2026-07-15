@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { journalSavedViewPatchSchema } from "@/lib/journal/schema";
 import { deleteJournalSavedView, updateJournalSavedView } from "@/lib/server/journal";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 type Params = Promise<{ id: string }>;
 
 export async function PATCH(req: NextRequest, props: { params: Params }) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const { id } = await props.params;
   const body = await req.json();
   const parsed = journalSavedViewPatchSchema.safeParse(body);
@@ -16,6 +20,9 @@ export async function PATCH(req: NextRequest, props: { params: Params }) {
 }
 
 export async function DELETE(_req: NextRequest, props: { params: Params }) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const { id } = await props.params;
   await deleteJournalSavedView(id);
   return NextResponse.json({ ok: true });

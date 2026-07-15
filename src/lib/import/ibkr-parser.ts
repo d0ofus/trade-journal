@@ -23,7 +23,16 @@ export interface FilePreview {
   headers: string[];
   mapping: HeaderMap;
   rows: PreviewRow[];
+  totalRows: number;
   errors: string[];
+}
+
+export interface ParsedRowError {
+  rowNumber: number;
+  severity: "ERROR" | "WARNING";
+  code: string;
+  message: string;
+  rawRow: PreviewRow;
 }
 
 export interface ParsedImport {
@@ -31,6 +40,8 @@ export interface ParsedImport {
   executions: ExecutionImport[];
   positions: PositionImport[];
   snapshots: SnapshotImport[];
+  rawRowCount: number;
+  rowErrors: ParsedRowError[];
 }
 
 const executionAliases: Record<string, string[]> = {
@@ -101,35 +112,41 @@ function parseDate(raw: string | undefined): Date | undefined {
   const value = raw.trim();
   if (!value) return undefined;
 
-  const native = new Date(value);
-  if (!Number.isNaN(native.getTime())) {
-    return native;
+  const isoDateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateOnly) {
+    const [, yyyy, mm, dd] = isoDateOnly;
+    return new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)));
   }
 
   const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (match) {
     const [, mm, dd, yyyy, hh = "0", min = "0", ss = "0"] = match;
-    return new Date(
+    return new Date(Date.UTC(
       Number(yyyy),
       Number(mm) - 1,
       Number(dd),
       Number(hh),
       Number(min),
       Number(ss),
-    );
+    ));
   }
 
   const compact = value.match(/^(\d{4})(\d{2})(\d{2})(?:;(\d{2})(\d{2})(\d{2})?)?$/);
   if (compact) {
     const [, yyyy, mm, dd, hh = "0", min = "0", ss = "0"] = compact;
-    return new Date(
+    return new Date(Date.UTC(
       Number(yyyy),
       Number(mm) - 1,
       Number(dd),
       Number(hh),
       Number(min),
       Number(ss),
-    );
+    ));
+  }
+
+  const native = new Date(value);
+  if (!Number.isNaN(native.getTime())) {
+    return native;
   }
 
   return undefined;
@@ -188,10 +205,23 @@ function readFieldByHeaderAliases(row: PreviewRow, aliases: string[]): string | 
   return undefined;
 }
 
-function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionImport[] {
-  const parsed: ExecutionImport[] = [];
+function validationMessage(error: z.ZodError) {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.join(".");
+      return path ? `${path}: ${issue.message}` : issue.message;
+    })
+    .join("; ");
+}
 
-  for (const row of rows) {
+function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
+  parsed: ExecutionImport[];
+  rowErrors: ParsedRowError[];
+} {
+  const parsed: ExecutionImport[] = [];
+  const rowErrors: ParsedRowError[] = [];
+
+  for (const [index, row] of rows.entries()) {
     const symbol = (readField(row, mapping, "symbol") ?? "").trim();
     const rawAssetClass = (readField(row, mapping, "assetType") ?? "").trim().toUpperCase();
     const explicitExchange = readFieldByHeaderAliases(row, ["exchange"]);
@@ -227,16 +257,30 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): ExecutionIm
     };
 
     const validation = executionImportSchema.safeParse(candidate);
-    if (validation.success) parsed.push(validation.data);
+    if (validation.success) {
+      parsed.push(validation.data);
+    } else {
+      rowErrors.push({
+        rowNumber: index + 2,
+        severity: "ERROR",
+        code: "EXECUTION_ROW_INVALID",
+        message: validationMessage(validation.error),
+        rawRow: row,
+      });
+    }
   }
 
-  return parsed;
+  return { parsed, rowErrors };
 }
 
-function parsePositionRows(rows: PreviewRow[], mapping: HeaderMap): PositionImport[] {
+function parsePositionRows(rows: PreviewRow[], mapping: HeaderMap): {
+  parsed: PositionImport[];
+  rowErrors: ParsedRowError[];
+} {
   const parsed: PositionImport[] = [];
+  const rowErrors: ParsedRowError[] = [];
 
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const candidate = {
       account: readField(row, mapping, "account") ?? "DEFAULT",
       symbol: (readField(row, mapping, "symbol") ?? "").trim(),
@@ -250,16 +294,30 @@ function parsePositionRows(rows: PreviewRow[], mapping: HeaderMap): PositionImpo
     };
 
     const validation = positionImportSchema.safeParse(candidate);
-    if (validation.success) parsed.push(validation.data);
+    if (validation.success) {
+      parsed.push(validation.data);
+    } else {
+      rowErrors.push({
+        rowNumber: index + 2,
+        severity: "ERROR",
+        code: "POSITION_ROW_INVALID",
+        message: validationMessage(validation.error),
+        rawRow: row,
+      });
+    }
   }
 
-  return parsed;
+  return { parsed, rowErrors };
 }
 
-function parseSnapshotRows(rows: PreviewRow[], mapping: HeaderMap): SnapshotImport[] {
+function parseSnapshotRows(rows: PreviewRow[], mapping: HeaderMap): {
+  parsed: SnapshotImport[];
+  rowErrors: ParsedRowError[];
+} {
   const parsed: SnapshotImport[] = [];
+  const rowErrors: ParsedRowError[] = [];
 
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const candidate = {
       account: readField(row, mapping, "account") ?? "DEFAULT",
       date: parseDate(readField(row, mapping, "date")),
@@ -270,10 +328,20 @@ function parseSnapshotRows(rows: PreviewRow[], mapping: HeaderMap): SnapshotImpo
     };
 
     const validation = snapshotImportSchema.safeParse(candidate);
-    if (validation.success) parsed.push(validation.data);
+    if (validation.success) {
+      parsed.push(validation.data);
+    } else {
+      rowErrors.push({
+        rowNumber: index + 2,
+        severity: "ERROR",
+        code: "SNAPSHOT_ROW_INVALID",
+        message: validationMessage(validation.error),
+        rawRow: row,
+      });
+    }
   }
 
-  return parsed;
+  return { parsed, rowErrors };
 }
 
 export function previewCsv(filename: string, csvText: string): FilePreview {
@@ -288,6 +356,7 @@ export function previewCsv(filename: string, csvText: string): FilePreview {
       headers,
       mapping: {},
       rows: rows.slice(0, 5),
+      totalRows: rows.length,
       errors: ["Could not detect file type. Map columns manually and retry."],
     };
   }
@@ -313,6 +382,7 @@ export function previewCsv(filename: string, csvText: string): FilePreview {
     headers,
     mapping,
     rows: rows.slice(0, 5),
+    totalRows: rows.length,
     errors,
   };
 }
@@ -336,18 +406,26 @@ export function parseCsvWithMapping(
     executions: [],
     positions: [],
     snapshots: [],
+    rawRowCount: rows.length,
+    rowErrors: [],
   };
 
   if (kind === "executions") {
-    parsed.executions = parseExecutionRows(rows, mapping);
+    const result = parseExecutionRows(rows, mapping);
+    parsed.executions = result.parsed;
+    parsed.rowErrors = result.rowErrors;
   }
 
   if (kind === "positions") {
-    parsed.positions = parsePositionRows(rows, mapping);
+    const result = parsePositionRows(rows, mapping);
+    parsed.positions = result.parsed;
+    parsed.rowErrors = result.rowErrors;
   }
 
   if (kind === "snapshots") {
-    parsed.snapshots = parseSnapshotRows(rows, mapping);
+    const result = parseSnapshotRows(rows, mapping);
+    parsed.snapshots = result.parsed;
+    parsed.rowErrors = result.rowErrors;
   }
 
   return parsed;

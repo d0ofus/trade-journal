@@ -56,6 +56,7 @@ export interface ClosedTradeGroup {
 interface Lot {
   qty: number;
   price: number;
+  opening: boolean;
 }
 
 interface WorkingTrade {
@@ -74,6 +75,8 @@ interface WorkingTrade {
   entryValue: number;
   exitQty: number;
   exitValue: number;
+  matchedEntryQty: number;
+  matchedEntryValue: number;
   grossPnl: number;
   totalCommission: number;
   executions: ClosedTradeGroup["executions"];
@@ -111,6 +114,17 @@ function averageCostForLots(lots: Lot[]) {
     value += Math.abs(lot.qty) * lot.price;
   }
   return quantity > EPSILON ? value / quantity : 0;
+}
+
+function findMatchingLotIndex(lots: Lot[], closeSigned: number, preferTradeLots: boolean) {
+  const isMatch = (lot: Lot) => signOf(lot.qty) !== 0 && signOf(lot.qty) !== signOf(closeSigned);
+
+  if (preferTradeLots) {
+    const tradeLotIndex = lots.findIndex((lot) => !lot.opening && isMatch(lot));
+    if (tradeLotIndex >= 0) return tradeLotIndex;
+  }
+
+  return lots.findIndex(isMatch);
 }
 
 function stableTradeId(trade: WorkingTrade, closeTime: Date, closeCount: number) {
@@ -152,7 +166,7 @@ export function computeClosedTradeGroups(
     let positionQty = opening.quantity ?? 0;
 
     if (Math.abs(positionQty) > EPSILON) {
-      lots.push({ qty: opening.quantity, price: opening.avgCost });
+      lots.push({ qty: opening.quantity, price: opening.avgCost, opening: true });
     }
 
     let currentTrade: WorkingTrade | null = null;
@@ -185,13 +199,8 @@ export function computeClosedTradeGroups(
 
         closeCount += 1;
         const closeTime = exec.executedAt;
-        let effectiveEntryQty = currentTrade.entryQty;
-        let effectiveEntryValue = currentTrade.entryValue;
-
-        if (fullyLiquidatedCarry) {
-          effectiveEntryQty += Math.abs(currentTrade.openingQuantity);
-          effectiveEntryValue += Math.abs(currentTrade.openingQuantity) * currentTrade.openingAvgCost;
-        }
+        const effectiveEntryQty = currentTrade.matchedEntryQty;
+        const effectiveEntryValue = currentTrade.matchedEntryValue;
 
         const tradeId = stableTradeId(currentTrade, closeTime, closeCount);
         result.push({
@@ -246,6 +255,8 @@ export function computeClosedTradeGroups(
             entryValue: 0,
             exitQty: 0,
             exitValue: 0,
+            matchedEntryQty: 0,
+            matchedEntryValue: 0,
             grossPnl: 0,
             totalCommission: 0,
             executions: [],
@@ -256,7 +267,7 @@ export function computeClosedTradeGroups(
         if (sameDirection) {
           const openQty = Math.abs(remaining);
           const charge = execQty > EPSILON ? execCharge * (openQty / execQty) : 0;
-          lots.push({ qty: remaining, price: exec.price });
+          lots.push({ qty: remaining, price: exec.price, opening: false });
           positionQty += remaining;
           currentTrade.entryQty += openQty;
           currentTrade.entryValue += openQty * exec.price;
@@ -281,18 +292,27 @@ export function computeClosedTradeGroups(
 
         let grossContribution = 0;
         let qtyToMatch = closeQty;
-        while (qtyToMatch > EPSILON && lots.length > 0 && signOf(lots[0].qty) !== signOf(closeSigned)) {
-          const lot = lots[0];
+        while (qtyToMatch > EPSILON && lots.length > 0) {
+          const lotIndex = findMatchingLotIndex(
+            lots,
+            closeSigned,
+            currentTrade.entryQty - currentTrade.exitQty > EPSILON,
+          );
+          if (lotIndex < 0) break;
+
+          const lot = lots[lotIndex];
           const matchQty = Math.min(qtyToMatch, Math.abs(lot.qty));
           if (lot.qty > 0 && closeSigned < 0) {
             grossContribution += matchQty * (exec.price - lot.price);
           } else if (lot.qty < 0 && closeSigned > 0) {
             grossContribution += matchQty * (lot.price - exec.price);
           }
+          currentTrade.matchedEntryQty += matchQty;
+          currentTrade.matchedEntryValue += matchQty * lot.price;
           lot.qty += signOf(closeSigned) * matchQty;
           qtyToMatch -= matchQty;
           if (Math.abs(lot.qty) <= EPSILON) {
-            lots.shift();
+            lots.splice(lotIndex, 1);
           }
         }
 

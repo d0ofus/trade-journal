@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import type { ReactNode } from "react";
+import Link from "next/link";
 import {
   BarChart3,
   BookOpen,
@@ -83,6 +84,7 @@ type JournalChart = {
   screenshotUrl: string | null;
   caption: string;
   createdAt: string;
+  updatedAt: string;
 };
 
 type PendingJournalChart = JournalChartStagePayload & {
@@ -133,6 +135,7 @@ type JournalPlaybook = {
   invalidationRules: string;
   marketRegimeFit: string;
   archived: boolean;
+  updatedAt: string;
   rules: JournalPlaybookRule[];
   examples?: JournalPlaybookExample[];
   _count?: { entries: number };
@@ -318,12 +321,19 @@ const ENTRY_SECTIONS: Array<{ key: EntrySection; label: string }> = [
 const emptyTags = (): TagsByCategory => ({ SETUP: [], LESSON: [], MISTAKE: [], CONTEXT: [], CUSTOM: [] });
 const emptyRule = (sortOrder: number): JournalPlaybookRule => ({ text: "", category: "SETUP", required: true, sortOrder });
 const emptyAction = (): JournalReviewAction => ({ label: "", status: "OPEN", journalEntryId: null, playbookId: null, dueDate: null });
+const fallbackInitialNowIso = "1970-01-01T00:00:00.000Z";
 
-function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChecks" | "contextSnapshots" | "links" | "notionDerived" | "createdAt" | "updatedAt"> {
+function stableIso(value: string | null | undefined) {
+  if (!value) return fallbackInitialNowIso;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallbackInitialNowIso : date.toISOString();
+}
+
+function blankForm(initialNowIso: string): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChecks" | "contextSnapshots" | "links" | "notionDerived" | "createdAt" | "updatedAt"> {
   return {
     symbol: "",
     tradeTitle: "",
-    ideaDate: new Date().toISOString(),
+    ideaDate: stableIso(initialNowIso),
     entryEndAt: null,
     direction: "LONG",
     status: "DRAFT",
@@ -391,7 +401,91 @@ function blankForm(): Omit<JournalEntry, "id" | "playbook" | "charts" | "ruleChe
   };
 }
 
-function blankPlaybookForm(): Omit<JournalPlaybook, "id" | "_count"> {
+function formFromEntry(entry: JournalEntry): ReturnType<typeof blankForm> {
+  const score = (value: number | null) => (typeof value === "number" ? Math.min(5, Math.max(1, value)) : null);
+
+  return {
+    symbol: entry.symbol,
+    tradeTitle: entry.tradeTitle,
+    ideaDate: entry.ideaDate,
+    entryEndAt: entry.entryEndAt,
+    direction: entry.direction,
+    status: entry.status,
+    tradeStatus: entry.tradeStatus,
+    playbookId: entry.playbookId,
+    setup: entry.setup ?? "",
+    timeframe: coerceTimeframe(entry.timeframe),
+    macroSentiment: entry.macroSentiment,
+    thesis: entry.thesis,
+    trigger: entry.trigger,
+    riskPlan: entry.riskPlan,
+    idealExecutionPlan: entry.idealExecutionPlan,
+    missedReason: entry.missedReason,
+    marketContext: entry.marketContext,
+    peerContext: entry.peerContext,
+    rating: entry.rating,
+    lessonLearned: entry.lessonLearned,
+    plannedEntry: entry.plannedEntry,
+    plannedStop: entry.plannedStop,
+    plannedTarget1: entry.plannedTarget1,
+    plannedTarget2: entry.plannedTarget2,
+    plannedTarget3: entry.plannedTarget3,
+    invalidationLevel: entry.invalidationLevel,
+    expectedR: entry.expectedR,
+    exitMarked: entry.exitMarked,
+    highAvat: entry.highAvat,
+    indexSupportive: entry.indexSupportive,
+    daysConsolidating: entry.daysConsolidating,
+    daysFromT: entry.daysFromT,
+    xFrom50Sma: entry.xFrom50Sma,
+    stopLossPercent: entry.stopLossPercent,
+    riskPercent: entry.riskPercent,
+    maxRiskReward: entry.maxRiskReward,
+    idealExecutionOptions: entry.idealExecutionOptions,
+    idealStopLossOptions: entry.idealStopLossOptions,
+    actualTriggerAt: entry.actualTriggerAt,
+    followThroughDays: entry.followThroughDays,
+    mfeR: entry.mfeR,
+    maeR: entry.maeR,
+    bestExitR: entry.bestExitR,
+    outcomeStatus: entry.outcomeStatus,
+    outcomeNotes: entry.outcomeNotes,
+    confidenceScore: score(entry.confidenceScore),
+    planClarityScore: score(entry.planClarityScore),
+    preparationScore: score(entry.preparationScore),
+    patienceScore: score(entry.patienceScore),
+    ruleAdherenceScore: score(entry.ruleAdherenceScore),
+    emotionalState: entry.emotionalState ?? "",
+    wouldTakeAgain: entry.wouldTakeAgain,
+    marketRegime: entry.marketRegime,
+    spyTrend: entry.spyTrend,
+    qqqTrend: entry.qqqTrend,
+    iwmTrend: entry.iwmTrend,
+    sectorTrend: entry.sectorTrend,
+    sectorEtf: entry.sectorEtf ?? "",
+    breadthNotes: entry.breadthNotes,
+    catalystNotes: entry.catalystNotes,
+    relativeStrengthNotes: entry.relativeStrengthNotes,
+    autoDraft: entry.autoDraft,
+    reviewDueAt: entry.reviewDueAt,
+    outcomeCalculatedAt: entry.outcomeCalculatedAt,
+    outcomeCalculationJson: entry.outcomeCalculationJson,
+    tags: entry.tags,
+    notionRelations: entry.notionRelations,
+  };
+}
+
+function journalFormSignature(form: ReturnType<typeof blankForm>) {
+  return JSON.stringify({
+    ...form,
+    tags: Object.fromEntries(JOURNAL_TAG_CATEGORIES.map((category) => [category, [...form.tags[category]].sort()])),
+    notionRelations: Object.fromEntries(
+      JOURNAL_NOTION_RELATION_KEYS.map((key) => [key, [...(form.notionRelations[key] ?? [])].sort()]),
+    ),
+  });
+}
+
+function blankPlaybookForm(): Omit<JournalPlaybook, "id" | "_count" | "updatedAt"> {
   return {
     name: "",
     setupType: "",
@@ -404,8 +498,8 @@ function blankPlaybookForm(): Omit<JournalPlaybook, "id" | "_count"> {
   };
 }
 
-function blankReviewForm(): Omit<JournalReview, "id" | "createdAt" | "updatedAt"> {
-  const today = new Date().toISOString();
+function blankReviewForm(initialNowIso: string): Omit<JournalReview, "id" | "createdAt" | "updatedAt"> {
+  const today = stableIso(initialNowIso);
   return {
     period: "WEEKLY",
     startDate: today,
@@ -557,26 +651,36 @@ function sectionTitle(title: string, detail?: string) {
 export function JournalWorkspace({
   initialAnalytics,
   initialEntries,
+  initialNowIso,
   initialPlaybooks,
   initialReviews,
+  initialSelectedEntryId,
   initialTags,
 }: {
   initialAnalytics: JournalAnalytics;
   initialEntries: JournalEntry[];
+  initialNowIso: string;
   initialPlaybooks: JournalPlaybook[];
   initialReviews: JournalReview[];
+  initialSelectedEntryId?: string | null;
   initialTags: JournalTagRow[];
 }) {
+  const stableInitialNowIso = stableIso(initialNowIso);
+  const initialSelectedEntry = initialSelectedEntryId
+    ? initialEntries.find((entry) => entry.id === initialSelectedEntryId) ?? null
+    : null;
+  const initialForm = initialSelectedEntry ? formFromEntry(initialSelectedEntry) : blankForm(stableInitialNowIso);
   const [entries, setEntries] = useState(initialEntries);
   const [tagRows, setTagRows] = useState(initialTags);
   const [playbooks, setPlaybooks] = useState(initialPlaybooks);
   const [reviews, setReviews] = useState(initialReviews);
   const [analytics, setAnalytics] = useState(initialAnalytics);
-  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
-  const [form, setForm] = useState(blankForm());
+  const [activeTab, setActiveTab] = useState<Tab>(() => (initialSelectedEntry ? "entry" : "dashboard"));
+  const [form, setForm] = useState(initialForm);
+  const [entryBaselineSignature, setEntryBaselineSignature] = useState(() => journalFormSignature(initialForm));
   const [playbookForm, setPlaybookForm] = useState(blankPlaybookForm());
-  const [reviewForm, setReviewForm] = useState(blankReviewForm());
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [reviewForm, setReviewForm] = useState(() => blankReviewForm(stableInitialNowIso));
+  const [selectedId, setSelectedId] = useState<string | null>(() => initialSelectedEntry?.id ?? null);
   const [selectedPlaybookId, setSelectedPlaybookId] = useState<string | null>(null);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
   const [entrySection, setEntrySection] = useState<EntrySection>("basics");
@@ -584,6 +688,7 @@ export function JournalWorkspace({
   const [chartPreviewRequest, setChartPreviewRequest] = useState<ChartPreviewRequest | null>(null);
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, { status: "PASS" | "FAIL" | "NA"; notes: string }>>({});
   const [message, setMessage] = useState("");
+  const [journalConflict, setJournalConflict] = useState<null | "entry" | "playbook" | "review" | "chart">(null);
   const [query, setQuery] = useState("");
   const [filterTag, setFilterTag] = useState("");
   const [filterCategory, setFilterCategory] = useState<JournalTagCategoryValue | "">("");
@@ -603,6 +708,7 @@ export function JournalWorkspace({
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
   const [pendingCharts, setPendingCharts] = useState<PendingJournalChart[]>([]);
+  const [entrySaveInFlight, setEntrySaveInFlight] = useState(false);
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [tagManager, setTagManager] = useState({ category: "LESSON" as JournalTagCategoryValue, from: "", to: "", name: "" });
   const [autosaveState, setAutosaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
@@ -616,9 +722,21 @@ export function JournalWorkspace({
     errors?: string[];
   } | null>(null);
   const [pending, startTransition] = useTransition();
+  const journalWorkspaceBusy = pending || entrySaveInFlight;
 
   const selectedEntry = useMemo(() => entries.find((entry) => entry.id === selectedId) ?? null, [entries, selectedId]);
+  const sourceClosedTradeLinks = useMemo(
+    () =>
+      (selectedEntry?.links ?? []).filter(
+        (link) => link.targetType === "CLOSED_TRADE" && typeof link.targetId === "string" && link.targetId.length > 0,
+      ),
+    [selectedEntry],
+  );
   const selectedPlaybook = useMemo(() => playbooks.find((playbook) => playbook.id === (form.playbookId || selectedPlaybookId)) ?? null, [form.playbookId, playbooks, selectedPlaybookId]);
+  const selectedPlaybookForEdit = useMemo(() => playbooks.find((playbook) => playbook.id === selectedPlaybookId) ?? null, [playbooks, selectedPlaybookId]);
+  const selectedReview = useMemo(() => reviews.find((review) => review.id === selectedReviewId) ?? null, [reviews, selectedReviewId]);
+  const entryFormDirty = useMemo(() => journalFormSignature(form) !== entryBaselineSignature, [entryBaselineSignature, form]);
+  const journalWorkspaceDirty = entryFormDirty || pendingCharts.length > 0;
   const chartRows = useMemo(() => entries.flatMap((entry) => entry.charts.map((chart) => ({ entry, chart }))), [entries]);
   const filteredChartRows = useMemo(() => chartRows.filter(({ entry, chart }) => {
     if (filterPurpose && chart.purpose !== filterPurpose) return false;
@@ -701,7 +819,7 @@ export function JournalWorkspace({
   }, [selectedEntry, selectedPlaybook]);
 
   useEffect(() => {
-    if (activeTab !== "capture" || !selectedId || !autosaveReadyRef.current) return;
+    if (activeTab !== "capture" || !selectedId || !autosaveReadyRef.current || journalConflict === "entry") return;
     setAutosaveState("dirty");
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = setTimeout(() => {
@@ -714,6 +832,7 @@ export function JournalWorkspace({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeTab,
+    journalConflict,
     selectedId,
     form.symbol,
     form.ideaDate,
@@ -735,6 +854,16 @@ export function JournalWorkspace({
   }, [activeTab]);
 
   useEffect(() => {
+    if (!journalWorkspaceDirty) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [journalWorkspaceDirty]);
+
+  useEffect(() => {
     function syncEntryChartHeight() {
       const width = window.innerWidth;
       setEntryChartHeight(width < 640 ? 460 : width < 1280 ? 590 : 680);
@@ -744,97 +873,57 @@ export function JournalWorkspace({
     return () => window.removeEventListener("resize", syncEntryChartHeight);
   }, []);
 
-  function selectEntry(entry: JournalEntry) {
+  function confirmDiscardJournalChanges(action: string) {
+    if (entrySaveInFlight) {
+      setMessage(`Journal save in progress. Wait for it to finish before you ${action}.`);
+      return false;
+    }
+    if (!journalWorkspaceDirty) return true;
+    const chartDetail =
+      pendingCharts.length > 0
+        ? ` ${pendingCharts.length} pending chart${pendingCharts.length === 1 ? "" : "s"} will also be discarded.`
+        : "";
+    const confirmed = window.confirm(`You have unsaved journal changes.${chartDetail} Save Entry before you ${action}, or discard changes to continue.`);
+    if (!confirmed) {
+      setMessage("Unsaved journal changes preserved. Save Entry before switching entries or leaving this review.");
+    }
+    return confirmed;
+  }
+
+  function selectEntry(entry: JournalEntry, options?: { force?: boolean }) {
+    if (!options?.force && !confirmDiscardJournalChanges("open another journal entry")) return false;
+    const nextForm = formFromEntry(entry);
     autosaveReadyRef.current = false;
+    setJournalConflict(null);
     setSelectedId(entry.id);
-    setForm({
-      symbol: entry.symbol,
-      tradeTitle: entry.tradeTitle,
-      ideaDate: entry.ideaDate,
-      entryEndAt: entry.entryEndAt,
-      direction: entry.direction,
-      status: entry.status,
-      tradeStatus: entry.tradeStatus,
-      playbookId: entry.playbookId,
-      setup: entry.setup ?? "",
-      timeframe: entry.timeframe,
-      macroSentiment: entry.macroSentiment,
-      thesis: entry.thesis,
-      trigger: entry.trigger,
-      riskPlan: entry.riskPlan,
-      idealExecutionPlan: entry.idealExecutionPlan,
-      missedReason: entry.missedReason,
-      marketContext: entry.marketContext,
-      peerContext: entry.peerContext,
-      rating: entry.rating,
-      lessonLearned: entry.lessonLearned,
-      plannedEntry: entry.plannedEntry,
-      plannedStop: entry.plannedStop,
-      plannedTarget1: entry.plannedTarget1,
-      plannedTarget2: entry.plannedTarget2,
-      plannedTarget3: entry.plannedTarget3,
-      invalidationLevel: entry.invalidationLevel,
-      expectedR: entry.expectedR,
-      exitMarked: entry.exitMarked,
-      highAvat: entry.highAvat,
-      indexSupportive: entry.indexSupportive,
-      daysConsolidating: entry.daysConsolidating,
-      daysFromT: entry.daysFromT,
-      xFrom50Sma: entry.xFrom50Sma,
-      stopLossPercent: entry.stopLossPercent,
-      riskPercent: entry.riskPercent,
-      maxRiskReward: entry.maxRiskReward,
-      idealExecutionOptions: entry.idealExecutionOptions,
-      idealStopLossOptions: entry.idealStopLossOptions,
-      actualTriggerAt: entry.actualTriggerAt,
-      followThroughDays: entry.followThroughDays,
-      mfeR: entry.mfeR,
-      maeR: entry.maeR,
-      bestExitR: entry.bestExitR,
-      outcomeStatus: entry.outcomeStatus,
-      outcomeNotes: entry.outcomeNotes,
-      confidenceScore: entry.confidenceScore,
-      planClarityScore: entry.planClarityScore,
-      preparationScore: entry.preparationScore,
-      patienceScore: entry.patienceScore,
-      ruleAdherenceScore: entry.ruleAdherenceScore,
-      emotionalState: entry.emotionalState ?? "",
-      wouldTakeAgain: entry.wouldTakeAgain,
-      marketRegime: entry.marketRegime,
-      spyTrend: entry.spyTrend,
-      qqqTrend: entry.qqqTrend,
-      iwmTrend: entry.iwmTrend,
-      sectorTrend: entry.sectorTrend,
-      sectorEtf: entry.sectorEtf ?? "",
-      breadthNotes: entry.breadthNotes,
-      catalystNotes: entry.catalystNotes,
-      relativeStrengthNotes: entry.relativeStrengthNotes,
-      autoDraft: entry.autoDraft,
-      reviewDueAt: entry.reviewDueAt,
-      outcomeCalculatedAt: entry.outcomeCalculatedAt,
-      outcomeCalculationJson: entry.outcomeCalculationJson,
-      tags: entry.tags,
-      notionRelations: entry.notionRelations,
-    });
+    setForm(nextForm);
+    setEntryBaselineSignature(journalFormSignature(nextForm));
     setMarketContext(null);
     setChartPreviewRequest(null);
     setPendingCharts([]);
     setActiveTab("entry");
+    return true;
   }
 
-  function newEntry() {
+  function newEntry(options?: { force?: boolean }) {
+    if (!options?.force && !confirmDiscardJournalChanges("start a new idea")) return false;
+    const nextForm = blankForm(stableInitialNowIso);
     autosaveReadyRef.current = false;
+    setJournalConflict(null);
     setSelectedId(null);
-    setForm(blankForm());
+    setForm(nextForm);
+    setEntryBaselineSignature(journalFormSignature(nextForm));
     setMarketContext(null);
     setChartPreviewRequest(null);
     setRuleDrafts({});
     setPendingCharts([]);
     setEntrySection("basics");
     setActiveTab("entry");
+    return true;
   }
 
   function selectPlaybook(playbook: JournalPlaybook) {
+    setJournalConflict(null);
     setSelectedPlaybookId(playbook.id);
     setPlaybookForm({
       name: playbook.name,
@@ -850,12 +939,14 @@ export function JournalWorkspace({
   }
 
   function newPlaybook() {
+    setJournalConflict(null);
     setSelectedPlaybookId(null);
     setPlaybookForm(blankPlaybookForm());
     setActiveTab("playbooks");
   }
 
   function selectReview(review: JournalReview) {
+    setJournalConflict(null);
     setSelectedReviewId(review.id);
     setReviewForm({
       period: review.period,
@@ -953,7 +1044,7 @@ export function JournalWorkspace({
     const data = await res.json();
     const saved = data.entry as JournalEntry;
     setSelectedId(saved.id);
-    selectEntry(saved);
+    selectEntry(saved, { force: true });
     setActiveTab(targetTab);
     setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
     setAutosaveState("saved");
@@ -966,10 +1057,18 @@ export function JournalWorkspace({
     const res = await fetch(`/api/journal/${selectedId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...journalPayload(), autoDraft: true }),
+      body: JSON.stringify({
+        ...journalPayload(),
+        autoDraft: true,
+        expectedUpdatedAt: selectedEntry?.updatedAt,
+      }),
     });
     if (!res.ok) {
       setAutosaveState("error");
+      if (res.status === 409) {
+        autosaveReadyRef.current = false;
+        setJournalConflict("entry");
+      }
       setMessage(await responseErrorMessage(res, "Failed to autosave capture draft."));
       return;
     }
@@ -980,6 +1079,10 @@ export function JournalWorkspace({
   }
 
   function stageChart(payload: JournalChartStagePayload) {
+    if (entrySaveInFlight) {
+      setMessage("Journal save in progress. Wait for it to finish before attaching another chart.");
+      return;
+    }
     setPendingCharts((current) => [{ ...payload, localId: crypto.randomUUID() }, ...current]);
     setMessage("Attached chart. Save Entry to persist it.");
   }
@@ -992,10 +1095,11 @@ export function JournalWorkspace({
     setPendingCharts((current) => current.filter((chart) => chart.localId !== localId));
   }
 
-  async function uploadPendingCharts(entryId: string, charts: PendingJournalChart[]) {
+  async function uploadPendingCharts(entryId: string, charts: PendingJournalChart[], expectedEntryUpdatedAt: string | null) {
     const failed: PendingJournalChart[] = [];
     const errors: string[] = [];
     let uploaded = 0;
+    let nextExpectedUpdatedAt = expectedEntryUpdatedAt;
     for (const chart of charts) {
       const { localId, ...payload } = chart;
       void localId;
@@ -1003,11 +1107,14 @@ export function JournalWorkspace({
         const res = await fetch(`/api/journal/${entryId}/charts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, expectedUpdatedAt: nextExpectedUpdatedAt }),
         });
         if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (typeof data.entryUpdatedAt === "string") nextExpectedUpdatedAt = data.entryUpdatedAt;
           uploaded += 1;
         } else {
+          if (res.status === 409) setJournalConflict("entry");
           errors.push(await responseErrorMessage(res, `Failed to upload ${chart.symbol} chart.`));
           failed.push(chart);
         }
@@ -1016,7 +1123,7 @@ export function JournalWorkspace({
         failed.push(chart);
       }
     }
-    return { errors, failed, uploaded };
+    return { entryUpdatedAt: nextExpectedUpdatedAt, errors, failed, uploaded };
   }
 
   async function reloadEntries(overrides?: {
@@ -1072,31 +1179,48 @@ export function JournalWorkspace({
   }
 
   function saveEntry() {
+    if (entrySaveInFlight) return;
+    setEntrySaveInFlight(true);
     startTransition(async () => {
       try {
         setMessage("Saving journal entry...");
         const chartsToUpload = pendingCharts;
-        const payload = { ...journalPayload(), autoDraft: false };
+        const payload = {
+          ...journalPayload(),
+          autoDraft: false,
+          ...(selectedId && selectedEntry?.updatedAt ? { expectedUpdatedAt: selectedEntry.updatedAt } : {}),
+        };
         const res = await fetch(selectedId ? `/api/journal/${selectedId}` : "/api/journal", {
           method: selectedId ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error(await responseErrorMessage(res, "Failed to save journal entry."));
+        if (!res.ok) {
+          if (res.status === 409) setJournalConflict("entry");
+          throw new Error(await responseErrorMessage(res, "Failed to save journal entry."));
+        }
         const data = await res.json();
         const saved = data.entry as JournalEntry;
+        const savedForm = formFromEntry(saved);
+        setJournalConflict(null);
         setSelectedId(saved.id);
+        setForm(savedForm);
+        setEntryBaselineSignature(journalFormSignature(savedForm));
         setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
         let uploaded = 0;
         let failedCharts: PendingJournalChart[] = [];
         let chartErrors: string[] = [];
         if (chartsToUpload.length > 0) {
-          const result = await uploadPendingCharts(saved.id, chartsToUpload);
+          const result = await uploadPendingCharts(saved.id, chartsToUpload, saved.updatedAt);
           uploaded = result.uploaded;
           failedCharts = result.failed;
           chartErrors = result.errors;
         }
-        setPendingCharts(failedCharts);
+        const attemptedChartIds = new Set(chartsToUpload.map((chart) => chart.localId));
+        setPendingCharts((current) => [
+          ...failedCharts,
+          ...current.filter((chart) => !attemptedChartIds.has(chart.localId)),
+        ]);
         await Promise.all([reloadEntries(), reloadPlaybooks()]);
         if (failedCharts.length > 0) {
           const detail = chartErrors.length > 0 ? ` ${chartErrors.join(" ")}` : "";
@@ -1106,6 +1230,8 @@ export function JournalWorkspace({
         }
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "Failed to save journal entry.");
+      } finally {
+        setEntrySaveInFlight(false);
       }
     });
   }
@@ -1124,11 +1250,15 @@ export function JournalWorkspace({
         const res = await fetch(`/api/journal/${selectedId}/rule-checks`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ checks }),
+          body: JSON.stringify({ checks, expectedUpdatedAt: selectedEntry?.updatedAt }),
         });
-        if (!res.ok) throw new Error("Failed to save rule checks.");
+        if (!res.ok) {
+          if (res.status === 409) setJournalConflict("entry");
+          throw new Error(await responseErrorMessage(res, "Failed to save rule checks."));
+        }
         const data = await res.json();
         const saved = data.entry as JournalEntry;
+        setJournalConflict(null);
         setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
         setMessage("Saved rule checks.");
       } catch (error) {
@@ -1138,13 +1268,22 @@ export function JournalWorkspace({
   }
 
   function deleteEntry() {
-    if (!selectedId) return;
+    if (!selectedId || !selectedEntry) return;
+    if (!confirmDiscardJournalChanges("delete this journal entry")) return;
+    if (!window.confirm("Delete this journal entry permanently?")) return;
     startTransition(async () => {
       try {
-        const res = await fetch(`/api/journal/${selectedId}`, { method: "DELETE" });
-        if (!res.ok) throw new Error("Failed to delete journal entry.");
+        const res = await fetch(`/api/journal/${selectedId}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedUpdatedAt: selectedEntry.updatedAt }),
+        });
+        if (!res.ok) {
+          if (res.status === 409) setJournalConflict("entry");
+          throw new Error(await responseErrorMessage(res, "Failed to delete journal entry."));
+        }
         setEntries((current) => current.filter((entry) => entry.id !== selectedId));
-        newEntry();
+        newEntry({ force: true });
         await reloadEntries().catch(() => undefined);
         setMessage("Deleted journal entry.");
       } catch (error) {
@@ -1159,6 +1298,9 @@ export function JournalWorkspace({
         const payload = {
           ...playbookForm,
           setupType: playbookForm.setupType || null,
+          ...(selectedPlaybookId && selectedPlaybookForEdit?.updatedAt
+            ? { expectedUpdatedAt: selectedPlaybookForEdit.updatedAt }
+            : {}),
           rules: playbookForm.rules
             .filter((rule) => rule.text.trim())
             .map((rule, index) => ({ ...rule, sortOrder: index })),
@@ -1168,9 +1310,13 @@ export function JournalWorkspace({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error("Failed to save playbook.");
+        if (!res.ok) {
+          if (res.status === 409) setJournalConflict("playbook");
+          throw new Error(await responseErrorMessage(res, "Failed to save playbook."));
+        }
         const data = await res.json();
         const saved = data.playbook as JournalPlaybook;
+        setJournalConflict(null);
         setSelectedPlaybookId(saved.id);
         setPlaybooks((current) => [saved, ...current.filter((playbook) => playbook.id !== saved.id)].sort((a, b) => a.name.localeCompare(b.name)));
         setMessage("Saved playbook.");
@@ -1187,6 +1333,7 @@ export function JournalWorkspace({
           ...reviewForm,
           startDate: dateInputValue(reviewForm.startDate),
           endDate: dateInputValue(reviewForm.endDate),
+          ...(selectedReviewId && selectedReview?.updatedAt ? { expectedUpdatedAt: selectedReview.updatedAt } : {}),
           actions: reviewForm.actions.filter((action) => action.label.trim()),
         };
         const res = await fetch(selectedReviewId ? `/api/journal/reviews/${selectedReviewId}` : "/api/journal/reviews", {
@@ -1194,9 +1341,13 @@ export function JournalWorkspace({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) throw new Error("Failed to save review.");
+        if (!res.ok) {
+          if (res.status === 409) setJournalConflict("review");
+          throw new Error(await responseErrorMessage(res, "Failed to save review."));
+        }
         const data = await res.json();
         const saved = data.review as JournalReview;
+        setJournalConflict(null);
         setSelectedReviewId(saved.id);
         setReviews((current) => [saved, ...current.filter((review) => review.id !== saved.id)]);
         setMessage("Saved review.");
@@ -1248,9 +1399,15 @@ export function JournalWorkspace({
       const res = await fetch(`/api/journal/${entry.id}/charts/${chart.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ caption }),
+        body: JSON.stringify({ caption, expectedUpdatedAt: chart.updatedAt }),
       });
-      if (res.ok) await reloadEntries();
+      if (res.ok) {
+        setJournalConflict(null);
+        await reloadEntries();
+      } else {
+        if (res.status === 409) setJournalConflict("chart");
+        setMessage(await responseErrorMessage(res, "Failed to save chart caption."));
+      }
     });
   }
 
@@ -1326,22 +1483,37 @@ export function JournalWorkspace({
   }
 
   function calculateOutcome(entryId: string, apply = true) {
+    if (entrySaveInFlight) {
+      setMessage("Journal save in progress. Wait for it to finish before calculating outcome.");
+      return;
+    }
+    if (apply && selectedId === entryId && journalWorkspaceDirty) {
+      setMessage(
+        pendingCharts.length > 0
+          ? "Save Entry before calculating outcome. Pending charts must be saved first."
+          : "Save Entry before calculating outcome.",
+      );
+      return;
+    }
     startTransition(async () => {
       setMessage("Calculating journal outcome...");
+      const entry = entries.find((candidate) => candidate.id === entryId);
       const res = await fetch(`/api/journal/${entryId}/outcome/calculate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apply }),
+        body: JSON.stringify({ apply, expectedUpdatedAt: apply ? entry?.updatedAt : undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (res.status === 409) setJournalConflict("entry");
         setMessage(typeof data.error === "string" ? data.error : "Failed to calculate outcome.");
         return;
       }
       if (data.entry) {
         const saved = data.entry as JournalEntry;
+        setJournalConflict(null);
         setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
-        if (selectedId === saved.id) selectEntry(saved);
+        if (selectedId === saved.id) selectEntry(saved, { force: true });
       }
       setMessage(data.calculation?.reason ?? "Calculated outcome.");
       await reloadEntries().catch(() => undefined);
@@ -1365,10 +1537,17 @@ export function JournalWorkspace({
             screenshotDataUrl: String(reader.result),
             mimeType: file.type || "image/png",
             tradingViewLayoutJson: JSON.stringify({ source: "tradingview-widget-upload", fileName: file.name }),
+            expectedUpdatedAt: selectedEntry.updatedAt,
           }),
         });
-        setMessage(res.ok ? "Uploaded TradingView chart image." : "Failed to upload TradingView image.");
-        if (res.ok) await reloadEntries();
+        if (!res.ok) {
+          if (res.status === 409) setJournalConflict("entry");
+          setMessage(await responseErrorMessage(res, "Failed to upload TradingView image."));
+          return;
+        }
+        setJournalConflict(null);
+        setMessage("Uploaded TradingView chart image.");
+        await reloadEntries();
       });
     };
     reader.readAsDataURL(file);
@@ -1491,7 +1670,7 @@ export function JournalWorkspace({
               <RelationChipPicker label="Characteristics" values={form.notionRelations.CHARACTERISTIC} suggestions={notionRelationSuggestions.CHARACTERISTIC} onChange={(values) => updateNotionRelation("CHARACTERISTIC", values)} />
               <RelationChipPicker label="News Impact" single values={form.notionRelations.NEWS_IMPACT} suggestions={notionRelationSuggestions.NEWS_IMPACT} onChange={(values) => updateNotionRelation("NEWS_IMPACT", values)} />
               <RelationChipPicker label="Narrative" single values={form.notionRelations.NARRATIVE} suggestions={notionRelationSuggestions.NARRATIVE} onChange={(values) => updateNotionRelation("NARRATIVE", values)} />
-              <RelationChipPicker label="Bais" single values={form.notionRelations.BAIS} suggestions={notionRelationSuggestions.BAIS} onChange={(values) => updateNotionRelation("BAIS", values)} />
+              <RelationChipPicker label="Bias" single values={form.notionRelations.BAIS} suggestions={notionRelationSuggestions.BAIS} onChange={(values) => updateNotionRelation("BAIS", values)} />
               <NumberField label="Days Conso" value={form.daysConsolidating} onChange={(value) => setNumberField("daysConsolidating", value)} />
               <NumberField label="Days From T" value={form.daysFromT} onChange={(value) => setNumberField("daysFromT", value)} />
               <NumberField label="X from 50 SMA" value={form.xFrom50Sma} onChange={(value) => setNumberField("xFrom50Sma", value)} />
@@ -1644,7 +1823,7 @@ export function JournalWorkspace({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5" data-entry-save-in-flight={entrySaveInFlight} data-testid="journal-workspace">
       <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-2 shadow-[0_18px_45px_-34px_rgba(15,23,42,0.32)]">
         <div className="flex flex-wrap gap-2">
           {[
@@ -1663,7 +1842,9 @@ export function JournalWorkspace({
               className={cn(
                 "inline-flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium",
                 activeTab === key ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-100",
+                entrySaveInFlight && activeTab !== key ? "pointer-events-none opacity-50" : "",
               )}
+              disabled={entrySaveInFlight && activeTab !== key}
               onClick={() => setActiveTab(key as Tab)}
               type="button"
             >
@@ -1671,7 +1852,7 @@ export function JournalWorkspace({
               {label as string}
             </button>
           ))}
-          <Button className="ml-auto" size="sm" onClick={newEntry}>
+          <Button className="ml-auto" size="sm" disabled={entrySaveInFlight} onClick={() => newEntry()}>
             <Plus className="h-4 w-4" />
             New Idea
           </Button>
@@ -1679,9 +1860,23 @@ export function JournalWorkspace({
       </div>
 
       {message && (
-        <div className="rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-sm text-slate-600">
-          {pending && <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />}
-          {message}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-sm text-slate-600">
+          <span>
+            {journalWorkspaceBusy && <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />}
+            {message}
+          </span>
+          {journalConflict ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (confirmDiscardJournalChanges("reload the latest version")) window.location.reload();
+              }}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reload latest
+            </Button>
+          ) : null}
         </div>
       )}
 
@@ -1719,7 +1914,14 @@ export function JournalWorkspace({
               {sectionTitle("Top Opportunity Cost")}
               <div className="space-y-2">
                 {analytics.opportunityRank.map((row) => (
-                  <button key={row.id} className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-left text-sm" onClick={() => entries.find((entry) => entry.id === row.id) && selectEntry(entries.find((entry) => entry.id === row.id) as JournalEntry)}>
+                  <button
+                    key={row.id}
+                    className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-left text-sm"
+                    onClick={() => {
+                      const entry = entries.find((candidate) => candidate.id === row.id);
+                      if (entry) selectEntry(entry);
+                    }}
+                  >
                     <span className="font-semibold text-slate-900">{row.symbol} {row.setup ? `| ${row.setup}` : ""}</span>
                     <span className="font-mono text-slate-600">{formatR(row.bestExitR ?? row.mfeR)}</span>
                   </button>
@@ -1779,7 +1981,15 @@ export function JournalWorkspace({
             <Panel title="Recent Drafts">
               <div className="space-y-2">
                 {entries.filter((entry) => entry.autoDraft || entry.status === "DRAFT").slice(0, 6).map((entry) => (
-                  <button key={entry.id} className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-left text-sm" onClick={() => { selectEntry(entry); setActiveTab("capture"); autosaveReadyRef.current = true; }}>
+                  <button
+                    key={entry.id}
+                    className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-left text-sm"
+                    onClick={() => {
+                      if (!selectEntry(entry)) return;
+                      setActiveTab("capture");
+                      autosaveReadyRef.current = true;
+                    }}
+                  >
                     <span className="font-semibold text-slate-900">{entry.symbol} {entry.setup ? `| ${entry.setup}` : ""}</span>
                     <span className="text-xs text-slate-500">{dateInputValue(entry.ideaDate)}</span>
                   </button>
@@ -1801,10 +2011,12 @@ export function JournalWorkspace({
                 <Panel title="App-Owned Saved Chart">
                   <JournalChartEditor
                     entryId={selectedEntry.id}
+                    expectedEntryUpdatedAt={selectedEntry.updatedAt}
                     symbol={selectedEntry.symbol}
                     initialTimeframe={coerceTimeframe(selectedEntry.timeframe)}
                     sectorEtf={selectedEntry.sectorEtf}
                     plan={selectedEntry}
+                    onConflict={() => setJournalConflict("entry")}
                     onSaved={() => void reloadEntries()}
                   />
                 </Panel>
@@ -1938,6 +2150,11 @@ export function JournalWorkspace({
                   <h2 className="text-2xl font-semibold tracking-tight text-slate-950">{form.symbol.trim() || "New journal entry"}</h2>
                   <Badge variant={statusTone(form.status)}>{form.status}</Badge>
                   <Badge variant={outcomeTone(form.outcomeStatus)}>{compactLabel(form.outcomeStatus)}</Badge>
+                  {journalWorkspaceDirty ? (
+                    <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-800">
+                      UNSAVED
+                    </Badge>
+                  ) : null}
                 </div>
                 <p className="mt-1 text-sm text-slate-500">
                   {dateInputValue(form.ideaDate) || "No date"} | {form.direction} | {form.timeframe} | {form.setup || "No setup"} | Fit {selectedEntry ? formatFitScore(selectedEntry) : "-"}
@@ -1945,9 +2162,18 @@ export function JournalWorkspace({
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={loadChartPreview} disabled={!form.symbol.trim()}><BarChart3 className="h-4 w-4" />Load Chart</Button>
-                {selectedEntry ? <Button variant="outline" onClick={() => calculateOutcome(selectedEntry.id)}><RefreshCw className="h-4 w-4" />Calculate</Button> : null}
-                <Button disabled={pending || !form.symbol.trim()} onClick={saveEntry}><Save className="h-4 w-4" />Save Entry</Button>
-                {selectedId ? <Button variant="destructive" disabled={pending} onClick={deleteEntry}><Trash2 className="h-4 w-4" />Delete</Button> : null}
+                {selectedEntry ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => calculateOutcome(selectedEntry.id)}
+                    disabled={journalWorkspaceBusy}
+                    title={journalWorkspaceDirty ? "Save Entry before calculating outcome." : "Calculate outcome"}
+                  >
+                    <RefreshCw className="h-4 w-4" />Calculate
+                  </Button>
+                ) : null}
+                <Button disabled={journalWorkspaceBusy || !form.symbol.trim()} onClick={saveEntry}><Save className="h-4 w-4" />Save Entry</Button>
+                {selectedId ? <Button variant="destructive" disabled={journalWorkspaceBusy} onClick={deleteEntry}><Trash2 className="h-4 w-4" />Delete</Button> : null}
               </div>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -1957,6 +2183,32 @@ export function JournalWorkspace({
               <MetricTile label="Best Exit" value={formatR(form.bestExitR ?? form.mfeR)} />
               <MetricTile label="Completion" value={`${entryCompletion}%`} />
             </div>
+            {sourceClosedTradeLinks.length > 0 ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {sourceClosedTradeLinks.map((link) => {
+                  const params = new URLSearchParams({ groupKey: link.targetId ?? "" });
+                  if (selectedEntry?.symbol) params.set("symbol", selectedEntry.symbol);
+                  return (
+                    <Link
+                      key={link.id}
+                      aria-disabled={entrySaveInFlight}
+                      className={cn(
+                        "inline-flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm hover:border-slate-300",
+                        entrySaveInFlight ? "pointer-events-none opacity-50" : "",
+                      )}
+                      data-testid="source-closed-trade-link"
+                      href={`/trades?${params.toString()}`}
+                      onClick={(event) => {
+                        if (!confirmDiscardJournalChanges("open the source closed trade")) event.preventDefault();
+                      }}
+                    >
+                      <LinkIcon className="h-3.5 w-3.5" />
+                      Source Closed Trade
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="mt-4">
               <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                 <div className="h-full rounded-full bg-slate-950 transition-all" style={{ width: `${entryCompletion}%` }} />
@@ -2008,6 +2260,7 @@ export function JournalWorkspace({
                       initialTimeframe={coerceTimeframe(form.timeframe)}
                       sectorEtf={form.sectorEtf}
                       plan={form}
+                      disabled={entrySaveInFlight}
                       onStageChart={stageChart}
                     />
                   ) : (
@@ -2079,8 +2332,8 @@ export function JournalWorkspace({
                         <Badge variant="outline">{compactLabel(chart.purpose)}</Badge>
                         <Badge variant="outline">{chart.timeframe}</Badge>
                       </div>
-                      <Textarea className="mt-2 min-h-16 text-xs" value={chart.caption} onChange={(event) => updatePendingChartCaption(chart.localId, event.currentTarget.value)} />
-                      <Button className="mt-2 w-full" size="sm" variant="outline" onClick={() => removePendingChart(chart.localId)}>
+                      <Textarea className="mt-2 min-h-16 text-xs" disabled={entrySaveInFlight} value={chart.caption} onChange={(event) => updatePendingChartCaption(chart.localId, event.currentTarget.value)} />
+                      <Button className="mt-2 w-full" size="sm" variant="outline" disabled={entrySaveInFlight} onClick={() => removePendingChart(chart.localId)}>
                         <Trash2 className="h-4 w-4" />Remove Pending Chart
                       </Button>
                     </div>
@@ -2321,7 +2574,7 @@ export function JournalWorkspace({
       {activeTab === "reviews" && (
         <div className="grid gap-5 xl:grid-cols-[22rem_minmax(0,1fr)]">
           <div className="space-y-3">
-            <Button className="w-full" onClick={() => { setSelectedReviewId(null); setReviewForm(blankReviewForm()); }}><Plus className="h-4 w-4" />New Review</Button>
+            <Button className="w-full" onClick={() => { setSelectedReviewId(null); setReviewForm(blankReviewForm(stableInitialNowIso)); }}><Plus className="h-4 w-4" />New Review</Button>
             {reviews.map((review) => (
               <button key={review.id} className={cn("w-full rounded-[22px] border p-4 text-left", selectedReviewId === review.id ? "border-slate-950 bg-white" : "border-slate-200 bg-white/80")} onClick={() => selectReview(review)}>
                 <p className="font-semibold text-slate-950">{review.period} Review</p>
@@ -2449,7 +2702,7 @@ function LabelInput({ label, onChange, value }: { label: string; onChange: (valu
   return (
     <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
       {label}
-      <Input className="mt-1" value={value} onChange={(event) => onChange(event.target.value)} />
+      <Input suppressHydrationWarning className="mt-1" value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -2458,7 +2711,7 @@ function NumberField({ label, max, min, onChange, value }: { label: string; max?
   return (
     <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
       {label}
-      <Input className="mt-1" max={max} min={min} type="number" value={value ?? ""} onChange={(event) => onChange(event.target.value)} />
+      <Input suppressHydrationWarning className="mt-1" max={max} min={min} type="number" value={value ?? ""} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -2502,7 +2755,7 @@ function DateField({ label, onChange, value }: { label: string; onChange: (value
   return (
     <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
       {label}
-      <Input className="mt-1" type="date" value={dateInputValue(value)} onChange={(event) => onChange(event.target.value)} />
+      <Input suppressHydrationWarning className="mt-1" type="date" value={dateInputValue(value)} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -2511,7 +2764,7 @@ function DateTimeField({ label, onChange, value }: { label: string; onChange: (v
   return (
     <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
       {label}
-      <Input className="mt-1" type="datetime-local" value={datetimeInputValue(value)} onChange={(event) => onChange(event.target.value)} />
+      <Input suppressHydrationWarning className="mt-1" type="datetime-local" value={datetimeInputValue(value)} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -2583,6 +2836,7 @@ function RelationChipPicker({
           ))}
         </div>
         <Input
+          suppressHydrationWarning
           className={cn("mt-2 border-0 bg-transparent px-1 shadow-none focus-visible:ring-0", values.length === 0 && "mt-0")}
           placeholder={single && values.length > 0 ? "Replace value" : "Type and press Enter"}
           value={draft}
@@ -2623,7 +2877,7 @@ function TextAreaField({ label, onChange, value }: { label: string; onChange: (v
   return (
     <label className="block text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
       {label}
-      <Textarea className="mt-1" value={value} onChange={(event) => onChange(event.target.value)} />
+      <Textarea suppressHydrationWarning className="mt-1" value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }

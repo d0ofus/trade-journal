@@ -202,10 +202,24 @@ export function parseFlexStatementCsv(csvText: string): {
 
   const tradesParsed = sections.tradesCsv
     ? parseCsvWithMapping("executions", sections.tradesCsv)
-    : ({ kind: "executions", executions: [], positions: [], snapshots: [] } satisfies ParsedImport);
+    : ({
+        kind: "executions",
+        executions: [],
+        positions: [],
+        snapshots: [],
+        rawRowCount: 0,
+        rowErrors: [],
+      } satisfies ParsedImport);
   const positionsParsed = sections.positionsCsv
     ? parseCsvWithMapping("positions", sections.positionsCsv)
-    : ({ kind: "positions", executions: [], positions: [], snapshots: [] } satisfies ParsedImport);
+    : ({
+        kind: "positions",
+        executions: [],
+        positions: [],
+        snapshots: [],
+        rawRowCount: 0,
+        rowErrors: [],
+      } satisfies ParsedImport);
 
   const mergedExecutions = mergeCommissions(tradesParsed.executions, sections.commissionsCsv);
   const commissionsSeen = sections.commissionsCsv ? filterOutIdealFxCommissionRows(toRows(sections.commissionsCsv)).length : 0;

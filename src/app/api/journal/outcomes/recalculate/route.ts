@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { calculateJournalOutcomeFromCandles } from "@/lib/journal/outcome";
 import { prisma } from "@/lib/prisma";
 import { loadCandlesForSymbol, parseCandleTimeframe } from "@/lib/server/market-candles";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 function rangeForEntry(entry: { ideaDate: Date; reviewDueAt: Date | null; followThroughDays: number | null; timeframe: string }) {
   const fallbackDays = entry.followThroughDays ?? (entry.timeframe === "1W" ? 60 : entry.timeframe === "1D" ? 20 : 5);
@@ -13,6 +14,9 @@ function rangeForEntry(entry: { ideaDate: Date; reviewDueAt: Date | null; follow
 }
 
 export async function POST() {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const entries = await prisma.journalEntry.findMany({
     where: { outcomeStatus: { in: ["UNREVIEWED", "STILL_DEVELOPING", "TRIGGERED"] } },
     take: 100,

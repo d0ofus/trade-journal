@@ -28,10 +28,17 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
     from: typeof searchParams.from === "string" ? searchParams.from : undefined,
     to: typeof searchParams.to === "string" ? searchParams.to : undefined,
     symbol: typeof searchParams.symbol === "string" ? searchParams.symbol : undefined,
+    account: typeof searchParams.account === "string" ? searchParams.account : undefined,
+    direction: typeof searchParams.direction === "string" ? searchParams.direction : undefined,
     side: typeof searchParams.side === "string" ? searchParams.side : undefined,
     tag: typeof searchParams.tag === "string" ? searchParams.tag : undefined,
     strategy: typeof searchParams.strategy === "string" ? searchParams.strategy : undefined,
+    includeStale:
+      searchParams.includeStale === "1" ||
+      searchParams.includeStale === "true" ||
+      searchParams.includeStale === "on",
   };
+  const selectedGroupKey = typeof searchParams.groupKey === "string" ? searchParams.groupKey : null;
 
   return (
     <div className="space-y-4 py-4">
@@ -52,7 +59,7 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
 
       <div id="closed-trades-section">
         <Suspense fallback={<ClosedTradesFallback />}>
-          <ClosedTradesSection filters={filters} />
+          <ClosedTradesSection filters={filters} selectedGroupKey={selectedGroupKey} />
         </Suspense>
       </div>
 
@@ -65,18 +72,23 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
 
 async function ClosedTradesSection({
   filters,
+  selectedGroupKey,
 }: {
   filters: {
     from?: string;
     to?: string;
     symbol?: string;
+    account?: string;
+    direction?: string;
     side?: string;
     tag?: string;
     strategy?: string;
+    includeStale?: boolean;
   };
+  selectedGroupKey: string | null;
 }) {
   const closedTrades = await getClosedTrades(filters);
-  return <ClosedTradesPanel closedTrades={closedTrades} />;
+  return <ClosedTradesPanel closedTrades={closedTrades} initialSelectedGroupKey={selectedGroupKey} />;
 }
 
 async function TradesTableSection({
@@ -87,9 +99,12 @@ async function TradesTableSection({
     from?: string;
     to?: string;
     symbol?: string;
+    account?: string;
+    direction?: string;
     side?: string;
     tag?: string;
     strategy?: string;
+    includeStale?: boolean;
   };
   page: number;
 }) {
@@ -102,7 +117,7 @@ async function TradesTableSection({
   >;
   const baseParams = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
-    if (value) baseParams.set(key, value);
+    if (value) baseParams.set(key, String(value));
   });
 
   const pageHref = (target: number) => {

@@ -1,10 +1,13 @@
 import { Side } from "@prisma/client";
+import { openingPositionKey, type OpeningPosition } from "@/lib/stats/opening-positions";
 
 export interface ExecutionForCalc {
   id: string;
   accountId: string;
   instrumentId: string;
   symbol: string;
+  assetType?: string | null;
+  currency?: string | null;
   executedAt: Date;
   side: Side;
   quantity: number;
@@ -28,74 +31,85 @@ interface Lot {
   openedAtMs: number;
 }
 
-export function computeExecutionPnl(executions: ExecutionForCalc[]): ExecutionPnl[] {
-  const sorted = [...executions].sort((a, b) => a.executedAt.getTime() - b.executedAt.getTime());
-  const executedAtById = new Map(sorted.map((execution) => [execution.id, execution.executedAt.getTime()]));
-  const grouped = new Map<string, ExecutionForCalc[]>();
+function keyForExecution(exec: ExecutionForCalc) {
+  return openingPositionKey(exec.accountId, {
+    symbol: exec.symbol,
+    assetType: exec.assetType,
+    currency: exec.currency,
+  });
+}
 
-  for (const exec of sorted) {
-    const key = `${exec.accountId}:${exec.instrumentId}`;
-    const list = grouped.get(key) ?? [];
-    list.push(exec);
-    grouped.set(key, list);
-  }
-
+export function computeExecutionPnl(
+  executions: ExecutionForCalc[],
+  openingByAccountInstrument: Map<string, OpeningPosition> = new Map(),
+): ExecutionPnl[] {
+  const sorted = [...executions].sort((a, b) => {
+    const timeDiff = a.executedAt.getTime() - b.executedAt.getTime();
+    return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id);
+  });
+  const lotsByAccountInstrument = new Map<string, Lot[]>();
+  const seededKeys = new Set<string>();
   const result: ExecutionPnl[] = [];
   let cumulative = 0;
 
-  for (const group of grouped.values()) {
-    const lots: Lot[] = [];
-
-    for (const exec of group) {
-      let signedQty = exec.side === "BUY" ? exec.quantity : -exec.quantity;
-      let realized = 0;
-      let grossRealized = 0;
-      let matched = 0;
-      let holdTimeWeightedMs = 0;
-
-      while (signedQty !== 0 && lots.length > 0 && Math.sign(signedQty) !== Math.sign(lots[0].qty)) {
-        const lot = lots[0];
-        const matchQty = Math.min(Math.abs(signedQty), Math.abs(lot.qty));
-        const holdMs = Math.max(0, exec.executedAt.getTime() - lot.openedAtMs);
-
-        if (lot.qty > 0 && signedQty < 0) {
-          realized += matchQty * (exec.price - lot.price);
-        } else if (lot.qty < 0 && signedQty > 0) {
-          realized += matchQty * (lot.price - exec.price);
-        }
-
-        grossRealized = realized;
-        matched += matchQty;
-        holdTimeWeightedMs += holdMs * matchQty;
-        lot.qty += Math.sign(signedQty) * matchQty;
-        signedQty -= Math.sign(signedQty) * matchQty;
-
-        if (Math.abs(lot.qty) < 1e-8) {
-          lots.shift();
-        }
+  for (const exec of sorted) {
+    const key = keyForExecution(exec);
+    const lots = lotsByAccountInstrument.get(key) ?? [];
+    lotsByAccountInstrument.set(key, lots);
+    if (!seededKeys.has(key)) {
+      const opening = openingByAccountInstrument.get(key);
+      if (opening && Math.abs(opening.quantity) > 1e-8) {
+        lots.push({ qty: opening.quantity, price: opening.avgCost, openedAtMs: exec.executedAt.getTime() });
       }
-
-      if (signedQty !== 0) {
-        lots.push({ qty: signedQty, price: exec.price, openedAtMs: exec.executedAt.getTime() });
-      }
-
-      realized -= exec.commission + exec.fees;
-      cumulative += realized;
-
-      result.push({
-        executionId: exec.id,
-        realizedPnl: realized,
-        grossRealizedPnl: grossRealized,
-        cumulativePnl: cumulative,
-        matchedQuantity: matched,
-        avgHoldTimeMs: matched > 0 ? holdTimeWeightedMs / matched : 0,
-      });
+      seededKeys.add(key);
     }
+
+    let signedQty = exec.side === "BUY" ? exec.quantity : -exec.quantity;
+    let realized = 0;
+    let grossRealized = 0;
+    let matched = 0;
+    let holdTimeWeightedMs = 0;
+
+    while (signedQty !== 0 && lots.length > 0 && Math.sign(signedQty) !== Math.sign(lots[0].qty)) {
+      const lot = lots[0];
+      const matchQty = Math.min(Math.abs(signedQty), Math.abs(lot.qty));
+      const holdMs = Math.max(0, exec.executedAt.getTime() - lot.openedAtMs);
+
+      if (lot.qty > 0 && signedQty < 0) {
+        realized += matchQty * (exec.price - lot.price);
+      } else if (lot.qty < 0 && signedQty > 0) {
+        realized += matchQty * (lot.price - exec.price);
+      }
+
+      grossRealized = realized;
+      matched += matchQty;
+      holdTimeWeightedMs += holdMs * matchQty;
+      lot.qty += Math.sign(signedQty) * matchQty;
+      signedQty -= Math.sign(signedQty) * matchQty;
+
+      if (Math.abs(lot.qty) < 1e-8) {
+        lots.shift();
+      }
+    }
+
+    if (signedQty !== 0) {
+      lots.push({ qty: signedQty, price: exec.price, openedAtMs: exec.executedAt.getTime() });
+    }
+
+    realized -= exec.commission + exec.fees;
+    cumulative += realized;
+
+    result.push({
+      executionId: exec.id,
+      realizedPnl: realized,
+      grossRealizedPnl: grossRealized,
+      cumulativePnl: cumulative,
+      matchedQuantity: matched,
+      avgHoldTimeMs: matched > 0 ? holdTimeWeightedMs / matched : 0,
+    });
   }
 
-  return result.sort((a, b) => {
-    return (executedAtById.get(a.executionId) ?? 0) - (executedAtById.get(b.executionId) ?? 0);
-  });
+  return result;
 }
 
 export function buildMetrics(pnlRows: ExecutionPnl[], totalCommissions: number) {

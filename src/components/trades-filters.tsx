@@ -15,9 +15,12 @@ type TradeFilters = {
   from?: string;
   to?: string;
   symbol?: string;
+  direction?: string;
   side?: string;
+  account?: string;
   tag?: string;
   strategy?: string;
+  includeStale?: boolean;
 };
 
 const QUICK_RANGES = [
@@ -39,6 +42,17 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
   const [draftFrom, setDraftFrom] = useState(filters.from ?? "");
   const [draftTo, setDraftTo] = useState(filters.to ?? "");
   const today = useMemo(() => toDateParam(endOfDay(new Date())), []);
+  const formKey = useMemo(
+    () => JSON.stringify({
+      symbol: filters.symbol ?? "",
+      account: filters.account ?? "",
+      direction: filters.direction ?? filters.side ?? "",
+      tag: filters.tag ?? "",
+      strategy: filters.strategy ?? "",
+      includeStale: Boolean(filters.includeStale),
+    }),
+    [filters.account, filters.direction, filters.includeStale, filters.side, filters.strategy, filters.symbol, filters.tag],
+  );
 
   useEffect(() => {
     setDraftFrom(filters.from ?? "");
@@ -173,8 +187,9 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
       <form
+        key={formKey}
         ref={formRef}
-        className="grid gap-3 md:grid-cols-2 xl:grid-cols-[10rem_10rem_10rem_10rem_10rem_10rem_auto]"
+        className="grid gap-3 md:grid-cols-2 xl:grid-cols-[10rem_10rem_10rem_10rem_10rem_10rem_10rem_9rem_auto]"
         method="get"
         onSubmit={handleSubmit}
       >
@@ -207,11 +222,11 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
           <Input className="h-9 rounded-lg px-3 text-xs" name="symbol" placeholder="All symbols" defaultValue={filters.symbol} />
         </label>
         <label className="space-y-1">
-          <span className="text-[11px] font-semibold uppercase text-slate-500">Side</span>
-          <Select className="h-9 rounded-lg px-3 text-xs" name="side" defaultValue={filters.side ?? ""}>
-            <option value="">All sides</option>
-            <option value="BUY">BUY</option>
-            <option value="SELL">SELL</option>
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Direction</span>
+          <Select className="h-9 rounded-lg px-3 text-xs" name="direction" defaultValue={filters.direction ?? filters.side ?? ""}>
+            <option value="">All directions</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
           </Select>
         </label>
         <label className="space-y-1">
@@ -219,8 +234,25 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
           <Input className="h-9 rounded-lg px-3 text-xs" name="tag" placeholder="All tags" defaultValue={filters.tag} />
         </label>
         <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Account</span>
+          <Input className="h-9 rounded-lg px-3 text-xs" name="account" placeholder="All accounts" defaultValue={filters.account} />
+        </label>
+        <label className="space-y-1">
           <span className="text-[11px] font-semibold uppercase text-slate-500">Strategy</span>
           <Input className="h-9 rounded-lg px-3 text-xs" name="strategy" placeholder="All setups" defaultValue={filters.strategy} />
+        </label>
+        <label className="space-y-1">
+          <span className="text-[11px] font-semibold uppercase text-slate-500">Stale</span>
+          <span className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700">
+            <input
+              className="h-4 w-4 rounded border-slate-300 text-sky-600"
+              name="includeStale"
+              type="checkbox"
+              value="1"
+              defaultChecked={filters.includeStale}
+            />
+            Include
+          </span>
         </label>
 
         <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-1">

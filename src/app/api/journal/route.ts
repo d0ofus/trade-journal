@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { journalEntryPayloadSchema } from "@/lib/journal/schema";
+import { requireApiSession } from "@/lib/server/api-auth";
 import {
   createJournalEntry,
   listJournalEntries,
@@ -7,6 +8,9 @@ import {
 } from "@/lib/server/journal";
 
 export async function GET(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const rows = await listJournalEntries({
     q: req.nextUrl.searchParams.get("q"),
     tag: req.nextUrl.searchParams.get("tag"),
@@ -24,6 +28,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   try {
     const body = await req.json();
     const parsed = journalEntryPayloadSchema.safeParse(body);

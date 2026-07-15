@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 type Params = Promise<{ id: string }>;
 
@@ -11,6 +12,9 @@ const snapshotSchema = z.object({
 });
 
 export async function POST(req: NextRequest, props: { params: Params }) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const { id } = await props.params;
   const body = await req.json();
   const parsed = snapshotSchema.safeParse(body);

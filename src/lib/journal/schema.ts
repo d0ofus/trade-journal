@@ -103,7 +103,7 @@ export const JOURNAL_NOTION_RELATION_LABELS: Record<JournalNotionRelationKey, st
   NEWS_IMPACT: "News Impact",
   NARRATIVE: "Narrative",
   ORDER_TYPE: "Order Type",
-  BAIS: "Bais",
+  BAIS: "Bias",
   PSYCHOLOGY: "Psychology",
   MISTAKE: "Mistakes",
   ENTRY_PERFORMANCE: "Entry Performance",
@@ -119,6 +119,7 @@ const optionalNumber = z.number().finite().nullable().optional();
 const optionalScore = z.number().int().min(1).max(5).nullable().optional();
 const optionalDateString = z.string().nullable().optional();
 const optionalTitle = z.string().max(240).optional().default("");
+const expectedUpdatedAt = z.string().datetime().optional();
 
 export function normalizeJournalTagName(value: string) {
   return value
@@ -324,6 +325,11 @@ export const journalEntryPayloadSchema = z.object({
 
 export const journalEntryPatchSchema = journalEntryPayloadSchema.partial().extend({
   tags: journalTagsPayloadSchema.optional(),
+  expectedUpdatedAt,
+});
+
+export const journalEntryDeleteSchema = z.object({
+  expectedUpdatedAt,
 });
 
 export const chartMarkerPayloadSchema = z.object({
@@ -350,8 +356,13 @@ export const journalChartPayloadSchema = z.object({
   markers: z.array(chartMarkerPayloadSchema).optional().default([]),
 });
 
+export const journalChartCreateSchema = journalChartPayloadSchema.extend({
+  expectedUpdatedAt,
+});
+
 export const journalChartPatchSchema = journalChartPayloadSchema.partial().extend({
   markers: z.array(chartMarkerPayloadSchema).optional(),
+  expectedUpdatedAt,
 });
 
 export const journalSnapshotPayloadSchema = z.object({
@@ -360,6 +371,7 @@ export const journalSnapshotPayloadSchema = z.object({
   height: z.number().int().positive().nullable().optional(),
   mimeType: z.string().max(120).nullable().optional(),
   tradingViewLayoutJson: z.string().max(200000).nullable().optional(),
+  expectedUpdatedAt,
 });
 
 export const journalOutcomePatchSchema = journalEntryPatchSchema.pick({
@@ -371,6 +383,7 @@ export const journalOutcomePatchSchema = journalEntryPatchSchema.pick({
   outcomeStatus: true,
   outcomeNotes: true,
   wouldTakeAgain: true,
+  expectedUpdatedAt: true,
 });
 
 export const journalPlaybookRulePayloadSchema = z.object({
@@ -394,6 +407,7 @@ export const journalPlaybookPayloadSchema = z.object({
 
 export const journalPlaybookPatchSchema = journalPlaybookPayloadSchema.partial().extend({
   rules: z.array(journalPlaybookRulePayloadSchema).optional(),
+  expectedUpdatedAt,
 });
 
 export const journalRuleChecksPayloadSchema = z.object({
@@ -402,6 +416,7 @@ export const journalRuleChecksPayloadSchema = z.object({
     status: z.enum(JOURNAL_RULE_CHECK_STATUSES),
     notes: z.string().max(4000).optional().default(""),
   })),
+  expectedUpdatedAt,
 });
 
 export const journalReviewActionPayloadSchema = z.object({
@@ -429,6 +444,7 @@ export const journalReviewPayloadSchema = z.object({
 
 export const journalReviewPatchSchema = journalReviewPayloadSchema.partial().extend({
   actions: z.array(journalReviewActionPayloadSchema).optional(),
+  expectedUpdatedAt,
 });
 
 export const journalDraftPayloadSchema = journalEntryPayloadSchema.pick({
@@ -468,6 +484,7 @@ export const journalDraftPayloadSchema = journalEntryPayloadSchema.pick({
 
 export const journalOutcomeCalculatePayloadSchema = z.object({
   apply: z.boolean().optional().default(false),
+  expectedUpdatedAt,
 });
 
 export const journalSavedViewPayloadSchema = z.object({

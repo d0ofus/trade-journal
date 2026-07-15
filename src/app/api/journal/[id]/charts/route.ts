@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { journalChartPayloadSchema } from "@/lib/journal/schema";
-import { mapChartPayloadToData } from "@/lib/server/journal";
+import { journalChartCreateSchema } from "@/lib/journal/schema";
+import { claimJournalEntryVersion, JournalStaleWriteError, mapChartPayloadToData } from "@/lib/server/journal";
 import { storeJournalScreenshot } from "@/lib/server/journal-storage";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 type Params = Promise<{ id: string }>;
 type ChartWithMarkers = Awaited<ReturnType<typeof prisma.journalChart.findFirstOrThrow>> & {
@@ -40,42 +41,53 @@ function serializeChart(chart: ChartWithMarkers) {
 }
 
 export async function POST(req: NextRequest, props: { params: Params }) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   try {
     const { id } = await props.params;
     const body = await req.json();
-    const parsed = journalChartPayloadSchema.safeParse(body);
+    const parsed = journalChartCreateSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
+    if (!parsed.data.expectedUpdatedAt) {
+      return NextResponse.json({ error: "expectedUpdatedAt is required for journal chart uploads." }, { status: 409 });
+    }
 
-    const { screenshotDataUrl, markers, ...rest } = parsed.data;
-    await prisma.journalEntry.findUniqueOrThrow({ where: { id }, select: { id: true } });
+    const { screenshotDataUrl, markers, expectedUpdatedAt, ...rest } = parsed.data;
     const data = mapChartPayloadToData(rest) as Record<string, unknown>;
-    const chart = await prisma.journalChart.create({
-      data: {
-        journalEntryId: id,
-        symbol: data.symbol as string,
-        timeframe: data.timeframe as string,
-        purpose: data.purpose as "THESIS" | "TRIGGER" | "MARKET_CONTEXT" | "PEER_CONTEXT" | "FOLLOW_THROUGH" | "REVIEW" | "CUSTOM",
-        compareSymbol: data.compareSymbol as string | null | undefined,
-        rangeStart: data.rangeStart as Date | null | undefined,
-        rangeEnd: data.rangeEnd as Date | null | undefined,
-        tradingViewLayoutJson: data.tradingViewLayoutJson as string | null | undefined,
-        caption: data.caption as string,
-        width: data.width as number | null | undefined,
-        height: data.height as number | null | undefined,
-        mimeType: data.mimeType as string | null | undefined,
-        markers: {
-          create: markers.map((marker) => ({
-            markerType: marker.markerType,
-            time: markerDate(marker.time),
-            price: marker.price ?? null,
-            label: marker.label ?? null,
-            metadataJson: marker.metadataJson ?? null,
-          })),
+    const { chart, entryUpdatedAt } = await prisma.$transaction(async (tx) => {
+      const nextEntryUpdatedAt = await claimJournalEntryVersion(tx, id, { expectedUpdatedAt });
+
+      const created = await tx.journalChart.create({
+        data: {
+          journalEntryId: id,
+          symbol: data.symbol as string,
+          timeframe: data.timeframe as string,
+          purpose: data.purpose as "THESIS" | "TRIGGER" | "MARKET_CONTEXT" | "PEER_CONTEXT" | "FOLLOW_THROUGH" | "REVIEW" | "CUSTOM",
+          compareSymbol: data.compareSymbol as string | null | undefined,
+          rangeStart: data.rangeStart as Date | null | undefined,
+          rangeEnd: data.rangeEnd as Date | null | undefined,
+          tradingViewLayoutJson: data.tradingViewLayoutJson as string | null | undefined,
+          caption: data.caption as string,
+          width: data.width as number | null | undefined,
+          height: data.height as number | null | undefined,
+          mimeType: data.mimeType as string | null | undefined,
+          markers: {
+            create: markers.map((marker) => ({
+              markerType: marker.markerType,
+              time: markerDate(marker.time),
+              price: marker.price ?? null,
+              label: marker.label ?? null,
+              metadataJson: marker.metadataJson ?? null,
+            })),
+          },
         },
-      },
-      include: { markers: true },
+        include: { markers: true },
+      });
+
+      return { chart: created, entryUpdatedAt: nextEntryUpdatedAt };
     });
 
     let updated = chart;
@@ -100,8 +112,14 @@ export async function POST(req: NextRequest, props: { params: Params }) {
       });
     }
 
-    return NextResponse.json({ chart: serializeChart(updated) }, { status: 201 });
+    return NextResponse.json({ chart: serializeChart(updated), entryUpdatedAt: entryUpdatedAt.toISOString() }, { status: 201 });
   } catch (error) {
+    if (error instanceof JournalStaleWriteError) {
+      return NextResponse.json(
+        { error: error.message, currentUpdatedAt: error.currentUpdatedAt },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to save journal chart." }, { status: 500 });
   }
 }

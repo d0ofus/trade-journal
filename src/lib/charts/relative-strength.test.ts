@@ -1,4 +1,5 @@
 import {
+  buildPercentChangeSeries,
   candleMoveForWindow,
   computeRelativeStrengthMetrics,
   matchCandlesByTime,
@@ -29,6 +30,20 @@ describe("relative strength helpers", () => {
     const pairs = matchCandlesByTime(tickerCandles, benchmarkCandles);
 
     expect(pairs.map((pair) => pair.time)).toEqual([baseTime, baseTime + 600]);
+  });
+
+  it("builds a percent-change comparison series from the first valid close", () => {
+    const series = buildPercentChangeSeries([candle(0, 100), candle(1, 105), candle(2, 95)]);
+
+    expect(series).toEqual([
+      { time: baseTime, value: 0 },
+      { time: baseTime + 300, value: 5 },
+      { time: baseTime + 600, value: -5 },
+    ]);
+  });
+
+  it("skips comparison series when the baseline close is invalid", () => {
+    expect(buildPercentChangeSeries([{ ...candle(0, 0), close: 0 }, candle(1, 105)])).toEqual([]);
   });
 
   it("returns null benchmark movement when required bars are missing", () => {

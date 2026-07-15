@@ -12,8 +12,12 @@ export const authOptions: NextAuthOptions = {
         password: { label: "Password", type: "password" },
       },
       authorize: async (credentials) => {
-        const expectedUsername = process.env.AUTH_USERNAME ?? "demo";
-        const expectedPassword = process.env.AUTH_PASSWORD ?? "demo123";
+        const expectedUsername = process.env.AUTH_USERNAME;
+        const expectedPassword = process.env.AUTH_PASSWORD;
+
+        if (!expectedUsername || !expectedPassword) {
+          return null;
+        }
 
         if (
           credentials?.username === expectedUsername &&

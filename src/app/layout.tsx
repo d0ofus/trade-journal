@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
   title: "Execution Lab",
@@ -11,7 +10,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body className="text-slate-900 antialiased">
-        <Providers>{children}</Providers>
+        {children}
       </body>
     </html>
   );

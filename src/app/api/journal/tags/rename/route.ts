@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { journalTagOperationSchema } from "@/lib/journal/schema";
 import { renameJournalTag } from "@/lib/server/journal";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 export async function POST(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const body = await req.json();
   const parsed = journalTagOperationSchema.safeParse(body);
   if (!parsed.success || !parsed.data.from || !parsed.data.to) {

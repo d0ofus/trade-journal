@@ -1,24 +1,21 @@
+import { Prisma } from "@prisma/client";
+
 import { prisma } from "@/lib/prisma";
+import {
+  getClosedTradesSourceSnapshot,
+  isMaterializationWatermarkFresh,
+  MATERIALIZATION_WATERMARK_KEYS,
+  writeMaterializationWatermark,
+} from "@/lib/server/materialization-watermarks";
+import { planClosedTradeRefresh } from "@/lib/stats/closed-trade-materialization-plan";
 import { computeClosedTradeGroups } from "@/lib/stats/closed-trades";
+import {
+  buildOpeningPositionMap,
+  openingPositionKey,
+  type OpeningPositionExecutionCandidate,
+} from "@/lib/stats/opening-positions";
 
-function normalizedInstrumentIdentity(input: {
-  symbol: string;
-  assetType?: string | null;
-  currency?: string | null;
-}) {
-  return [input.symbol, input.assetType ?? "", input.currency ?? ""].join("|");
-}
-
-function accountInstrumentGroupKey(
-  accountId: string,
-  instrument: {
-    symbol: string;
-    assetType?: string | null;
-    currency?: string | null;
-  },
-) {
-  return `${accountId}:${normalizedInstrumentIdentity(instrument)}`;
-}
+const CLOSED_TRADES_REFRESH_LOCK_KEY = 76_384_211;
 
 function chunked<T>(rows: T[], size: number) {
   const chunks: T[][] = [];
@@ -28,40 +25,27 @@ function chunked<T>(rows: T[], size: number) {
   return chunks;
 }
 
-async function buildOpeningByAccountInstrument() {
-  const executions = await prisma.execution.findMany({
-    select: {
-      accountId: true,
-      executedAt: true,
-      currency: true,
-      instrument: {
-        select: {
-          symbol: true,
-          assetType: true,
-          currency: true,
-        },
-      },
-    },
-    orderBy: { executedAt: "asc" },
-  });
-
-  const firstExecutionAt = executions[0]?.executedAt;
-  if (!firstExecutionAt) return new Map<string, { quantity: number; avgCost: number }>();
-
+async function buildOpeningByAccountInstrument(
+  tx: Prisma.TransactionClient,
+  executions: OpeningPositionExecutionCandidate[],
+) {
   const candidateKeys = new Set(
     executions.map((exec) =>
-      accountInstrumentGroupKey(exec.accountId, {
+      openingPositionKey(exec.accountId, {
         symbol: exec.instrument.symbol,
         assetType: exec.instrument.assetType,
         currency: exec.currency ?? exec.instrument.currency,
       }),
     ),
   );
+  if (candidateKeys.size === 0) return new Map<string, { quantity: number; avgCost: number }>();
 
-  const snapshots = await prisma.positionSnapshot.findMany({
+  const latestFirstExecutionAt = new Date(Math.max(...executions.map((exec) => exec.executedAt.getTime())));
+
+  const snapshots = await tx.positionSnapshot.findMany({
     where: {
       accountId: { in: [...new Set(executions.map((exec) => exec.accountId))] },
-      date: { lt: firstExecutionAt },
+      date: { lt: latestFirstExecutionAt },
       instrument: {
         symbol: { in: [...new Set(executions.map((exec) => exec.instrument.symbol))] },
       },
@@ -83,145 +67,181 @@ async function buildOpeningByAccountInstrument() {
     orderBy: { date: "desc" },
   });
 
-  const aggregatedSnapshots = new Map<string, { date: number; quantity: number; costValue: number }>();
-  for (const snapshot of snapshots) {
-    const key = accountInstrumentGroupKey(snapshot.accountId, {
-      symbol: snapshot.instrument.symbol,
-      assetType: snapshot.instrument.assetType,
-      currency: snapshot.currency ?? snapshot.instrument.currency,
-    });
-    if (!candidateKeys.has(key)) continue;
-
-    const snapshotDate = snapshot.date.getTime();
-    const existing = aggregatedSnapshots.get(key);
-    if (existing && existing.date !== snapshotDate) continue;
-
-    const next = existing ?? { date: snapshotDate, quantity: 0, costValue: 0 };
-    next.quantity += snapshot.quantity;
-    next.costValue += snapshot.quantity * snapshot.avgCost;
-    aggregatedSnapshots.set(key, next);
-  }
-
-  const openingByAccountInstrument = new Map<string, { quantity: number; avgCost: number }>();
-  for (const [key, snapshot] of aggregatedSnapshots.entries()) {
-    openingByAccountInstrument.set(key, {
-      quantity: snapshot.quantity,
-      avgCost: Math.abs(snapshot.quantity) > 0 ? snapshot.costValue / snapshot.quantity : 0,
-    });
-  }
-
-  return openingByAccountInstrument;
+  return buildOpeningPositionMap(executions, snapshots);
 }
 
-export async function refreshMaterializedClosedTrades() {
-  const executions = await prisma.execution.findMany({
-    select: {
-      id: true,
-      accountId: true,
-      instrumentId: true,
-      executedAt: true,
-      side: true,
-      quantity: true,
-      price: true,
-      commission: true,
-      fees: true,
-      currency: true,
-      instrument: {
-        select: {
-          symbol: true,
-          exchange: true,
-          assetType: true,
-          currency: true,
-        },
-      },
-      account: {
-        select: {
-          ibkrAccount: true,
-        },
-      },
-    },
-    orderBy: { executedAt: "asc" },
-  });
+export async function refreshMaterializedClosedTrades(options: { accountIds?: string[] } = {}) {
+  const accountIds = [...new Set(options.accountIds?.filter(Boolean) ?? [])];
+  const scoped = accountIds.length > 0;
+  let groupCount = 0;
 
-  const openingByAccountInstrument = await buildOpeningByAccountInstrument();
-  const groups = computeClosedTradeGroups(
-    executions.map((exec) => ({
-      id: exec.id,
-      accountId: exec.accountId,
-      accountCode: exec.account.ibkrAccount,
-      instrumentId: exec.instrumentId,
-      symbol: exec.instrument.symbol,
-      exchange: exec.instrument.exchange,
-      assetType: exec.instrument.assetType,
-      currency: exec.currency ?? exec.instrument.currency,
-      executedAt: exec.executedAt,
-      side: exec.side,
-      quantity: exec.quantity,
-      price: exec.price,
-      commission: exec.commission,
-      fees: exec.fees,
-    })),
-    openingByAccountInstrument,
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CLOSED_TRADES_REFRESH_LOCK_KEY})`;
+      const sourceSnapshot = scoped ? null : await getClosedTradesSourceSnapshot(tx);
+
+      const executions = await tx.execution.findMany({
+        where: scoped ? { accountId: { in: accountIds } } : undefined,
+        select: {
+          id: true,
+          accountId: true,
+          instrumentId: true,
+          executedAt: true,
+          side: true,
+          quantity: true,
+          price: true,
+          commission: true,
+          fees: true,
+          currency: true,
+          instrument: {
+            select: {
+              symbol: true,
+              exchange: true,
+              assetType: true,
+              currency: true,
+            },
+          },
+          account: {
+            select: {
+              ibkrAccount: true,
+            },
+          },
+        },
+        orderBy: [{ executedAt: "asc" }, { id: "asc" }],
+      });
+
+      const openingByAccountInstrument = await buildOpeningByAccountInstrument(tx, executions);
+      const groups = computeClosedTradeGroups(
+        executions.map((exec) => ({
+          id: exec.id,
+          accountId: exec.accountId,
+          accountCode: exec.account.ibkrAccount,
+          instrumentId: exec.instrumentId,
+          symbol: exec.instrument.symbol,
+          exchange: exec.instrument.exchange,
+          assetType: exec.instrument.assetType,
+          currency: exec.currency ?? exec.instrument.currency,
+          executedAt: exec.executedAt,
+          side: exec.side,
+          quantity: exec.quantity,
+          price: exec.price,
+          commission: exec.commission,
+          fees: exec.fees,
+        })),
+        openingByAccountInstrument,
+      );
+      groupCount = groups.length;
+
+      const existingGroups = await tx.closedTrade.findMany({
+        where: scoped ? { accountId: { in: accountIds } } : undefined,
+        select: { groupKey: true },
+      });
+      const refreshPlan = planClosedTradeRefresh(
+        existingGroups.map((group) => group.groupKey),
+        groups.map((group) => group.groupKey),
+      );
+
+      if (refreshPlan.staleGroupKeys.length > 0) {
+        for (const chunk of chunked(refreshPlan.staleGroupKeys, 500)) {
+          await tx.closedTrade.updateMany({
+            where: { groupKey: { in: chunk } },
+            data: {
+              isStale: true,
+              staleAt: new Date(),
+              staleReason: "This trade was not present in the latest materialized closed-trade refresh.",
+            },
+          });
+        }
+      }
+
+      for (const group of groups) {
+        await tx.closedTrade.upsert({
+          where: { groupKey: group.groupKey },
+          update: {
+            accountId: group.accountId,
+            instrumentId: group.instrumentId,
+            symbol: group.symbol,
+            direction: group.side,
+            openTime: new Date(group.openTime),
+            closeTime: new Date(group.closeTime),
+            tradeDate: new Date(`${group.tradeDate}T00:00:00.000Z`),
+            totalQuantity: group.totalQuantity,
+            avgEntryPrice: group.avgEntryPrice,
+            avgExitPrice: group.avgExitPrice,
+            grossRealizedPnl: group.grossRealizedPnl,
+            openingQuantity: group.openingQuantity,
+            closingQuantity: group.closingQuantity,
+            realizedPnl: group.realizedPnl,
+            totalCommission: group.totalCommission,
+            isStale: false,
+            staleAt: null,
+            staleReason: null,
+          },
+          create: {
+            groupKey: group.groupKey,
+            accountId: group.accountId,
+            instrumentId: group.instrumentId,
+            symbol: group.symbol,
+            direction: group.side,
+            openTime: new Date(group.openTime),
+            closeTime: new Date(group.closeTime),
+            tradeDate: new Date(`${group.tradeDate}T00:00:00.000Z`),
+            totalQuantity: group.totalQuantity,
+            avgEntryPrice: group.avgEntryPrice,
+            avgExitPrice: group.avgExitPrice,
+            grossRealizedPnl: group.grossRealizedPnl,
+            openingQuantity: group.openingQuantity,
+            closingQuantity: group.closingQuantity,
+            realizedPnl: group.realizedPnl,
+            totalCommission: group.totalCommission,
+            isStale: false,
+            staleAt: null,
+            staleReason: null,
+          },
+        });
+      }
+
+      const executionRows = groups.flatMap((group) =>
+        group.executions.map((execution, sortOrder) => ({
+          closedTradeGroupKey: group.groupKey,
+          executionId: execution.id,
+          sortOrder,
+          executedAt: new Date(execution.executedAt),
+          side: execution.side,
+          quantity: execution.quantity,
+          price: execution.price,
+          commission: execution.commission,
+          fees: execution.fees,
+        })),
+      );
+
+      for (const chunk of chunked(refreshPlan.executionGroupKeysToReplace, 500)) {
+        await tx.closedTradeExecution.deleteMany({
+          where: { closedTradeGroupKey: { in: chunk } },
+        });
+      }
+
+      for (const chunk of chunked(executionRows, 500)) {
+        await tx.closedTradeExecution.createMany({ data: chunk, skipDuplicates: true });
+      }
+
+      if (sourceSnapshot) {
+        await writeMaterializationWatermark(tx, MATERIALIZATION_WATERMARK_KEYS.closedTrades, sourceSnapshot);
+      }
+    },
+    { timeout: 60_000 },
   );
 
-  await prisma.$transaction(async (tx) => {
-    await tx.closedTrade.deleteMany();
-
-    if (groups.length === 0) {
-      return;
-    }
-
-    for (const chunk of chunked(groups, 200)) {
-      await tx.closedTrade.createMany({
-        data: chunk.map((group) => ({
-          groupKey: group.groupKey,
-          accountId: group.accountId,
-          instrumentId: group.instrumentId,
-          symbol: group.symbol,
-          direction: group.side,
-          openTime: new Date(group.openTime),
-          closeTime: new Date(group.closeTime),
-          tradeDate: new Date(`${group.tradeDate}T00:00:00.000Z`),
-          totalQuantity: group.totalQuantity,
-          avgEntryPrice: group.avgEntryPrice,
-          avgExitPrice: group.avgExitPrice,
-          grossRealizedPnl: group.grossRealizedPnl,
-          openingQuantity: group.openingQuantity,
-          closingQuantity: group.closingQuantity,
-          realizedPnl: group.realizedPnl,
-          totalCommission: group.totalCommission,
-        })),
-      });
-    }
-
-    const executionRows = groups.flatMap((group) =>
-      group.executions.map((execution, sortOrder) => ({
-        closedTradeGroupKey: group.groupKey,
-        executionId: execution.id,
-        sortOrder,
-        executedAt: new Date(execution.executedAt),
-        side: execution.side,
-        quantity: execution.quantity,
-        price: execution.price,
-        commission: execution.commission,
-        fees: execution.fees,
-      })),
-    );
-
-    for (const chunk of chunked(executionRows, 500)) {
-      await tx.closedTradeExecution.createMany({ data: chunk });
-    }
-  });
-
-  return { groups: groups.length };
+  return { groups: groupCount };
 }
 
 export async function ensureMaterializedClosedTrades() {
-  const existing = await prisma.closedTrade.findFirst({ select: { groupKey: true } });
-  if (existing) return false;
+  const sourceSnapshot = await getClosedTradesSourceSnapshot(prisma);
 
-  const firstExecution = await prisma.execution.findFirst({ select: { id: true } });
-  if (!firstExecution) return false;
+  if (sourceSnapshot.executionCount === 0) return false;
+  if (await isMaterializationWatermarkFresh(prisma, MATERIALIZATION_WATERMARK_KEYS.closedTrades, sourceSnapshot)) {
+    return false;
+  }
 
   await refreshMaterializedClosedTrades();
   return true;

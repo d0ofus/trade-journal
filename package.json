@@ -8,16 +8,19 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "test:db:preflight": "tsx scripts/assert-test-database.ts",
+    "test:e2e": "npm run test:db:preflight -- --playwright && npm run build && npm run prisma:seed:demo && playwright test",
     "test:watch": "vitest",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "prisma:seed:demo": "tsx prisma/seed.js --demo"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
-    "@prisma/client": "^6.17.1",
+    "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -25,28 +28,30 @@
     "date-fns": "^4.1.0",
     "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.575.0",
-    "next": "16.1.6",
+    "next": "^16.2.9",
     "next-auth": "^4.24.13",
-    "prisma": "^6.17.1",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
+    "prisma": "^6.19.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "recharts": "^3.7.0",
     "tailwind-merge": "^3.5.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^4.1.9",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "^16.2.9",
     "tailwindcss": "^4",
+    "tsx": "^4.22.4",
     "typescript": "^5",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.9"
   },
   "prisma": {
-    "seed": "node prisma/seed.js"
+    "seed": "tsx prisma/seed.js"
   }
 }

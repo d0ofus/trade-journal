@@ -1,8 +1,23 @@
 import { prisma } from "@/lib/prisma";
+import { inferBarIntervalSeconds } from "@/lib/charts/execution-marker-alignment";
 
 export type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 export type CandleTimeframe = "5m" | "10m" | "15m" | "1h" | "1d" | "1wk";
 export type CandleRange = { from: number; to: number } | null;
+export type CandleResponseMetadata = {
+  requestedRange: CandleRange;
+  returnedRange: CandleRange;
+  barIntervalSeconds: number | null;
+  limit: number;
+  truncated: boolean;
+  warnings: string[];
+};
+export type LoadedCandles = {
+  symbol: string;
+  candles: Candle[];
+  source: string | null;
+  warnings?: string[];
+};
 
 const TIMEFRAME_CONFIG: Record<CandleTimeframe, { interval: string; range: string; defaultDays: number }> = {
   "5m": { interval: "5m", range: "60d", defaultDays: 60 },
@@ -27,6 +42,45 @@ const MAX_ALPACA_BARS_PER_PAGE = 10_000;
 const MAX_ALPACA_PAGES = 20;
 
 export const SAFE_SYMBOL_PATTERN = /^[A-Z0-9.^=_-]{1,20}$/;
+
+export function summarizeCandleResponse(input: {
+  candles: Candle[];
+  range: CandleRange;
+  limit: number;
+  loadedCount?: number;
+}): CandleResponseMetadata {
+  const candles = dedupeCandles(input.candles).filter((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
+  const first = candles[0];
+  const last = candles.at(-1);
+  const barIntervalSeconds = candles.length > 1 ? inferBarIntervalSeconds(candles) : null;
+  const returnedRange = first && last ? { from: first.time, to: last.time } : null;
+  const limit = Math.max(1, Math.floor(input.limit));
+  const loadedCount = Number.isFinite(input.loadedCount) ? Math.max(0, Math.floor(Number(input.loadedCount))) : candles.length;
+  const truncated = loadedCount > limit;
+  const warnings: string[] = [];
+
+  if (truncated) {
+    warnings.push("Candle response reached the bar limit.");
+  }
+  if (input.range && returnedRange) {
+    const tolerance = Math.max(barIntervalSeconds ?? 0, 24 * 60 * 60);
+    if (returnedRange.from - input.range.from > tolerance) {
+      warnings.push("Candle data starts after the requested range.");
+    }
+    if (input.range.to - returnedRange.to > tolerance) {
+      warnings.push("Candle data ends before the requested range.");
+    }
+  }
+
+  return {
+    requestedRange: input.range,
+    returnedRange,
+    barIntervalSeconds,
+    limit,
+    truncated,
+    warnings,
+  };
+}
 
 export function parseCandleTimeframe(value: string | null | undefined): CandleTimeframe {
   const timeframeRaw = (value ?? "1d").trim().toLowerCase();
@@ -53,6 +107,48 @@ function defaultRangeForTimeframe(timeframe: CandleTimeframe) {
   const to = Math.floor(Date.now() / 1000);
   const from = to - TIMEFRAME_CONFIG[timeframe].defaultDays * 24 * 60 * 60;
   return { from, to };
+}
+
+function timeframeIntervalSeconds(timeframe: CandleTimeframe) {
+  return timeframe === "5m"
+    ? 5 * 60
+    : timeframe === "10m"
+      ? 10 * 60
+      : timeframe === "15m"
+        ? 15 * 60
+        : timeframe === "1h"
+          ? 60 * 60
+          : timeframe === "1wk"
+            ? 7 * 24 * 60 * 60
+            : 24 * 60 * 60;
+}
+
+function cachedCandlesCoverRequestedRange(candles: Candle[], timeframe: CandleTimeframe, range: CandleRange) {
+  if (!range) return true;
+  const rows = dedupeCandles(candles);
+  const first = rows[0];
+  const last = rows.at(-1);
+  if (!first || !last) return false;
+  const tolerance = Math.max(inferBarIntervalSeconds(rows) ?? 0, timeframeIntervalSeconds(timeframe));
+  return first.time - range.from <= tolerance && range.to - last.time <= tolerance;
+}
+
+function cachedCandlesAreUsable(candles: Candle[], timeframe: CandleTimeframe, limit: number, range: CandleRange) {
+  if (candles.length === 0) return false;
+  const minimumBars = timeframe === "1d" || timeframe === "1wk" ? 5 : 20;
+  return candles.length >= Math.min(minimumBars, Math.max(1, limit)) && cachedCandlesCoverRequestedRange(candles, timeframe, range);
+}
+
+function providerUnavailableWarning(provider: string, hasFallbackCandles: boolean) {
+  return `${provider} candle provider unavailable; ${hasFallbackCandles ? "showing cached candles." : "no candle data returned."}`;
+}
+
+function providerEmptyWarning(provider: string, hasFallbackCandles: boolean) {
+  return `${provider} candle provider returned no usable data; ${hasFallbackCandles ? "showing cached candles." : "no candle data returned."}`;
+}
+
+function cacheUnavailableWarning(hasProviderFallback: boolean) {
+  return `Candle cache unavailable; ${hasProviderFallback ? "using live provider candles." : "no cached candle fallback available."}`;
 }
 
 function alpacaCredentials() {
@@ -100,6 +196,23 @@ async function readCachedCandles(input: {
     close: row.close,
     volume: row.volume ?? undefined,
   }));
+}
+
+async function readCachedCandlesWithRetry(input: {
+  symbol: string;
+  timeframe: CandleTimeframe;
+  range: CandleRange;
+  limit: number;
+}) {
+  try {
+    return await readCachedCandles(input);
+  } catch (firstError) {
+    try {
+      return await readCachedCandles(input);
+    } catch {
+      throw firstError;
+    }
+  }
 }
 
 function chunked<T>(rows: T[], size: number) {
@@ -214,7 +327,7 @@ async function loadAlpacaCandlesForSymbol(input: {
         "APCA-API-SECRET-KEY": credentials.secretKey,
       },
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new Error("Alpaca candle provider unavailable.");
 
     const payload = await res.json();
     rows.push(...parseAlpacaRows(payload, input.symbol));
@@ -223,9 +336,13 @@ async function loadAlpacaCandlesForSymbol(input: {
   } while (pageToken && rows.length < targetLimit && page < MAX_ALPACA_PAGES);
 
   const candles = dedupeCandles(rows).slice(-targetLimit);
-  if (candles.length === 0) return null;
+  if (candles.length === 0) throw new Error("Alpaca candle provider returned no usable data.");
 
-  await cacheAlpacaCandles(input.symbol, input.timeframe, candles);
+  try {
+    await cacheAlpacaCandles(input.symbol, input.timeframe, candles);
+  } catch {
+    return { symbol: input.symbol, candles, source: ALPACA_SOURCE, warnings: ["Candle cache update failed; showing live provider candles."] };
+  }
   return { symbol: input.symbol, candles, source: ALPACA_SOURCE };
 }
 
@@ -370,23 +487,51 @@ export async function loadCandlesForSymbol(input: {
   timeframe: CandleTimeframe;
   range: CandleRange;
   limit: number;
-}) {
+}): Promise<LoadedCandles> {
   const { timeframe, range, limit } = input;
   const symbol = input.symbol.trim().toUpperCase();
   const config = TIMEFRAME_CONFIG[timeframe];
   const boundedLimit = Math.max(1, limit);
-  const effectiveRange = range ?? defaultRangeForTimeframe(timeframe);
-  const alpaca = await loadAlpacaCandlesForSymbol({
-    symbol,
-    timeframe,
-    range: effectiveRange,
-    limit: boundedLimit,
-  });
-  if (alpaca) return alpaca;
-
-  const cached = await readCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
-  if (cached.length > 0) {
+  const warnings: string[] = [];
+  let cacheReadFailed = false;
+  let cached: Candle[] = [];
+  try {
+    cached = await readCachedCandlesWithRetry({ symbol, timeframe, range, limit: boundedLimit });
+  } catch {
+    cacheReadFailed = true;
+  }
+  if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
     return { symbol, candles: cached.slice(-boundedLimit), source: "cache" };
+  }
+
+  const effectiveRange = range ?? defaultRangeForTimeframe(timeframe);
+  let alpaca: LoadedCandles | null = null;
+  try {
+    alpaca = await loadAlpacaCandlesForSymbol({
+      symbol,
+      timeframe,
+      range: effectiveRange,
+      limit: boundedLimit,
+    });
+  } catch {
+    warnings.push(providerUnavailableWarning("Alpaca", cached.length > 0));
+  }
+  if (alpaca) {
+    return {
+      ...alpaca,
+      warnings: [
+        ...(cacheReadFailed ? [cacheUnavailableWarning(true)] : []),
+        ...(alpaca.warnings ?? []),
+      ],
+    };
+  }
+
+  if (cacheReadFailed) {
+    warnings.push(cacheUnavailableWarning(false));
+  }
+
+  if (!range && cached.length > 0) {
+    return { symbol, candles: cached.slice(-boundedLimit), source: "cache", warnings };
   }
 
   const yahooUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
@@ -401,30 +546,50 @@ export async function loadCandlesForSymbol(input: {
   yahooUrl.searchParams.set("includePrePost", "false");
   yahooUrl.searchParams.set("events", "div,splits");
 
-  const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
-  if (yahooRes.ok) {
-    const payload = await yahooRes.json();
-    const parsedRows = dedupeCandles(parseYahooRows(payload));
-    const rows =
-      timeframe === "1d" || timeframe === "1wk"
-        ? trimTrailingDuplicateDailyCandle(parsedRows)
-        : timeframe === "10m"
-          ? aggregateCandles(parsedRows, 10 * 60)
-          : parsedRows;
-    if (rows.length > 0) return { symbol, candles: rows.slice(-boundedLimit), source: "yahoo" };
+  try {
+    const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
+    if (yahooRes.ok) {
+      const payload = await yahooRes.json();
+      const parsedRows = dedupeCandles(parseYahooRows(payload));
+      const rows =
+        timeframe === "1d" || timeframe === "1wk"
+          ? trimTrailingDuplicateDailyCandle(parsedRows)
+          : timeframe === "10m"
+            ? aggregateCandles(parsedRows, 10 * 60)
+            : parsedRows;
+      if (rows.length > 0) return { symbol, candles: rows.slice(-boundedLimit), source: "yahoo", warnings };
+        warnings.push(providerEmptyWarning("Yahoo", cached.length > 0));
+    } else {
+      warnings.push(providerUnavailableWarning("Yahoo", cached.length > 0));
+    }
+  } catch {
+    warnings.push(providerUnavailableWarning("Yahoo", cached.length > 0));
   }
 
   if (timeframe === "1d") {
     const candidates = [symbol.includes(".") ? symbol.toLowerCase() : `${symbol.toLowerCase()}.us`, symbol.toLowerCase()];
+    let stooqFetchFailed = false;
     for (const candidate of candidates) {
       const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(candidate)}&i=d`;
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) continue;
-      const csvText = await res.text();
-      const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
-      if (rows.length > 0) return { symbol: candidate.toUpperCase(), candles: rows.slice(-boundedLimit), source: "stooq" };
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) {
+          stooqFetchFailed = true;
+          continue;
+        }
+        const csvText = await res.text();
+        const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
+        if (rows.length > 0) return { symbol: candidate.toUpperCase(), candles: rows.slice(-boundedLimit), source: "stooq", warnings };
+      } catch {
+        stooqFetchFailed = true;
+      }
     }
+    warnings.push(stooqFetchFailed ? providerUnavailableWarning("Stooq", cached.length > 0) : providerEmptyWarning("Stooq", cached.length > 0));
   }
 
-  return null;
+  if (cached.length > 0) {
+    return { symbol, candles: cached.slice(-boundedLimit), source: "cache", warnings };
+  }
+
+  return { symbol, candles: [], source: null, warnings };
 }

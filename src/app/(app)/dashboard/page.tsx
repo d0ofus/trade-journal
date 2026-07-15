@@ -29,6 +29,24 @@ function formatVolume(value: number) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }
 
+function formatProfitFactor(value: number, lossCount: number) {
+  if (lossCount === 0) return "No losses";
+  if (!Number.isFinite(value)) return "No losses";
+  return value.toFixed(2);
+}
+
+function formatLargestPair(gain: number, loss: number, winCount: number, lossCount: number) {
+  const gainLabel = winCount > 0 ? formatCurrency(gain) : "No wins";
+  const lossLabel = lossCount > 0 ? formatCurrency(loss) : "No losses";
+  return `${gainLabel} / ${lossLabel}`;
+}
+
+function formatAveragePair(avgWin: number, avgLoss: number, winCount: number, lossCount: number) {
+  const winLabel = winCount > 0 ? formatCurrency(avgWin) : "No wins";
+  const lossLabel = lossCount > 0 ? formatCurrency(avgLoss) : "No losses";
+  return `${winLabel} / ${lossLabel}`;
+}
+
 function parseDateParam(value: string | undefined) {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -154,33 +172,39 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
 async function DashboardContent({ from, to }: { from?: string; to?: string }) {
   const data = await getDashboardData({ from, to });
   const cards = [
-    { label: "Total Trades", value: data.cards.totalTrades.toLocaleString() },
+    { id: "total-trades", label: "Total Trades", value: data.cards.totalTrades.toLocaleString() },
     {
+      id: "largest-gain-loss",
       label: "Largest Gain / Largest Loss",
-      value: `${formatCurrency(data.cards.largestGain)} / ${formatCurrency(data.cards.largestLoss)}`,
+      value: formatLargestPair(data.cards.largestGain, data.cards.largestLoss, data.cards.winCount, data.cards.lossCount),
     },
-    { label: "Avg Hold Time (Winning Trades)", value: formatDuration(data.cards.avgWinHoldMs) },
-    { label: "Avg Hold Time (Losing Trades)", value: formatDuration(data.cards.avgLossHoldMs) },
-    { label: "Avg Daily Traded Volume", value: formatVolume(data.cards.avgDailyVolume) },
-    { label: "Realized PnL (Day)", value: formatCurrency(data.cards.realizedDay) },
-    { label: "Realized PnL (Week)", value: formatCurrency(data.cards.realizedWeek) },
-    { label: "Realized PnL (Month)", value: formatCurrency(data.cards.realizedMonth) },
-    { label: "Win Rate", value: formatPercent(data.cards.winRate) },
+    { id: "avg-winning-hold", label: "Avg Hold Time (Winning Trades)", value: formatDuration(data.cards.avgWinHoldMs) },
+    { id: "avg-losing-hold", label: "Avg Hold Time (Losing Trades)", value: formatDuration(data.cards.avgLossHoldMs) },
+    { id: "avg-daily-volume", label: "Avg Daily Traded Volume", value: formatVolume(data.cards.avgDailyVolume) },
+    { id: "realized-day", label: "Realized PnL (Day)", value: formatCurrency(data.cards.realizedDay) },
+    { id: "realized-week", label: "Realized PnL (Week)", value: formatCurrency(data.cards.realizedWeek) },
+    { id: "realized-month", label: "Realized PnL (Month)", value: formatCurrency(data.cards.realizedMonth) },
+    { id: "win-rate", label: "Win Rate", value: formatPercent(data.cards.winRate) },
     {
+      id: "profit-factor",
       label: "Profit Factor",
-      value: Number.isFinite(data.cards.profitFactor) ? data.cards.profitFactor.toFixed(2) : "Infinity",
+      value: formatProfitFactor(data.cards.profitFactor, data.cards.lossCount),
     },
-    { label: "Avg Win / Avg Loss", value: `${formatCurrency(data.cards.avgWin)} / ${formatCurrency(data.cards.avgLoss)}` },
-    { label: "Expectancy", value: formatCurrency(data.cards.expectancy) },
-    { label: "Max Drawdown", value: formatCurrency(data.cards.maxDrawdown) },
-    { label: "Commissions", value: formatCurrency(data.cards.commissions) },
+    {
+      id: "avg-win-loss",
+      label: "Avg Win / Avg Loss",
+      value: formatAveragePair(data.cards.avgWin, data.cards.avgLoss, data.cards.winCount, data.cards.lossCount),
+    },
+    { id: "expectancy", label: "Expectancy", value: formatCurrency(data.cards.expectancy) },
+    { id: "max-drawdown", label: "Max Drawdown", value: formatCurrency(data.cards.maxDrawdown) },
+    { id: "commissions", label: "Commissions", value: formatCurrency(data.cards.commissions) },
   ];
 
   return (
     <>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {cards.map((card) => (
-          <Card key={card.label} className="overflow-hidden">
+          <Card key={card.label} className="overflow-hidden" data-testid={`dashboard-card-${card.id}`}>
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{card.label}</CardTitle>
             </CardHeader>

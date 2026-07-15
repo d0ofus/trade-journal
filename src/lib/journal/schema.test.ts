@@ -4,6 +4,7 @@ import {
   JOURNAL_MARKET_REGIMES,
   JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS,
   JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS,
+  JOURNAL_NOTION_RELATION_LABELS,
   JOURNAL_NOTION_TRADE_STATUSES,
   JOURNAL_OUTCOME_STATUSES,
   JOURNAL_TIMEFRAMES,
@@ -103,6 +104,10 @@ describe("journal schema", () => {
 
     expect(normalized.ACCOUNT).toEqual(["Backtest"]);
     expect(normalized.CHART_PATTERN).toEqual(["Bull flag", "ORB"]);
+  });
+
+  it("keeps the legacy BAIS key but displays the corrected Bias label", () => {
+    expect(JOURNAL_NOTION_RELATION_LABELS.BAIS).toBe("Bias");
   });
 
   it("derives Notion system fields from saved journal data", () => {

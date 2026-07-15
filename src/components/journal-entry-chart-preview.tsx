@@ -23,7 +23,7 @@ type DragState = {
   initialStartIndex?: number;
   initialEndIndex?: number;
 };
-type CandleResponse = { symbol?: string; candles?: Candle[]; error?: string };
+type CandleResponse = { symbol?: string; candles?: Candle[]; metadata?: { warnings?: string[] } | null; error?: string };
 
 const DEFAULT_CHART_HEIGHT = 500;
 const DEFAULT_SELECTION_LENGTH = 40;
@@ -115,6 +115,7 @@ export function JournalEntryChartPreview({
   const [points, setPoints] = useState<ChartPoint[]>([]);
   const [loadedSymbol, setLoadedSymbol] = useState("");
   const [status, setStatus] = useState("");
+  const [candleWarnings, setCandleWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [selection, setSelection] = useState<ChartSelection | null>(null);
   const [rect, setRect] = useState<{ left: number; width: number } | null>(null);
@@ -142,6 +143,7 @@ export function JournalEntryChartPreview({
       if (controller.signal.aborted) return;
       setLoading(true);
       setStatus("Loading chart...");
+      setCandleWarnings([]);
       setPoints([]);
       setSelection(null);
       setLoadedSymbol(requestedSymbol);
@@ -162,12 +164,14 @@ export function JournalEntryChartPreview({
         setLoadedSymbol(payload.symbol ?? requestedSymbol);
         setPoints(nextPoints);
         setSelection(selectionFromIndexes(nextPoints, startIndex, endIndex));
+        setCandleWarnings(Array.isArray(payload.metadata?.warnings) ? payload.metadata.warnings : []);
         setStatus("");
       })
       .catch((error) => {
         if (controller.signal.aborted) return;
         setPoints([]);
         setSelection(null);
+        setCandleWarnings([]);
         setStatus(error instanceof Error ? error.message : "Unable to load candles.");
       })
       .finally(() => {
@@ -376,7 +380,9 @@ export function JournalEntryChartPreview({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-slate-950">{loadedSymbol || symbol}</div>
-          <div className="text-xs text-slate-500">{firstLabel} to {lastLabel}</div>
+          <div className={cn("text-xs text-slate-500", candleWarnings.length > 0 && "text-amber-700")}>
+            {candleWarnings[0] ?? `${firstLabel} to ${lastLabel}`}
+          </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {QUICK_LENGTHS.map((length) => (

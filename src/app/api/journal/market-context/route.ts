@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 function apiBase() {
   return process.env.MARKET_OVERVIEW_API_BASE?.replace(/\/+$/, "") ?? "";
@@ -19,6 +20,9 @@ async function fetchMarketOverview(path: string) {
 }
 
 export async function GET(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const symbol = (req.nextUrl.searchParams.get("symbol") ?? "").trim().toUpperCase();
   if (!symbol) return NextResponse.json({ error: "symbol required" }, { status: 400 });
 

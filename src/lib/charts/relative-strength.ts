@@ -85,6 +85,16 @@ export function matchCandlesByTime(
   });
 }
 
+export function buildPercentChangeSeries(candles: RelativeStrengthCandle[]) {
+  const firstClose = candles.find((candle) => Number.isFinite(candle.close))?.close;
+  if (!firstClose) return [] as Array<{ time: number; value: number }>;
+
+  return candles.flatMap((candle) => {
+    const value = percentageChange(firstClose, candle.close);
+    return value === null ? [] : [{ time: candle.time, value }];
+  });
+}
+
 export function candleMoveForWindow(input: {
   candles: RelativeStrengthCandle[];
   openTime: string;

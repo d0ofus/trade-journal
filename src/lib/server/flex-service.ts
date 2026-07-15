@@ -1,7 +1,15 @@
-import { importParsedFile } from "@/lib/server/import-service";
+import {
+  importParsedFilesAtomic,
+  markImportBatchesMaterializationFailed,
+  markImportBatchesMaterialized,
+  recordFailedImportAttempt,
+  type ImportParsedFileInput,
+  type ImportParsedFileResult,
+} from "@/lib/server/import-service";
 import { refreshMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { refreshMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
 import { parseFlexStatementCsv } from "@/lib/import/ibkr-flex";
+import type { ParsedImport } from "@/lib/import/ibkr-parser";
 
 const DEFAULT_BASE = "https://gdcdyn.interactivebrokers.com/Universal/servlet";
 
@@ -50,6 +58,23 @@ async function callFlex(baseUrl: string, endpoint: string, params: Record<string
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasRowsOrErrors(parsed: ParsedImport) {
+  return parsed.rawRowCount > 0 || parsed.rowErrors.length > 0;
+}
+
+function emptyImportResult() {
+  return {
+    batchId: "",
+    rowsSeen: 0,
+    rowsImported: 0,
+    rowsSkipped: 0,
+    rowErrors: 0,
+    durationMs: 0,
+    rowsPerSecond: 0,
+    positionSnapshotMode: null,
+  };
 }
 
 export async function pullFlexStatementCsv(input: FlexRunInput) {
@@ -101,22 +126,82 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
   }
 
   const csv = await pullFlexStatementCsv({ token, queryId, baseUrl: input?.baseUrl });
-  const parsed = parseFlexStatementCsv(csv);
+  let parsed: ReturnType<typeof parseFlexStatementCsv>;
+  try {
+    parsed = parseFlexStatementCsv(csv);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Flex statement parsing failed.";
+    await recordFailedImportAttempt({
+      filename: `flex-statement-${new Date().toISOString()}.csv`,
+      fileType: "flex",
+      rawContent: csv,
+      message,
+    });
+    throw error;
+  }
+  const batchIds: string[] = [];
 
-  const tradesResult = await importParsedFile({
-    filename: `flex-trades-${new Date().toISOString()}.csv`,
-    parsed: parsed.trades,
-    fileType: "flex-trades",
-  });
+  let tradesResult: ImportParsedFileResult = emptyImportResult();
+  let positionsResult: ImportParsedFileResult = emptyImportResult();
+  const importTimestamp = new Date().toISOString();
+  const pendingImports: Array<{ kind: "trades" | "positions"; params: ImportParsedFileInput }> = [];
 
-  const positionsResult = await importParsedFile({
-    filename: `flex-positions-${new Date().toISOString()}.csv`,
-    parsed: parsed.positions,
-    fileType: "flex-positions",
-  });
+  if (hasRowsOrErrors(parsed.trades)) {
+    pendingImports.push({
+      kind: "trades",
+      params: {
+        filename: `flex-trades-${importTimestamp}.csv`,
+        parsed: parsed.trades,
+        fileType: "flex-trades",
+        rawContent: csv,
+      },
+    });
+  }
 
-  await refreshMaterializedExecutionAnalytics();
-  await refreshMaterializedClosedTrades();
+  if (hasRowsOrErrors(parsed.positions)) {
+    pendingImports.push({
+      kind: "positions",
+      params: {
+        filename: `flex-positions-${importTimestamp}.csv`,
+        parsed: parsed.positions,
+        fileType: "flex-positions",
+        rawContent: csv,
+        positionSnapshotMode: "partial",
+      },
+    });
+  }
+
+  if (pendingImports.length === 0) {
+    await recordFailedImportAttempt({
+      filename: `flex-empty-${new Date().toISOString()}.csv`,
+      fileType: "flex",
+      rawContent: csv,
+      message: "No importable Flex trade or position rows were found.",
+    });
+    throw new Error("No importable Flex trade or position rows were found.");
+  }
+
+  const atomicResults = await importParsedFilesAtomic(pendingImports.map((item) => item.params));
+  for (const [index, result] of atomicResults.entries()) {
+    const pendingImport = pendingImports[index];
+    batchIds.push(result.batchId);
+    if (pendingImport.kind === "trades") {
+      tradesResult = result;
+    } else {
+      positionsResult = result;
+    }
+  }
+
+  try {
+    await refreshMaterializedExecutionAnalytics();
+    await refreshMaterializedClosedTrades();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Materialization refresh failed.";
+    await markImportBatchesMaterializationFailed(batchIds, message);
+    throw error;
+  }
+
+  await markImportBatchesMaterialized(batchIds);
 
   return {
     trades: tradesResult,

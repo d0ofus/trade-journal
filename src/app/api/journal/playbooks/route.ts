@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { journalPlaybookPayloadSchema } from "@/lib/journal/schema";
 import { createJournalPlaybook, listJournalPlaybooks } from "@/lib/server/journal";
+import { requireApiSession } from "@/lib/server/api-auth";
 
 export async function GET(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const rows = await listJournalPlaybooks({
     includeArchived: req.nextUrl.searchParams.get("includeArchived") === "true",
   });
@@ -10,6 +14,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const authError = await requireApiSession();
+  if (authError) return authError;
+
   const body = await req.json();
   const parsed = journalPlaybookPayloadSchema.safeParse(body);
   if (!parsed.success) {

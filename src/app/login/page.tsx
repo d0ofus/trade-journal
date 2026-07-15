@@ -7,6 +7,45 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+const DEFAULT_CALLBACK_URL = "/dashboard";
+
+function decodeCallbackValue(value: string) {
+  let current = value;
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (!/%[0-9a-f]{2}/i.test(current)) break;
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) break;
+      current = decoded;
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
+function normalizeCallbackUrl(value: string | null) {
+  if (!value) {
+    return DEFAULT_CALLBACK_URL;
+  }
+
+  const decodedValue = decodeCallbackValue(value);
+  if (!decodedValue.startsWith("/") || decodedValue.startsWith("//") || decodedValue.includes("\\")) {
+    return DEFAULT_CALLBACK_URL;
+  }
+
+  try {
+    const parsed = new URL(decodedValue, "http://localhost");
+    const target = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    if (target.startsWith("/login") || target.startsWith("/api/auth")) {
+      return DEFAULT_CALLBACK_URL;
+    }
+    return target;
+  } catch {
+    return DEFAULT_CALLBACK_URL;
+  }
+}
+
 export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -18,7 +57,7 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
 
-    const callbackUrl = "/dashboard";
+    const callbackUrl = normalizeCallbackUrl(new URLSearchParams(window.location.search).get("callbackUrl"));
     const result = await signIn("credentials", {
       username,
       password,
