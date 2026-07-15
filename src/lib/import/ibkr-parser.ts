@@ -84,14 +84,15 @@ const snapshotAliases: Record<string, string[]> = {
 };
 
 const inferKind = (headers: string[]): FileKind => {
-  const normalized = headers.map(normalizeHeader);
-  const hasTrade = normalized.some((h) => ["buy/sell", "action", "price", "quantity"].includes(h));
-  const hasPosition = normalized.some((h) => ["avgcost", "position", "unrealizedpnl"].includes(h));
-  const hasSnapshot = normalized.some((h) => ["netliquidation", "equity", "realizedpnl"].includes(h));
+  const normalized = new Set(headers.map(normalizeHeader));
+  const hasAny = (candidates: string[]) => candidates.some((candidate) => normalized.has(candidate));
+  const hasTrade = hasAny(["buy/sell", "action", "tradeprice", "datetime", "tradetime", "execid", "tradeid"]);
+  const hasPosition = hasAny(["avgcost", "averagecost", "position", "positionqty", "costbasisprice", "reportdate"]);
+  const hasSnapshot = hasAny(["netliquidation", "netliq", "equity", "accountvalue"]);
 
-  if (hasTrade) return "executions";
   if (hasPosition) return "positions";
   if (hasSnapshot) return "snapshots";
+  if (hasTrade || (normalized.has("price") && normalized.has("quantity"))) return "executions";
   return "unknown";
 };
 
@@ -107,46 +108,76 @@ function parseNumber(raw: string | undefined): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+function utcDateFromParts(year: number, month: number, day: number, hour = 0, minute = 0, second = 0) {
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    !Number.isInteger(second) ||
+    year < 1000 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour < 0 ||
+    hour > 23 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    return undefined;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== second
+  ) {
+    return undefined;
+  }
+  return date;
+}
+
 function parseDate(raw: string | undefined): Date | undefined {
   if (!raw) return undefined;
   const value = raw.trim();
   if (!value) return undefined;
 
-  const isoDateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (isoDateOnly) {
-    const [, yyyy, mm, dd] = isoDateOnly;
-    return new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd)));
+  const isoLocal = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (isoLocal) {
+    const [, yyyy, mm, dd, hh = "0", min = "0", ss = "0"] = isoLocal;
+    return utcDateFromParts(Number(yyyy), Number(mm), Number(dd), Number(hh), Number(min), Number(ss));
   }
 
   const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (match) {
     const [, mm, dd, yyyy, hh = "0", min = "0", ss = "0"] = match;
-    return new Date(Date.UTC(
-      Number(yyyy),
-      Number(mm) - 1,
-      Number(dd),
-      Number(hh),
-      Number(min),
-      Number(ss),
-    ));
+    return utcDateFromParts(Number(yyyy), Number(mm), Number(dd), Number(hh), Number(min), Number(ss));
   }
 
   const compact = value.match(/^(\d{4})(\d{2})(\d{2})(?:;(\d{2})(\d{2})(\d{2})?)?$/);
   if (compact) {
     const [, yyyy, mm, dd, hh = "0", min = "0", ss = "0"] = compact;
-    return new Date(Date.UTC(
-      Number(yyyy),
-      Number(mm) - 1,
-      Number(dd),
-      Number(hh),
-      Number(min),
-      Number(ss),
-    ));
+    return utcDateFromParts(Number(yyyy), Number(mm), Number(dd), Number(hh), Number(min), Number(ss));
   }
 
-  const native = new Date(value);
-  if (!Number.isNaN(native.getTime())) {
-    return native;
+  const explicitZone = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/,
+  );
+  if (explicitZone) {
+    const [, yyyy, mm, dd, hh, min, ss = "0"] = explicitZone;
+    if (!utcDateFromParts(Number(yyyy), Number(mm), Number(dd), Number(hh), Number(min), Number(ss))) {
+      return undefined;
+    }
+    const timestamp = Date.parse(value);
+    return Number.isNaN(timestamp) ? undefined : new Date(timestamp);
   }
 
   return undefined;
@@ -154,7 +185,15 @@ function parseDate(raw: string | undefined): Date | undefined {
 
 function parseAssetType(raw: string | undefined) {
   const upper = (raw ?? "STOCK").trim().toUpperCase();
-  return assetTypeSchema.safeParse(upper).success ? (upper as z.infer<typeof assetTypeSchema>) : "OTHER";
+  const aliases: Record<string, z.infer<typeof assetTypeSchema>> = {
+    STK: "STOCK",
+    OPT: "OPTION",
+    FUT: "FUTURE",
+    CASH: "FOREX",
+    FX: "FOREX",
+  };
+  const normalized = aliases[upper] ?? upper;
+  return assetTypeSchema.safeParse(normalized).success ? (normalized as z.infer<typeof assetTypeSchema>) : "OTHER";
 }
 
 function parseSide(raw: string | undefined): "BUY" | "SELL" | undefined {
@@ -281,12 +320,25 @@ function parsePositionRows(rows: PreviewRow[], mapping: HeaderMap): {
   const rowErrors: ParsedRowError[] = [];
 
   for (const [index, row] of rows.entries()) {
+    const rawReportDate = readField(row, mapping, "reportDate");
+    const reportDate = parseDate(rawReportDate);
+    if (rawReportDate?.trim() && !reportDate) {
+      rowErrors.push({
+        rowNumber: index + 2,
+        severity: "ERROR",
+        code: "POSITION_ROW_INVALID",
+        message: "reportDate: Invalid or unsupported calendar date",
+        rawRow: row,
+      });
+      continue;
+    }
+
     const candidate = {
       account: readField(row, mapping, "account") ?? "DEFAULT",
       symbol: (readField(row, mapping, "symbol") ?? "").trim(),
       exchange: (readField(row, mapping, "exchange") ?? "").trim() || undefined,
       assetType: parseAssetType(readField(row, mapping, "assetType")),
-      reportDate: parseDate(readField(row, mapping, "reportDate")),
+      reportDate,
       quantity: parseNumber(readField(row, mapping, "quantity")),
       avgCost: parseNumber(readField(row, mapping, "avgCost")),
       unrealizedPnl: parseNumber(readField(row, mapping, "unrealizedPnl")),

@@ -320,6 +320,99 @@ describe("importParsedFile", () => {
     }
   });
 
+  dbIt("uses canonical STOCK identity for IBKR STK full snapshots", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-STK-${marker}`;
+    const keptSymbol = `PSK${String(marker).slice(-6)}`;
+    const prunedSymbol = `PSP${String(marker).slice(-6)}`;
+    const filename = `stk-full-position-${marker}.csv`;
+    const csv = [
+      "ClientAccountID,Symbol,Exchange,AssetClass,ReportDate,Quantity,AvgCost,UnrealizedPnl,Currency",
+      `${accountCode},${keptSymbol},NASDAQ,STK,2026-03-03,12,11,4,USD`,
+    ].join("\n");
+
+    try {
+      const kept = await seedOpenPosition(accountCode, keptSymbol, 10);
+      const pruned = await seedOpenPosition(accountCode, prunedSymbol, 5);
+      const parsed = parseCsvWithMapping("positions", csv);
+
+      await importParsedFile({
+        filename,
+        fileType: "positions",
+        parsed,
+        positionSnapshotMode: "full",
+      });
+
+      const accountPositions = await prisma.position.findMany({
+        where: { accountId: kept.account.id },
+        include: { instrument: true },
+      });
+      const otherInstrument = await prisma.instrument.findUnique({
+        where: { symbol_exchange_assetType: { symbol: keptSymbol, exchange: "NASDAQ", assetType: "OTHER" } },
+      });
+      const prunedPosition = await prisma.position.findUnique({
+        where: { accountId_instrumentId: { accountId: pruned.account.id, instrumentId: pruned.instrument.id } },
+      });
+
+      expect(parsed.positions[0].assetType).toBe("STOCK");
+      expect(accountPositions).toHaveLength(1);
+      expect(accountPositions[0]).toMatchObject({ quantity: 12, instrumentId: kept.instrument.id });
+      expect(accountPositions[0].instrument.assetType).toBe("STOCK");
+      expect(otherInstrument).toBeNull();
+      expect(prunedPosition).toBeNull();
+    } finally {
+      await cleanupPositionScenario([accountCode], [keptSymbol, prunedSymbol], [filename]);
+    }
+  });
+
+  dbIt("rejects impossible full-snapshot dates before pruning positions", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-DATE-${marker}`;
+    const keptSymbol = `PDK${String(marker).slice(-6)}`;
+    const protectedSymbol = `PDP${String(marker).slice(-6)}`;
+    const filename = `invalid-date-full-position-${marker}.csv`;
+    const csv = [
+      "ClientAccountID,Symbol,Exchange,AssetClass,ReportDate,Quantity,AvgCost,UnrealizedPnl,Currency",
+      `${accountCode},${keptSymbol},NASDAQ,STK,2026-02-31,12,11,4,USD`,
+    ].join("\n");
+
+    try {
+      const kept = await seedOpenPosition(accountCode, keptSymbol, 10);
+      const protectedPosition = await seedOpenPosition(accountCode, protectedSymbol, 5);
+      const parsed = parseCsvWithMapping("positions", csv);
+
+      await expect(
+        importParsedFile({
+          filename,
+          fileType: "positions",
+          parsed,
+          positionSnapshotMode: "full",
+        }),
+      ).rejects.toBeInstanceOf(ImportRejectedError);
+
+      const batch = await prisma.importBatch.findFirstOrThrow({ where: { filename }, include: { rowErrors: true } });
+      const keptAfter = await prisma.position.findUnique({
+        where: { accountId_instrumentId: { accountId: kept.account.id, instrumentId: kept.instrument.id } },
+      });
+      const protectedAfter = await prisma.position.findUnique({
+        where: {
+          accountId_instrumentId: {
+            accountId: protectedPosition.account.id,
+            instrumentId: protectedPosition.instrument.id,
+          },
+        },
+      });
+
+      expect(batch.status).toBe("FAILED");
+      expect(batch.rowErrors).toHaveLength(1);
+      expect(batch.rowErrors[0].message).toContain("Invalid or unsupported calendar date");
+      expect(keptAfter?.quantity).toBe(10);
+      expect(protectedAfter?.quantity).toBe(5);
+    } finally {
+      await cleanupPositionScenario([accountCode], [keptSymbol, protectedSymbol], [filename]);
+    }
+  });
+
   dbIt("rejects full snapshots with row errors before pruning current positions", async () => {
     const marker = Date.now();
     const accountCode = `POS-ROWERR-${marker}`;

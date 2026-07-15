@@ -38,6 +38,7 @@ type PositionSnapshotSafety = {
     blockReason: string | null;
   }>;
   blockedFullSnapshot: boolean;
+  blockReason: string | null;
 };
 
 async function readFiles(formData: FormData) {
@@ -65,7 +66,7 @@ function snapshotDateKey(date: Date) {
 }
 
 async function buildPositionSnapshotSafety(parsed: ParsedImport): Promise<PositionSnapshotSafety | undefined> {
-  if (parsed.kind !== "positions" || parsed.positions.length === 0) return undefined;
+  if (parsed.kind !== "positions" || (parsed.positions.length === 0 && parsed.rowErrors.length === 0)) return undefined;
 
   const byAccount = new Map<string, { snapshotDates: Set<string>; missingReportDateRows: number }>();
   for (const position of parsed.positions) {
@@ -119,9 +120,15 @@ async function buildPositionSnapshotSafety(parsed: ParsedImport): Promise<Positi
     };
   });
 
+  const parseBlockReason =
+    parsed.rowErrors.length > 0
+      ? `Full snapshot blocked: ${parsed.rowErrors.length} invalid position row(s) must be fixed so missing positions are unambiguous.`
+      : null;
+
   return {
     accounts: safetyAccounts,
-    blockedFullSnapshot: safetyAccounts.some((account) => account.blockedFullSnapshot),
+    blockedFullSnapshot: Boolean(parseBlockReason) || safetyAccounts.some((account) => account.blockedFullSnapshot),
+    blockReason: parseBlockReason,
   };
 }
 

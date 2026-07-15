@@ -24,6 +24,7 @@ type Preview = {
       blockReason: string | null;
     }>;
     blockedFullSnapshot: boolean;
+    blockReason: string | null;
   };
 };
 
@@ -73,6 +74,18 @@ export function ImportUploader() {
       (positionSnapshotModes[preview.filename] ?? "partial") === "full" &&
       preview.positionSnapshotSafety?.blockedFullSnapshot,
   );
+  const blockedFullSnapshotReasons = previews.flatMap((preview) => {
+    if (
+      preview.kind !== "positions" ||
+      (positionSnapshotModes[preview.filename] ?? "partial") !== "full" ||
+      !preview.positionSnapshotSafety?.blockedFullSnapshot
+    ) {
+      return [];
+    }
+    return preview.positionSnapshotSafety.blockReason
+      ? [`${preview.filename}: ${preview.positionSnapshotSafety.blockReason}`]
+      : [];
+  });
   const hasUnconfirmedFullSnapshot = previews.some(
     (preview) =>
       preview.kind === "positions" &&
@@ -242,7 +255,9 @@ export function ImportUploader() {
           ) : null}
           {hasBlockedFullSnapshot ? (
             <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              A selected full snapshot is older than existing position history or lacks required report dates. Use partial update or upload a current complete export.
+              {blockedFullSnapshotReasons.length > 0
+                ? blockedFullSnapshotReasons.join(" ")
+                : "A selected full snapshot is older than existing position history or lacks required report dates. Use partial update or upload a current complete export."}
             </div>
           ) : null}
           {hasUnconfirmedFullSnapshot ? (
@@ -333,6 +348,11 @@ export function ImportUploader() {
                           `${account.account} snapshot date ${account.snapshotDates[0] ?? "unknown"}; latest known position date ${account.latestKnownSnapshotDate ?? "none"}.`}
                       </p>
                     ))}
+                    {safety?.blockReason ? (
+                      <p className="rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                        {safety.blockReason}
+                      </p>
+                    ) : null}
                     {blockedFullSnapshot ? null : (
                       <label className="flex items-start gap-2 rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
                         <input

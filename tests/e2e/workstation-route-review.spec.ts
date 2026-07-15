@@ -563,6 +563,42 @@ test("import route exposes upload controls and durable import history", async ({
   expect(browserErrors).toEqual([]);
 });
 
+test("import preview blocks impossible dates from full-snapshot pruning", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await signIn(page);
+  await gotoReady(page, "/import");
+
+  let commitRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/import") && (request.postData() ?? "").includes("commit")) {
+      commitRequests += 1;
+    }
+  });
+  const csv = [
+    "Positions",
+    "ClientAccountID,Symbol,Exchange,AssetClass,ReportDate,Quantity,AvgCost,UnrealizedPnl,Currency",
+    "DEMO-WORKSTATION,DEMOZ,NASDAQ,STK,2026-02-31,2,100,12,USD",
+  ].join("\n");
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "positions-invalid-date.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(csv),
+  });
+  await page.getByRole("button", { name: "Preview" }).click();
+  await expect(page.getByText("positions-invalid-date.csv :: Positions")).toBeVisible();
+  await expect(page.getByText("Detected type: positions")).toBeVisible();
+  await page.getByRole("button", { name: "Full snapshot" }).click();
+  await expect(page.getByText(/Full snapshot blocked: 1 invalid position row/).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Validate & Import" })).toBeDisabled();
+  await expect(page.getByLabel(/I confirm this is the complete open-position list/)).toHaveCount(0);
+
+  const viewportFits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+  expect(viewportFits).toBe(true);
+  expect(commitRequests).toBe(0);
+  expect(browserErrors).toEqual([]);
+});
+
 test("settings route covers accounts, Flex status, health, backup, and import history", async ({ page }) => {
   const browserErrors = collectBrowserErrors(page);
   await signIn(page);
