@@ -375,13 +375,37 @@ test("trades route covers filters, execution table, and detail navigation", asyn
     Array.from(candleRequestCounts.keys()).map((query) => new URLSearchParams(query).get("timeframe")),
   ));
   expect(requestedTimeframes).toEqual(expect.arrayContaining(["5m", "1h", "1d"]));
+  await page.evaluate(() => {
+    const panels = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="closed-trade-chart-panel"]'));
+    const canvases = panels.map((panel) => Array.from(panel.querySelectorAll("canvas")));
+    const root = document.querySelector('[data-testid="closed-trade-chart-region"]');
+    if (!root || canvases.some((panelCanvases) => panelCanvases.length === 0)) {
+      throw new Error("Chart lifecycle probe requires three mounted panels with canvases.");
+    }
+    const probe = {
+      canvasMutations: 0,
+      canvases,
+      observer: new MutationObserver((records) => {
+        for (const record of records) {
+          const changedNodes = [...record.addedNodes, ...record.removedNodes];
+          for (const node of changedNodes) {
+            if (!(node instanceof Element)) continue;
+            if (node.matches("canvas") || node.querySelector("canvas")) probe.canvasMutations += 1;
+          }
+        }
+      }),
+    };
+    probe.observer.observe(root, { childList: true, subtree: true });
+    (window as typeof window & { __chartFocusLifecycleProbe?: typeof probe }).__chartFocusLifecycleProbe = probe;
+  });
   const candleRequestsBeforeFocus = Array.from(candleRequestCounts.entries()).sort();
   const layoutPutsBeforeFocus = layoutPuts.length;
   await secondPanel.evaluate((panel) => (panel as HTMLElement).focus());
   await page.getByTitle("Focus active chart panel").click();
   await expect(page.getByTestId("focused-chart-panel-view")).toBeVisible();
-  await expect(page.getByTestId("closed-trade-chart-panel")).toHaveCount(1);
-  await expect(page.locator('[data-testid="closed-trade-chart-panel"][data-panel-id="panel-2"][data-timeframe="1h"]')).toHaveCount(1);
+  await expect(page.getByTestId("closed-trade-chart-panel")).toHaveCount(3);
+  await expect(page.locator('[data-testid="closed-trade-chart-panel"]:visible')).toHaveCount(1);
+  await expect(page.locator('[data-testid="closed-trade-chart-panel"][data-panel-id="panel-2"][data-timeframe="1h"]')).toBeVisible();
   const focusedPanelGeometry = await page.locator('[data-testid="closed-trade-chart-panel"][data-panel-id="panel-2"]').evaluate((panel) => ({
     height: Math.round(panel.getBoundingClientRect().height),
     plotHeight: Math.round(panel.querySelector('[data-testid="closed-trade-chart-plot"]')?.getBoundingClientRect().height ?? 0),
@@ -389,15 +413,59 @@ test("trades route covers filters, execution table, and detail navigation", asyn
   }));
   expect(focusedPanelGeometry.width).toBeGreaterThan(panelGeometry[1].width);
   expect(focusedPanelGeometry.plotHeight).toBeGreaterThan(panelGeometry[1].plotHeight);
+  await expect.poll(async () => {
+    return page.locator('[data-testid="closed-trade-chart-panel"][data-panel-id="panel-2"] canvas').evaluateAll((canvases) =>
+      canvases.some((canvas) => {
+        const context = (canvas as HTMLCanvasElement).getContext("2d");
+        if (!context || canvas.width === 0 || canvas.height === 0) return false;
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let index = 3; index < pixels.length; index += 4) {
+          if (pixels[index] !== 0) return true;
+        }
+        return false;
+      }),
+    );
+  }).toBe(true);
   await page.getByTitle("Show all chart panels").click();
   await expect(page.getByTestId("focused-chart-panel-view")).toHaveCount(0);
   await expect(page.getByTestId("closed-trade-chart-panel")).toHaveCount(3);
+  await expect(page.locator('[data-testid="closed-trade-chart-panel"]:visible')).toHaveCount(3);
   await expect(page.getByText(/Preparing chart|Loading bars/)).toHaveCount(0, { timeout: 10_000 });
   await page.waitForTimeout(250);
   const restoredPanelOrder = await page.getByTestId("closed-trade-chart-panel").evaluateAll((panels) =>
     panels.map((panel) => `${(panel as HTMLElement).dataset.panelId}:${(panel as HTMLElement).dataset.timeframe}`),
   );
   expect(restoredPanelOrder).toEqual(["panel-1:5m", "panel-2:1h", "panel-3:1d"]);
+  const lifecycleResult = await page.evaluate(() => {
+    const target = window as typeof window & {
+      __chartFocusLifecycleProbe?: {
+        canvasMutations: number;
+        canvases: HTMLCanvasElement[][];
+        observer: MutationObserver;
+      };
+    };
+    const probe = target.__chartFocusLifecycleProbe;
+    if (!probe) throw new Error("Chart lifecycle probe was not installed.");
+    probe.observer.disconnect();
+    const panels = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="closed-trade-chart-panel"]'));
+    const currentCanvases = panels.map((panel) => Array.from(panel.querySelectorAll("canvas")));
+    const sameCanvasNodes = probe.canvases.every((before, panelIndex) =>
+      before.length === currentCanvases[panelIndex]?.length
+      && before.every((canvas, canvasIndex) => canvas === currentCanvases[panelIndex][canvasIndex]),
+    );
+    const allOriginalCanvasesConnected = probe.canvases.flat().every((canvas) => canvas.isConnected);
+    delete target.__chartFocusLifecycleProbe;
+    return {
+      allOriginalCanvasesConnected,
+      canvasMutations: probe.canvasMutations,
+      sameCanvasNodes,
+    };
+  });
+  expect(lifecycleResult).toEqual({
+    allOriginalCanvasesConnected: true,
+    canvasMutations: 0,
+    sameCanvasNodes: true,
+  });
   expect(Array.from(candleRequestCounts.entries()).sort()).toEqual(candleRequestsBeforeFocus);
   await page.waitForTimeout(800);
   expect(layoutPuts.length).toBe(layoutPutsBeforeFocus);
@@ -595,7 +663,7 @@ test("settings backup verification failure is readable and blocks download", asy
   try {
     const downloadProbe = page.waitForEvent("download", { timeout: 1_000 }).then(() => true).catch(() => false);
     await page.getByTestId("backup-action-download-verify").click();
-    await expect(page.getByTestId("backup-verify-status")).toContainText("Backup manifest mismatch.");
+    await expect(page.getByTestId("backup-verify-status")).toContainText("Backup manifest mismatch.", { timeout: 30_000 });
     await expect(page.getByTestId("backup-verify-sha256")).toContainText("-");
     await expect(downloadProbe).resolves.toBe(false);
   } finally {

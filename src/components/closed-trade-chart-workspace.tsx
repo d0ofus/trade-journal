@@ -1593,6 +1593,47 @@ export function ClosedTradeChartWorkspace({
   const markersDisabledTitle = readOnly
     ? "Chart workspace is read-only"
     : "Wait for matching candles on every fill before storing execution markers";
+  const renderPanelSlot = (panel: ChartPanelState, index: number) => {
+    const isFocusedPanel = focusedPanel?.id === panel.id;
+    const hiddenByFocus = Boolean(focusedPanel) && !isFocusedPanel;
+    const featured = focusedPanel ? isFocusedPanel : layoutMode === "one-plus-two" && index === 0;
+    const compact = !focusedPanel && (
+      layoutMode === "three-horizontal"
+      || layoutMode === "three-vertical"
+      || (layoutMode === "one-plus-two" && index > 0)
+    );
+
+    return (
+      <div
+        key={panel.id}
+        aria-hidden={hiddenByFocus || undefined}
+        className={hiddenByFocus ? "hidden" : "contents"}
+        data-chart-panel-slot={panel.id}
+      >
+        <ClosedTradeChartPanel
+          annotations={annotations}
+          commitAnnotations={commitAnnotations}
+          active={isFocusedPanel || panel.id === activePanelId}
+          compact={compact}
+          deferCandles={!layoutLoaded || (deferSecondaryCandles && panel.id !== activePanelId)}
+          featured={featured}
+          overlayRightReserve={overlayRightReserve}
+          panel={panel}
+          pendingTrend={pendingTrend}
+          onExecutionAnchorsChange={handleExecutionAnchorsChange}
+          onPendingVisibleRangeChange={handlePendingVisibleRangeChange}
+          resetSignal={resetRequests[panel.id] ?? 0}
+          scope={scope}
+          setPendingTrend={setPendingTrend}
+          tool={tool}
+          trade={trade}
+          onActivate={setActivePanelId}
+          readOnly={readOnly}
+          updatePanel={updatePanel}
+        />
+      </div>
+    );
+  };
 
   return (
     <div
@@ -1757,110 +1798,26 @@ export function ClosedTradeChartWorkspace({
 
       {!shouldRenderChartPanels ? (
         <ChartWorkspaceLoadingShell layoutMode={layoutMode} />
-      ) : focusedPanel ? (
-        <div className="grid min-h-0 flex-1 gap-3 p-3" data-testid="focused-chart-panel-view">
-          <ClosedTradeChartPanel
-            key={focusedPanel.id}
-            annotations={annotations}
-            commitAnnotations={commitAnnotations}
-            active
-            deferCandles={!layoutLoaded}
-            featured
-            overlayRightReserve={overlayRightReserve}
-            panel={focusedPanel}
-            pendingTrend={pendingTrend}
-            onExecutionAnchorsChange={handleExecutionAnchorsChange}
-            onPendingVisibleRangeChange={handlePendingVisibleRangeChange}
-            resetSignal={resetRequests[focusedPanel.id] ?? 0}
-            scope={scope}
-            setPendingTrend={setPendingTrend}
-            tool={tool}
-            trade={trade}
-            onActivate={setActivePanelId}
-            readOnly={readOnly}
-            updatePanel={updatePanel}
-          />
-        </div>
-      ) : layoutMode === "one-plus-two" ? (
-        <div className="grid min-h-0 flex-1 gap-3 p-3 xl:grid-cols-[minmax(0,1.7fr)_minmax(18rem,0.9fr)] xl:items-stretch">
-          <ClosedTradeChartPanel
-            key={normalizedPanels[0].id}
-            annotations={annotations}
-            commitAnnotations={commitAnnotations}
-            active={normalizedPanels[0].id === activePanelId}
-            deferCandles={!layoutLoaded || (deferSecondaryCandles && normalizedPanels[0].id !== activePanelId)}
-            featured
-            overlayRightReserve={overlayRightReserve}
-            panel={normalizedPanels[0]}
-            pendingTrend={pendingTrend}
-            onExecutionAnchorsChange={handleExecutionAnchorsChange}
-            onPendingVisibleRangeChange={handlePendingVisibleRangeChange}
-            resetSignal={resetRequests[normalizedPanels[0].id] ?? 0}
-            scope={scope}
-            setPendingTrend={setPendingTrend}
-            tool={tool}
-            trade={trade}
-            onActivate={setActivePanelId}
-            readOnly={readOnly}
-            updatePanel={updatePanel}
-          />
-          <div className="grid min-h-0 gap-3 xl:h-full xl:grid-rows-2">
-            {normalizedPanels.slice(1).map((panel) => (
-              <ClosedTradeChartPanel
-                key={panel.id}
-                annotations={annotations}
-                commitAnnotations={commitAnnotations}
-                active={panel.id === activePanelId}
-                compact
-                deferCandles={!layoutLoaded || (deferSecondaryCandles && panel.id !== activePanelId)}
-                overlayRightReserve={overlayRightReserve}
-                panel={panel}
-                pendingTrend={pendingTrend}
-                onExecutionAnchorsChange={handleExecutionAnchorsChange}
-                onPendingVisibleRangeChange={handlePendingVisibleRangeChange}
-                resetSignal={resetRequests[panel.id] ?? 0}
-                scope={scope}
-                setPendingTrend={setPendingTrend}
-                tool={tool}
-                trade={trade}
-                onActivate={setActivePanelId}
-                readOnly={readOnly}
-                updatePanel={updatePanel}
-              />
-            ))}
-          </div>
-        </div>
       ) : (
         <div
           className={cn(
             "grid min-h-0 flex-1 gap-3 p-3",
-            layoutMode === "two-vertical" && "xl:grid-cols-2",
-            layoutMode === "three-vertical" && "xl:grid-cols-3",
+            !focusedPanel && layoutMode === "one-plus-two" && "xl:grid-cols-[minmax(0,1.7fr)_minmax(18rem,0.9fr)] xl:items-stretch",
+            !focusedPanel && layoutMode === "two-vertical" && "xl:grid-cols-2",
+            !focusedPanel && layoutMode === "three-vertical" && "xl:grid-cols-3",
           )}
+          data-testid={focusedPanel ? "focused-chart-panel-view" : "chart-panel-grid"}
         >
-          {normalizedPanels.map((panel) => (
-            <ClosedTradeChartPanel
-              key={panel.id}
-              annotations={annotations}
-              commitAnnotations={commitAnnotations}
-              active={panel.id === activePanelId}
-              compact={layoutMode === "three-horizontal" || layoutMode === "three-vertical"}
-              deferCandles={!layoutLoaded || (deferSecondaryCandles && panel.id !== activePanelId)}
-              overlayRightReserve={overlayRightReserve}
-              panel={panel}
-              pendingTrend={pendingTrend}
-              onExecutionAnchorsChange={handleExecutionAnchorsChange}
-              onPendingVisibleRangeChange={handlePendingVisibleRangeChange}
-              resetSignal={resetRequests[panel.id] ?? 0}
-              scope={scope}
-              setPendingTrend={setPendingTrend}
-              tool={tool}
-              trade={trade}
-              onActivate={setActivePanelId}
-              readOnly={readOnly}
-              updatePanel={updatePanel}
-            />
-          ))}
+          {renderPanelSlot(normalizedPanels[0], 0)}
+          <div
+            className={cn(
+              !focusedPanel && layoutMode === "one-plus-two"
+                ? "grid min-h-0 gap-3 xl:h-full xl:grid-rows-2"
+                : "contents",
+            )}
+          >
+            {normalizedPanels.slice(1).map((panel, index) => renderPanelSlot(panel, index + 1))}
+          </div>
         </div>
       )}
     </div>

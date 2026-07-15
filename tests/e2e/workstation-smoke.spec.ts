@@ -120,6 +120,8 @@ async function panFirstChart(page: Page) {
   const firstPlot = firstPanel.getByTestId("closed-trade-chart-plot");
   await firstPlot.scrollIntoViewIfNeeded();
   await expect(firstPlot).toBeVisible();
+  await expect.poll(async () => (await firstPanelVisibleRange(page)).ready).toBe(true);
+  const initialRange = await firstPanelVisibleRange(page);
   const box = await firstPlot.boundingBox();
   expect(box).toBeTruthy();
   const centerX = box!.x + box!.width * 0.58;
@@ -129,6 +131,9 @@ async function panFirstChart(page: Page) {
   await page.mouse.move(centerX - 220, centerY, { steps: 8 });
   await page.mouse.up();
   await page.mouse.wheel(0, -420);
+  await expect
+    .poll(async () => !visibleRangesClose(await firstPanelVisibleRange(page), initialRange, 1))
+    .toBe(true);
 }
 
 type ChartPanelLayout = {
