@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { parseCsvWithMapping, previewCsv, type ParsedImport } from "@/lib/import/ibkr-parser";
+import {
+  IMPORT_FAILURE_DIRECT_MARKER,
+  IMPORT_FAILURE_ROLLED_BACK_MARKER,
+} from "@/lib/import/import-history";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { prisma } from "@/lib/prisma";
 import {
@@ -8,6 +12,7 @@ import {
   importParsedFile,
   importParsedFilesAtomic,
   recordFailedImportAttempt,
+  recordFailedImportCohort,
 } from "@/lib/server/import-service";
 
 describe("rawImportArchiveIdentity", () => {
@@ -565,7 +570,12 @@ describe("importParsedFile", () => {
       expect(batches.map((batch) => batch.status)).toEqual(["FAILED", "FAILED"]);
       expect(batches.every((batch) => batch.rowsImported === 0)).toBe(true);
       expect(batches.every((batch) => batch.rowsSkipped === batch.rowsSeen)).toBe(true);
-      expect(batches.every((batch) => batch.errorMessage?.includes("stale"))).toBe(true);
+      expect(batches.every((batch) => batch.rowsSeen === 1 && batch.rowsSkipped === 1)).toBe(true);
+      expect(batches[0].notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)).toBe(true);
+      expect(batches[0].errorMessage).toContain("Rolled back because a sibling import failed");
+      expect(batches[0].errorMessage).not.toContain("stale");
+      expect(batches[1].notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
+      expect(batches[1].errorMessage).toContain("stale");
       expect(batches.some((batch) => batch.positionSnapshotMode === "FULL")).toBe(true);
       expect(artifactCount).toBe(2);
     } finally {
@@ -626,13 +636,13 @@ describe("importParsedFile", () => {
     }
   });
 
-  dbIt("marks the batch failed when row-error persistence fails before rows are applied", async () => {
+  dbIt("stores a safe row-error sentinel without blocking valid business rows", async () => {
     const filename = `row-error-persistence-${Date.now()}.csv`;
     const rawRow = { Quantity: "bad" } as Record<string, string>;
     (rawRow as unknown as Record<string, unknown>).self = rawRow;
     const parsed: ParsedImport = {
       kind: "executions",
-      rawRowCount: 1,
+      rawRowCount: 2,
       executions: [
         {
           account: "ROWERR",
@@ -662,13 +672,11 @@ describe("importParsedFile", () => {
     };
 
     try {
-      await expect(
-        importParsedFile({
-          filename,
-          parsed,
-          fileType: "executions",
-        }),
-      ).rejects.toThrow(/circular/i);
+      const result = await importParsedFile({
+        filename,
+        parsed,
+        fileType: "executions",
+      });
 
       const batch = await prisma.importBatch.findFirstOrThrow({
         where: { filename },
@@ -676,17 +684,84 @@ describe("importParsedFile", () => {
       });
       const execution = await prisma.execution.findFirst({ where: { account: { ibkrAccount: "ROWERR" } } });
 
-      expect(batch.status).toBe("FAILED");
-      expect(batch.rowsSeen).toBe(1);
-      expect(batch.rowsImported).toBe(0);
+      expect(result.rowsImported).toBe(1);
+      expect(batch.status).toBe("ROWS_APPLIED");
+      expect(batch.rowsSeen).toBe(2);
+      expect(batch.rowsImported).toBe(1);
       expect(batch.rowsSkipped).toBe(1);
-      expect(batch.errorMessage).toMatch(/circular/i);
-      expect(batch.rowErrors).toHaveLength(0);
-      expect(execution).toBeNull();
+      expect(batch.errorMessage).toBeNull();
+      expect(batch.rowErrors).toHaveLength(1);
+      expect(JSON.parse(batch.rowErrors[0].rawJson)).toEqual({
+        _importAudit: { version: 1, rawRow: "UNSERIALIZABLE" },
+      });
+      expect(execution).not.toBeNull();
     } finally {
       await prisma.importBatch.deleteMany({ where: { filename } });
       await prisma.execution.deleteMany({ where: { account: { ibkrAccount: "ROWERR" } } });
       await prisma.account.deleteMany({ where: { ibkrAccount: "ROWERR" } });
+    }
+  });
+
+  dbIt("persists an entire failed cohort atomically when audit payloads are malformed", async () => {
+    const marker = Date.now();
+    const filenames = [`ledger-sibling-${marker}.csv`, `ledger-direct-${marker}.csv`];
+    const rawContents = [`sibling raw ${marker}`, `direct raw ${marker}`];
+    const rawRow = { Quantity: "bad" } as Record<string, string>;
+    (rawRow as unknown as Record<string, unknown>).self = rawRow;
+
+    try {
+      await recordFailedImportCohort({
+        stage: "preflight",
+        failures: [{ filename: filenames[1], message: "Position quantity is invalid." }],
+        items: [
+          {
+            filename: filenames[0],
+            fileType: "executions",
+            rawContent: rawContents[0],
+            rowsSeen: 1,
+          },
+          {
+            filename: filenames[1],
+            fileType: "positions",
+            rawContent: rawContents[1],
+            rowsSeen: 1,
+            positionSnapshotMode: "full",
+            rowErrors: [
+              {
+                rowNumber: 2,
+                severity: "ERROR",
+                code: "POSITION_ROW_INVALID",
+                message: "Malformed position row kept for audit.",
+                rawRow,
+              },
+            ],
+          },
+        ],
+      });
+
+      const batches = await prisma.importBatch.findMany({
+        where: { filename: { in: filenames } },
+        include: { rowErrors: true, rawArtifact: true },
+      });
+      const sibling = batches.find((batch) => batch.filename === filenames[0]);
+      const direct = batches.find((batch) => batch.filename === filenames[1]);
+
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.status === "FAILED" && batch.rowsImported === 0)).toBe(true);
+      expect(batches.every((batch) => batch.rowsSeen === 1 && batch.rowsSkipped === 1)).toBe(true);
+      expect(batches.every((batch) => batch.rawArtifact !== null)).toBe(true);
+      expect(sibling?.notes).toContain(IMPORT_FAILURE_ROLLED_BACK_MARKER);
+      expect(sibling?.rowErrors).toHaveLength(0);
+      expect(direct?.notes).toContain(IMPORT_FAILURE_DIRECT_MARKER);
+      expect(direct?.rowErrors).toHaveLength(1);
+      expect(JSON.parse(direct?.rowErrors[0].rawJson ?? "{}")).toEqual({
+        _importAudit: { version: 1, rawRow: "UNSERIALIZABLE" },
+      });
+    } finally {
+      await prisma.importBatch.deleteMany({ where: { filename: { in: filenames } } });
+      await prisma.importArtifact.deleteMany({
+        where: { storageKey: { in: rawContents.map((content) => rawImportArchiveIdentity(content).rawStorageKey) } },
+      });
     }
   });
 });

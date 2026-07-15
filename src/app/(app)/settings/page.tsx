@@ -159,7 +159,7 @@ export default async function SettingsPage() {
             <HealthItem label="Journal Entries" value={health.journalEntryCount.toLocaleString()} />
             <HealthItem label="Journal Charts" value={health.journalChartCount.toLocaleString()} />
             <HealthItem label="Candle Rows" value={health.marketCandleCount.toLocaleString()} testId="storage-health-candle-rows" />
-            <HealthItem label="Failed Imports" value={health.failedImportBatchCount.toLocaleString()} />
+            <HealthItem label="Failed / Rolled Back Imports" value={health.failedImportBatchCount.toLocaleString()} />
             <HealthItem label="Materialization Failures" value={health.materializationFailedImportBatchCount.toLocaleString()} />
             <HealthItem label="Skipped Import Batches" value={health.skippedImportBatchCount.toLocaleString()} />
             <HealthItem label="Parser Row Errors" value={health.importRowErrorCount.toLocaleString()} />

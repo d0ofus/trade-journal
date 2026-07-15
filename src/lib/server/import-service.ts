@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
 import { AssetType, Prisma, Side } from "@prisma/client";
+import {
+  IMPORT_FAILURE_DIRECT_MARKER,
+  IMPORT_FAILURE_ROLLED_BACK_MARKER,
+} from "@/lib/import/import-history";
 import type { ParsedImport, ParsedRowError } from "@/lib/import/ibkr-parser";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { prisma } from "@/lib/prisma";
@@ -8,6 +12,7 @@ const EXECUTION_CHUNK_SIZE = 500;
 const PARSER_VERSION = "2026-06-25-workstation-uplift";
 
 type ImportDb = Prisma.TransactionClient;
+type ImportArtifactDb = Pick<Prisma.TransactionClient, "importArtifact">;
 type ExecutionImportRow = Prisma.ExecutionCreateManyInput;
 export type PositionSnapshotImportMode = "partial" | "full";
 export type ImportParsedFileInput = {
@@ -28,6 +33,21 @@ export type ImportParsedFileResult = {
   rowsPerSecond: number;
   positionSnapshotMode: PositionSnapshotImportMode | null;
 };
+export type FailedImportCohortItem = {
+  filename: string;
+  fileType: string;
+  rawContent?: string;
+  parserVersion?: string;
+  rowErrors?: ParsedRowError[];
+  rowsSeen: number;
+  notes?: string;
+  positionSnapshotMode?: PositionSnapshotImportMode;
+};
+export type FailedImportCohortCause = {
+  filename: string;
+  message: string;
+};
+export type ImportFailureStage = "parse" | "preflight" | "apply";
 
 const POSITION_SNAPSHOT_BATCH_MODE: Record<PositionSnapshotImportMode, "PARTIAL" | "FULL"> = {
   partial: "PARTIAL",
@@ -106,11 +126,12 @@ function dedupeKey(parts: string[]) {
   return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
 }
 
-async function archiveRawImportContent(content?: string) {
-  if (content == null) return null;
-
-  const identity = rawImportArchiveIdentity(content);
-  await prisma.importArtifact.upsert({
+async function upsertRawImportArtifact(
+  db: ImportArtifactDb,
+  content: string,
+  identity = rawImportArchiveIdentity(content),
+) {
+  await db.importArtifact.upsert({
     where: { storageKey: identity.rawStorageKey },
     update: {
       rawBytes: identity.rawBytes,
@@ -125,6 +146,11 @@ async function archiveRawImportContent(content?: string) {
   });
 
   return identity;
+}
+
+async function archiveRawImportContent(content?: string) {
+  if (content == null) return null;
+  return upsertRawImportArtifact(prisma, content);
 }
 
 function parsedValidRowCount(parsed: ParsedImport) {
@@ -142,19 +168,51 @@ function noValidRowsMessage(parsed: ParsedImport) {
   return summarizeRowErrors(parsed.rowErrors) || `No valid ${parsed.kind} rows were parsed.`;
 }
 
-async function persistImportRowErrors(db: ImportDb, importBatchId: string, rowErrors: ParsedRowError[]) {
+const UNSERIALIZABLE_ROW_SENTINEL = JSON.stringify({
+  _importAudit: { version: 1, rawRow: "UNSERIALIZABLE" },
+});
+
+function serializeImportRowError(error: ParsedRowError) {
+  let rawJson = UNSERIALIZABLE_ROW_SENTINEL;
+  let usedFallback = false;
+  try {
+    const serialized = JSON.stringify(error.rawRow);
+    if (serialized !== undefined) {
+      rawJson = serialized;
+    } else {
+      usedFallback = true;
+    }
+  } catch {
+    usedFallback = true;
+  }
+
+  return {
+    data: {
+      rowNumber: error.rowNumber,
+      severity: error.severity,
+      code: error.code,
+      message: error.message,
+      rawJson,
+    },
+    usedFallback,
+  };
+}
+
+async function persistSerializedImportRowErrors(
+  db: ImportDb,
+  importBatchId: string,
+  rowErrors: ReturnType<typeof serializeImportRowError>[],
+) {
   for (const chunk of chunked(rowErrors, 500)) {
     await db.importRowError.createMany({
-      data: chunk.map((error) => ({
-        importBatchId,
-        rowNumber: error.rowNumber,
-        severity: error.severity,
-        code: error.code,
-        message: error.message,
-        rawJson: JSON.stringify(error.rawRow),
-      })),
+      data: chunk.map((error) => ({ importBatchId, ...error.data })),
     });
   }
+}
+
+async function persistImportRowErrors(db: ImportDb, importBatchId: string, rowErrors: ParsedRowError[]) {
+  const serialized = rowErrors.map(serializeImportRowError);
+  await persistSerializedImportRowErrors(db, importBatchId, serialized);
 }
 
 function chunked<T>(rows: T[], size: number) {
@@ -638,15 +696,15 @@ export async function importParsedFile(params: {
 }
 
 type PreparedAtomicImport = ImportParsedFileInput & {
-  rawArchive: Awaited<ReturnType<typeof archiveRawImportContent>>;
+  rawArchive: ReturnType<typeof rawImportArchiveIdentity> | null;
   resolvedPositionSnapshotMode: PositionSnapshotImportMode;
   startedAtMs: number;
 };
 
-async function prepareAtomicImport(params: ImportParsedFileInput): Promise<PreparedAtomicImport> {
+function prepareAtomicImport(params: ImportParsedFileInput): PreparedAtomicImport {
   return {
     ...params,
-    rawArchive: await archiveRawImportContent(params.rawContent),
+    rawArchive: params.rawContent == null ? null : rawImportArchiveIdentity(params.rawContent),
     resolvedPositionSnapshotMode: normalizePositionSnapshotMode(params.positionSnapshotMode),
     startedAtMs: Date.now(),
   };
@@ -952,15 +1010,29 @@ async function applyAtomicImportRows(
 export async function importParsedFilesAtomic(params: ImportParsedFileInput[]): Promise<ImportParsedFileResult[]> {
   if (params.length === 0) return [];
 
-  const prepared = await Promise.all(params.map(prepareAtomicImport));
+  const prepared = params.map(prepareAtomicImport);
+  let directFailure: FailedImportCohortCause | null = null;
 
   try {
     return await prisma.$transaction(
       async (tx) => {
         const results: ImportParsedFileResult[] = [];
         for (const item of prepared) {
-          const batch = await createAtomicImportBatch(tx, item);
-          results.push(await applyAtomicImportRows(tx, item, batch.id));
+          if (item.rawContent != null && item.rawArchive) {
+            await upsertRawImportArtifact(tx, item.rawContent, item.rawArchive);
+          }
+        }
+        for (const item of prepared) {
+          try {
+            const batch = await createAtomicImportBatch(tx, item);
+            results.push(await applyAtomicImportRows(tx, item, batch.id));
+          } catch (error) {
+            directFailure = {
+              filename: item.filename,
+              message: error instanceof Error ? error.message : "Import failed.",
+            };
+            throw error;
+          }
         }
         return results;
       },
@@ -968,9 +1040,14 @@ export async function importParsedFilesAtomic(params: ImportParsedFileInput[]): 
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Import failed.";
-    await Promise.all(
-      prepared.map((item) =>
-        recordFailedImportAttempt({
+    const failures = directFailure
+      ? [directFailure]
+      : prepared.map((item) => ({ filename: item.filename, message }));
+    try {
+      await recordFailedImportCohort({
+        stage: "apply",
+        failures,
+        items: prepared.map((item) => ({
           filename: item.filename,
           fileType: item.fileType,
           rawContent: item.rawContent,
@@ -978,70 +1055,122 @@ export async function importParsedFilesAtomic(params: ImportParsedFileInput[]): 
           rowErrors: item.parsed.rowErrors,
           rowsSeen: item.parsed.rawRowCount,
           positionSnapshotMode: item.resolvedPositionSnapshotMode,
-          message,
           notes:
-            error instanceof ImportRejectedError
-              ? "Import failed because no valid rows could be applied."
-              : `Atomic import failed before rows could be committed after ${(Math.max(1, Date.now() - item.startedAtMs) / 1000).toFixed(2)}s.`,
-        }),
-      ),
-    );
+            directFailure?.filename === item.filename
+              ? `Import failed before rows could be committed after ${(Math.max(1, Date.now() - item.startedAtMs) / 1000).toFixed(2)}s.`
+              : undefined,
+        })),
+      });
+    } catch (auditError) {
+      console.error("Failed to persist the atomic import failure ledger.", auditError);
+    }
     throw error;
   }
 }
 
-export async function recordFailedImportAttempt(params: {
-  filename: string;
-  fileType: string;
-  message: string;
-  rawContent?: string;
-  parserVersion?: string;
-  rowErrors?: ParsedRowError[];
-  rowsSeen?: number;
-  notes?: string;
-  positionSnapshotMode?: PositionSnapshotImportMode;
+function failureLedgerEnvelope(params: {
+  marker: string;
+  cohortId: string;
+  stage: ImportFailureStage;
+  causes: string[];
 }) {
-  const rawArchive = await archiveRawImportContent(params.rawContent);
-  const positionSnapshotMode = normalizePositionSnapshotMode(params.positionSnapshotMode);
-  const isPositionImport = params.fileType === "positions" || params.fileType === "flex-positions";
-  const rowsSeen = params.rowsSeen ?? params.rowErrors?.length ?? 0;
+  return `${params.marker} cohort=${params.cohortId}; stage=${params.stage}; causes=${params.causes
+    .map((cause) => encodeURIComponent(cause))
+    .join(",")}`;
+}
 
-  const batch = await prisma.importBatch.create({
-    data: {
-      filename: params.filename,
-      fileType: params.fileType,
-      status: "FAILED",
-      rowsSeen,
-      rowsImported: 0,
-      rowsSkipped: rowsSeen,
-      rawSha256: rawArchive?.rawSha256,
-      rawBytes: rawArchive?.rawBytes,
-      rawStorageKey: rawArchive?.rawStorageKey,
-      parserVersion: params.parserVersion ?? PARSER_VERSION,
-      positionSnapshotMode: isPositionImport ? POSITION_SNAPSHOT_BATCH_MODE[positionSnapshotMode] : undefined,
-      errorMessage: params.message.slice(0, 2000),
-      notes: params.notes ?? "Import failed before rows could be applied.",
-    },
-  });
-
-  if (params.rowErrors?.length) {
-    try {
-      await prisma.$transaction((tx) => persistImportRowErrors(tx, batch.id, params.rowErrors ?? []));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "row-error audit failed";
-      await prisma.importBatch.update({
-        where: { id: batch.id },
-        data: {
-          notes: `${batch.notes ?? "Import failed before rows could be applied."} Row-error audit failed: ${message}`.slice(
-            0,
-            2000,
-          ),
-        },
-      });
-    }
+export async function recordFailedImportCohort(params: {
+  items: FailedImportCohortItem[];
+  failures: FailedImportCohortCause[];
+  stage: ImportFailureStage;
+}) {
+  if (params.items.length === 0) return [];
+  if (params.failures.length === 0) {
+    throw new Error("A failed import cohort requires at least one direct failure.");
   }
 
-  return batch;
+  const cohortId = crypto.randomUUID();
+  const recordedAt = new Date();
+  const failureByFilename = new Map(params.failures.map((failure) => [failure.filename, failure.message]));
+  const causeFilenames = [...failureByFilename.keys()];
+  const prepared = params.items.map((item) => {
+    const serializedRowErrors = (item.rowErrors ?? []).map(serializeImportRowError);
+    return {
+      ...item,
+      rowsSeen: Math.max(0, Math.trunc(item.rowsSeen)),
+      rawArchive: item.rawContent == null ? null : rawImportArchiveIdentity(item.rawContent),
+      serializedRowErrors,
+      fallbackCount: serializedRowErrors.filter((error) => error.usedFallback).length,
+    };
+  });
+
+  return prisma.$transaction(
+    async (tx) => {
+      for (const item of prepared) {
+        if (item.rawContent != null && item.rawArchive) {
+          await upsertRawImportArtifact(tx, item.rawContent, item.rawArchive);
+        }
+      }
+
+      const batches = [];
+      for (const item of prepared) {
+        const directMessage = failureByFilename.get(item.filename);
+        const isDirectFailure = directMessage !== undefined;
+        const visibleNotes = isDirectFailure
+          ? item.notes ?? `Import failed during ${params.stage} before rows could be committed.`
+          : `Rolled back because ${causeFilenames.map((filename) => `"${filename}"`).join(", ")} failed. No rows from this file were committed.`;
+        const fallbackNote = item.fallbackCount
+          ? ` ${item.fallbackCount} row-error payload(s) used a safe audit sentinel because the original value was not serializable.`
+          : "";
+        const notes = `${failureLedgerEnvelope({
+          marker: isDirectFailure ? IMPORT_FAILURE_DIRECT_MARKER : IMPORT_FAILURE_ROLLED_BACK_MARKER,
+          cohortId,
+          stage: params.stage,
+          causes: isDirectFailure ? [item.filename] : causeFilenames,
+        })}\n${visibleNotes}${fallbackNote}`.slice(0, 2000);
+        const positionSnapshotMode = normalizePositionSnapshotMode(item.positionSnapshotMode);
+        const isPositionImport = item.fileType === "positions" || item.fileType === "flex-positions";
+        const errorMessage = isDirectFailure
+          ? directMessage ?? "Import failed."
+          : `Rolled back because a sibling import failed. No rows from ${item.filename} were committed.`;
+
+        const batch = await tx.importBatch.create({
+          data: {
+            filename: item.filename,
+            fileType: item.fileType,
+            status: "FAILED",
+            importedAt: recordedAt,
+            rowsSeen: item.rowsSeen,
+            rowsImported: 0,
+            rowsSkipped: item.rowsSeen,
+            rawSha256: item.rawArchive?.rawSha256,
+            rawBytes: item.rawArchive?.rawBytes,
+            rawStorageKey: item.rawArchive?.rawStorageKey,
+            parserVersion: item.parserVersion ?? PARSER_VERSION,
+            positionSnapshotMode: isPositionImport ? POSITION_SNAPSHOT_BATCH_MODE[positionSnapshotMode] : undefined,
+            errorMessage: errorMessage.slice(0, 2000),
+            notes,
+          },
+        });
+        await persistSerializedImportRowErrors(tx, batch.id, item.serializedRowErrors);
+        batches.push(batch);
+      }
+      return batches;
+    },
+    { timeout: 120_000 },
+  );
+}
+
+export async function recordFailedImportAttempt(params: Omit<FailedImportCohortItem, "rowsSeen"> & {
+  message: string;
+  rowsSeen?: number;
+}) {
+  const batches = await recordFailedImportCohort({
+    stage: "parse",
+    failures: [{ filename: params.filename, message: params.message }],
+    items: [{ ...params, rowsSeen: params.rowsSeen ?? params.rowErrors?.length ?? 0 }],
+  });
+  return batches[0];
 }
 
 function uniqueBatchIds(batchIds: string[]) {

@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  IMPORT_FAILURE_DIRECT_MARKER,
+  IMPORT_FAILURE_ROLLED_BACK_MARKER,
+} from "../../src/lib/import/import-history";
+import { rawImportArchiveIdentity } from "../../src/lib/import/raw-archive";
 import { prisma } from "../../src/lib/prisma";
 
 function readDotEnv() {
@@ -27,6 +32,10 @@ const username = process.env.AUTH_USERNAME ?? localEnv.AUTH_USERNAME;
 const password = process.env.AUTH_PASSWORD ?? localEnv.AUTH_PASSWORD;
 const demoAccountCode = "DEMO-WORKSTATION";
 const backupFreshnessSentinelSymbol = "E2ESTALE";
+const failedImportBatchId = "e2e-phase4-direct-failure";
+const rolledBackImportBatchId = "e2e-phase4-sibling-rollback";
+const failedImportRawContent = "phase4 deterministic failed import cohort\n";
+const failedImportArtifact = rawImportArchiveIdentity(failedImportRawContent);
 
 const ROUTE_READY_HEADINGS: Record<string, { name: string; exact?: boolean }> = {
   "/dashboard": { name: "Trading analytics, framed like a premium desk platform." },
@@ -118,6 +127,78 @@ async function recordCurrentBackupAudit(page: Page) {
 
 async function cleanupBackupFreshnessSentinel() {
   await prisma.journalEntry.deleteMany({ where: { symbol: backupFreshnessSentinelSymbol } });
+}
+
+async function cleanupFailedImportHistoryCohort() {
+  await prisma.importBatch.deleteMany({
+    where: { id: { in: [failedImportBatchId, rolledBackImportBatchId] } },
+  });
+  await prisma.importArtifact.deleteMany({ where: { storageKey: failedImportArtifact.rawStorageKey } });
+}
+
+async function seedFailedImportHistoryCohort() {
+  await cleanupFailedImportHistoryCohort();
+  const importedAt = new Date();
+  const cohortId = "e2e-phase4-cohort";
+  const directFilename = "positions-invalid-full-snapshot-with-a-very-long-audit-name-phase4.csv";
+  const siblingFilename = "executions-valid-but-rolled-back-with-a-very-long-audit-name-phase4.csv";
+
+  await prisma.$transaction(async (tx) => {
+    await tx.importArtifact.create({
+      data: {
+        storageKey: failedImportArtifact.rawStorageKey,
+        rawSha256: failedImportArtifact.rawSha256,
+        rawBytes: failedImportArtifact.rawBytes,
+        content: failedImportRawContent,
+      },
+    });
+    await tx.importBatch.create({
+      data: {
+        id: failedImportBatchId,
+        filename: directFilename,
+        fileType: "positions",
+        status: "FAILED",
+        importedAt,
+        rowsSeen: 1,
+        rowsImported: 0,
+        rowsSkipped: 1,
+        rawSha256: failedImportArtifact.rawSha256,
+        rawBytes: failedImportArtifact.rawBytes,
+        rawStorageKey: failedImportArtifact.rawStorageKey,
+        parserVersion: "phase4-e2e",
+        positionSnapshotMode: "FULL",
+        errorMessage: "Full position snapshot failed because one source quantity was invalid.",
+        notes: `${IMPORT_FAILURE_DIRECT_MARKER} cohort=${cohortId}; stage=preflight; causes=${encodeURIComponent(directFilename)}\nImport failed during preflight before rows could be committed.`,
+        rowErrors: {
+          create: {
+            rowNumber: 2,
+            severity: "ERROR",
+            code: "POSITION_ROW_INVALID_WITH_LONG_AUDIT_CODE",
+            message: "The source quantity could not be parsed and the complete snapshot was rejected without changing positions.",
+            rawJson: JSON.stringify({ Quantity: "not-a-number" }),
+          },
+        },
+      },
+    });
+    await tx.importBatch.create({
+      data: {
+        id: rolledBackImportBatchId,
+        filename: siblingFilename,
+        fileType: "executions",
+        status: "FAILED",
+        importedAt,
+        rowsSeen: 1,
+        rowsImported: 0,
+        rowsSkipped: 1,
+        rawSha256: failedImportArtifact.rawSha256,
+        rawBytes: failedImportArtifact.rawBytes,
+        rawStorageKey: failedImportArtifact.rawStorageKey,
+        parserVersion: "phase4-e2e",
+        errorMessage: `Rolled back because a sibling import failed. No rows from ${siblingFilename} were committed.`,
+        notes: `${IMPORT_FAILURE_ROLLED_BACK_MARKER} cohort=${cohortId}; stage=preflight; causes=${encodeURIComponent(directFilename)}\nRolled back because "${directFilename}" failed. No rows from this file were committed.`,
+      },
+    });
+  });
 }
 
 async function makeBackupFreshnessStale(page: Page) {
@@ -561,6 +642,56 @@ test("import route exposes upload controls and durable import history", async ({
   await expect(page.getByText("Showing Melbourne")).toBeVisible();
 
   expect(browserErrors).toEqual([]);
+});
+
+test("import and settings show the same failed cohort with truthful rollback roles", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await signIn(page);
+  let importMutationRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "GET" && /\/api\/(import|flex)/.test(request.url())) {
+      importMutationRequests += 1;
+    }
+  });
+
+  try {
+    await seedFailedImportHistoryCohort();
+    await gotoReady(page, "/import");
+
+    const importDirect = page.getByTestId(`import-history-batch-${failedImportBatchId}`);
+    const importSibling = page.getByTestId(`import-history-batch-${rolledBackImportBatchId}`);
+    await expect(page.getByTestId(`import-history-status-${failedImportBatchId}`)).toHaveText("Failed");
+    await expect(page.getByTestId(`import-history-status-${rolledBackImportBatchId}`)).toHaveText("Rolled back");
+    await expect(importDirect).toContainText("POSITION_ROW_INVALID_WITH_LONG_AUDIT_CODE");
+    await expect(importSibling).toContainText("Rolled back because");
+    await expect(importSibling).not.toContainText("parser row error");
+    await expect(importSibling).not.toContainText(IMPORT_FAILURE_ROLLED_BACK_MARKER);
+    const importText = {
+      direct: (await importDirect.innerText()).replace(/\s+/g, " ").trim(),
+      sibling: (await importSibling.innerText()).replace(/\s+/g, " ").trim(),
+    };
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    expect(await importDirect.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await importSibling.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+    await gotoReady(page, "/settings");
+    const settingsDirect = page.getByTestId(`import-history-batch-${failedImportBatchId}`);
+    const settingsSibling = page.getByTestId(`import-history-batch-${rolledBackImportBatchId}`);
+    await expect(page.getByTestId(`import-history-status-${failedImportBatchId}`)).toHaveText("Failed");
+    await expect(page.getByTestId(`import-history-status-${rolledBackImportBatchId}`)).toHaveText("Rolled back");
+    expect((await settingsDirect.innerText()).replace(/\s+/g, " ").trim()).toBe(importText.direct);
+    expect((await settingsSibling.innerText()).replace(/\s+/g, " ").trim()).toBe(importText.sibling);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    expect(await settingsDirect.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await settingsSibling.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expectNoFrameworkOverlay(page);
+
+    expect(importMutationRequests).toBe(0);
+    expect(browserErrors).toEqual([]);
+  } finally {
+    await cleanupFailedImportHistoryCohort();
+  }
 });
 
 test("import preview blocks impossible dates from full-snapshot pruning", async ({ page }) => {

@@ -921,12 +921,12 @@ export async function getSettingsData(options: { includeBackupReadiness?: boolea
   ] = await Promise.all([
     prisma.account.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.importBatch.findMany({
-      orderBy: { importedAt: "desc" },
+      orderBy: [{ importedAt: "desc" }, { id: "desc" }],
       take: 20,
       include: {
         _count: { select: { rowErrors: true } },
         rowErrors: {
-          orderBy: [{ rowNumber: "asc" }, { createdAt: "asc" }],
+          orderBy: [{ rowNumber: "asc" }, { createdAt: "asc" }, { id: "asc" }],
           take: 5,
           select: { id: true, rowNumber: true, code: true, message: true },
         },

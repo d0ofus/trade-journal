@@ -13,7 +13,8 @@ import {
   ImportRejectedError,
   markImportBatchesMaterializationFailed,
   markImportBatchesMaterialized,
-  recordFailedImportAttempt,
+  recordFailedImportCohort,
+  type FailedImportCohortItem,
   type PositionSnapshotImportMode,
 } from "@/lib/server/import-service";
 
@@ -153,21 +154,6 @@ function parsePositionSnapshotModeByFile(raw: string) {
     modes[filename] = mode;
   }
   return modes;
-}
-
-async function recordImportParseFailure(params: {
-  filename: string;
-  fileType: string;
-  content: string;
-  error: unknown;
-}) {
-  const message = params.error instanceof Error ? params.error.message : "Import parsing failed.";
-  await recordFailedImportAttempt({
-    filename: params.filename,
-    fileType: params.fileType,
-    rawContent: params.content,
-    message,
-  });
 }
 
 export async function POST(req: NextRequest) {
@@ -381,21 +367,47 @@ export async function POST(req: NextRequest) {
         positionSnapshotMode?: PositionSnapshotImportMode;
         refreshClosedTrades: boolean;
       }>;
+      const parseFailures = [] as Array<{
+        item: FailedImportCohortItem;
+        message: string;
+        error: unknown;
+      }>;
 
       for (const file of files) {
-        const sections = splitFlexSections(file.content);
+        let sections: ReturnType<typeof splitFlexSections>;
+        try {
+          sections = splitFlexSections(file.content);
+        } catch (error) {
+          const kind = kindByFile[file.filename];
+          parseFailures.push({
+            item: {
+              filename: file.filename,
+              fileType: kind ?? "flex",
+              rawContent: file.content,
+              rowsSeen: 0,
+              positionSnapshotMode: kind === "positions" ? modeForPositionFile(file.filename) : undefined,
+            },
+            message: error instanceof Error ? error.message : "Import parsing failed.",
+            error,
+          });
+          continue;
+        }
         if (sections.tradesCsv || sections.positionsCsv) {
           let parsedFlex: ReturnType<typeof parseFlexStatementCsv>;
           try {
             parsedFlex = parseFlexStatementCsv(file.content);
           } catch (error) {
-            await recordImportParseFailure({
-              filename: file.filename,
-              fileType: "flex",
-              content: file.content,
+            parseFailures.push({
+              item: {
+                filename: file.filename,
+                fileType: "flex",
+                rawContent: file.content,
+                rowsSeen: 0,
+              },
+              message: error instanceof Error ? error.message : "Flex statement parsing failed.",
               error,
             });
-            throw error;
+            continue;
           }
           if (sections.tradesCsv && hasRowsOrErrors(parsedFlex.trades)) {
             pendingImports.push({
@@ -428,15 +440,19 @@ export async function POST(req: NextRequest) {
         try {
           parsed = parseCsvWithMapping(kind, file.content, mappingByFile[file.filename]);
         } catch (error) {
-          await recordImportParseFailure({
-            filename: file.filename,
-            fileType: kind,
-            content: file.content,
+          parseFailures.push({
+            item: {
+              filename: file.filename,
+              fileType: kind,
+              rawContent: file.content,
+              rowsSeen: 0,
+              positionSnapshotMode: kind === "positions" ? modeForPositionFile(file.filename) : undefined,
+            },
+            message: error instanceof Error ? error.message : "Import parsing failed.",
             error,
           });
-          throw error;
+          continue;
         }
-        if (!hasRowsOrErrors(parsed)) continue;
         pendingImports.push({
           filename: file.filename,
           importFilename: file.filename,
@@ -448,25 +464,42 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      const failedCohortItem = (item: (typeof pendingImports)[number]): FailedImportCohortItem => ({
+        filename: item.importFilename,
+        fileType: item.fileType,
+        rawContent: item.rawContent,
+        rowErrors: item.parsed.rowErrors,
+        rowsSeen: item.parsed.rawRowCount,
+        positionSnapshotMode: item.positionSnapshotMode,
+      });
+
+      if (parseFailures.length > 0) {
+        await recordFailedImportCohort({
+          stage: "parse",
+          items: [...pendingImports.map(failedCohortItem), ...parseFailures.map((failure) => failure.item)],
+          failures: parseFailures.map((failure) => ({
+            filename: failure.item.filename,
+            message: failure.message,
+          })),
+        });
+        throw parseFailures[0].error;
+      }
+
       if (pendingImports.length === 0) {
         return NextResponse.json({ error: "No importable trade, position, or snapshot rows were found." }, { status: 400 });
       }
 
       const invalidPendingImports = importPreflightFailures(pendingImports);
       if (invalidPendingImports.length > 0) {
-        for (const failure of invalidPendingImports) {
+        const failures = invalidPendingImports.flatMap((failure) => {
           const item = pendingImports.find((candidate) => candidate.filename === failure.filename);
-          if (!item) continue;
-          await recordFailedImportAttempt({
-            filename: item.importFilename,
-            fileType: item.fileType,
-            rawContent: item.rawContent,
-            message: failure.message,
-            rowErrors: item.parsed.rowErrors,
-            rowsSeen: item.parsed.rawRowCount,
-            positionSnapshotMode: item.positionSnapshotMode,
-          });
-        }
+          return item ? [{ filename: item.importFilename, message: failure.message }] : [];
+        });
+        await recordFailedImportCohort({
+          stage: "preflight",
+          items: pendingImports.map(failedCohortItem),
+          failures,
+        });
         throw new ImportRejectedError(
           `Import preflight failed before applying rows: ${invalidPendingImports
             .map((item) => `${item.filename}: ${item.message}`)

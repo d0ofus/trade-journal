@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { previewCsv } from "@/lib/import/ibkr-parser";
+import {
+  IMPORT_FAILURE_DIRECT_MARKER,
+  IMPORT_FAILURE_ROLLED_BACK_MARKER,
+} from "@/lib/import/import-history";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { prisma } from "@/lib/prisma";
 
@@ -229,6 +233,10 @@ describe("/api/import route", () => {
       expect(batches.map((batch) => batch.status)).toEqual(["FAILED", "FAILED"]);
       expect(batches.every((batch) => batch.rowsImported === 0)).toBe(true);
       expect(batches.every((batch) => batch.rowsSkipped === batch.rowsSeen)).toBe(true);
+      expect(batches[0].notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)).toBe(true);
+      expect(batches[0].errorMessage).not.toContain("stale");
+      expect(batches[1].notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
+      expect(batches[1].errorMessage).toContain("stale");
       expect(batches.some((batch) => batch.positionSnapshotMode === "FULL")).toBe(true);
       expect(artifactCount).toBe(2);
       expect(mocks.refreshMaterializedExecutionAnalytics).not.toHaveBeenCalled();
@@ -239,6 +247,117 @@ describe("/api/import route", () => {
         symbols: [executionSymbol, keptSymbol, protectedSymbol],
         filenames,
         rawContents,
+      });
+    }
+  });
+
+  dbIt("records every multipart member when parsing fails before row application", async () => {
+    const marker = Date.now();
+    const accountCode = `ROUTE-PARSE-${marker}`;
+    const executionSymbol = `RPX${String(marker).slice(-6)}`;
+    const positionSymbol = `RPP${String(marker).slice(-6)}`;
+    const executionFilename = `route-parse-executions-${marker}.csv`;
+    const positionFilename = `route-parse-positions-${marker}.csv`;
+    const executionContent = executionCsv(accountCode, executionSymbol);
+    const validPositionContent = positionCsv(accountCode, positionSymbol, "2026-06-20");
+    const positionContent = `${validPositionContent.split("\n")[0]}\n"${accountCode},${positionSymbol},NASDAQ,STK,2026-06-20,12,10,0,USD`;
+    const executionPreview = previewCsv(executionFilename, executionContent);
+    const positionPreview = previewCsv(positionFilename, validPositionContent);
+    const formData = new FormData();
+    formData.append("action", "commit");
+    formData.append("files", new File([executionContent], executionFilename, { type: "text/csv" }));
+    formData.append("files", new File([positionContent], positionFilename, { type: "text/csv" }));
+    formData.append(
+      "mappingByFile",
+      JSON.stringify({
+        [executionFilename]: executionPreview.mapping,
+        [positionFilename]: positionPreview.mapping,
+      }),
+    );
+    formData.append(
+      "kindByFile",
+      JSON.stringify({ [executionFilename]: "executions", [positionFilename]: "positions" }),
+    );
+    formData.append("positionSnapshotModeByFile", JSON.stringify({ [positionFilename]: "full" }));
+
+    try {
+      const { POST } = await import("./route");
+      const response = await POST(
+        new NextRequest("http://localhost/api/import", { method: "POST", body: formData }),
+      );
+      const batches = await prisma.importBatch.findMany({
+        where: { filename: { in: [executionFilename, positionFilename] } },
+        include: { rawArtifact: true },
+      });
+      const executionBatch = batches.find((batch) => batch.filename === executionFilename);
+      const positionBatch = batches.find((batch) => batch.filename === positionFilename);
+      const landedExecution = await prisma.execution.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: executionSymbol } },
+      });
+
+      expect(response.status).toBe(500);
+      expect(landedExecution).toBeNull();
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.rawArtifact !== null)).toBe(true);
+      expect(executionBatch?.notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)).toBe(true);
+      expect(executionBatch?.rowsSeen).toBe(1);
+      expect(executionBatch?.rowsSkipped).toBe(1);
+      expect(positionBatch?.notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
+      expect(positionBatch?.rowsSeen).toBe(0);
+      expect(positionBatch?.rowsSkipped).toBe(0);
+    } finally {
+      await cleanupRouteImportScenario({
+        accountCode,
+        symbols: [executionSymbol, positionSymbol],
+        filenames: [executionFilename, positionFilename],
+        rawContents: [executionContent, positionContent],
+      });
+    }
+  });
+
+  dbIt("records valid siblings when full-position preflight rejects an invalid member", async () => {
+    const marker = Date.now();
+    const accountCode = `ROUTE-PREFLIGHT-${marker}`;
+    const executionSymbol = `RFX${String(marker).slice(-6)}`;
+    const positionSymbol = `RFP${String(marker).slice(-6)}`;
+    const executionFilename = `route-preflight-executions-${marker}.csv`;
+    const positionFilename = `route-preflight-positions-${marker}.csv`;
+    const executionContent = executionCsv(accountCode, executionSymbol);
+    const positionContent = positionCsv(accountCode, positionSymbol, "2026-06-20").replace(",12,10,", ",not-a-number,10,");
+
+    try {
+      const { POST } = await import("./route");
+      const response = await POST(
+        importRequest({ executionFilename, executionContent, positionFilename, positionContent }),
+      );
+      const body = await response.json();
+      const batches = await prisma.importBatch.findMany({
+        where: { filename: { in: [executionFilename, positionFilename] } },
+        include: { rowErrors: true, rawArtifact: true },
+      });
+      const executionBatch = batches.find((batch) => batch.filename === executionFilename);
+      const positionBatch = batches.find((batch) => batch.filename === positionFilename);
+      const landedExecution = await prisma.execution.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: executionSymbol } },
+      });
+
+      expect(response.status).toBe(400);
+      expect(body.error).toContain("preflight");
+      expect(landedExecution).toBeNull();
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.rawArtifact !== null && batch.rowsImported === 0)).toBe(true);
+      expect(executionBatch?.notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)).toBe(true);
+      expect(executionBatch?.rowErrors).toHaveLength(0);
+      expect(positionBatch?.notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
+      expect(positionBatch?.rowErrors).toHaveLength(1);
+      expect(positionBatch?.rowsSeen).toBe(1);
+      expect(positionBatch?.rowsSkipped).toBe(1);
+    } finally {
+      await cleanupRouteImportScenario({
+        accountCode,
+        symbols: [executionSymbol, positionSymbol],
+        filenames: [executionFilename, positionFilename],
+        rawContents: [executionContent, positionContent],
       });
     }
   });

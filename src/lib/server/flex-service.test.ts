@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  IMPORT_FAILURE_DIRECT_MARKER,
+  IMPORT_FAILURE_ROLLED_BACK_MARKER,
+} from "@/lib/import/import-history";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { prisma } from "@/lib/prisma";
 import { runFlexImport } from "@/lib/server/flex-service";
@@ -113,10 +117,18 @@ describe("runFlexImport lifecycle guardrails", () => {
       expect(landedExecution).toBeNull();
       expect(tradeBatch?.status).toBe("FAILED");
       expect(tradeBatch?.rowsImported).toBe(0);
-      expect(tradeBatch?.errorMessage).toContain("quantity");
+      expect(tradeBatch?.rowsSeen).toBe(1);
+      expect(tradeBatch?.rowsSkipped).toBe(1);
+      expect(tradeBatch?.notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)).toBe(true);
+      expect(tradeBatch?.errorMessage).not.toContain("quantity");
       expect(positionBatch?.status).toBe("FAILED");
       expect(positionBatch?.rowsImported).toBe(0);
+      expect(positionBatch?.rowsSeen).toBe(1);
+      expect(positionBatch?.rowsSkipped).toBe(1);
+      expect(positionBatch?.notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
+      expect(positionBatch?.errorMessage).toContain("quantity");
       expect(positionBatch?.rowErrors).toHaveLength(1);
+      expect(tradeBatch?.rawStorageKey).toBe(positionBatch?.rawStorageKey);
       expect(artifact?.content).toBe(csv);
     } finally {
       const account = await prisma.account.findUnique({ where: { ibkrAccount: accountCode } });
