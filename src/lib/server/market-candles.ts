@@ -4,6 +4,7 @@ import { inferBarIntervalSeconds } from "@/lib/charts/execution-marker-alignment
 export type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 export type CandleTimeframe = "5m" | "10m" | "15m" | "1h" | "1d" | "1wk";
 export type CandleRange = { from: number; to: number } | null;
+export type CandleCacheKind = "native" | "derived-5m";
 export type CandleResponseMetadata = {
   requestedRange: CandleRange;
   returnedRange: CandleRange;
@@ -16,6 +17,7 @@ export type LoadedCandles = {
   symbol: string;
   candles: Candle[];
   source: string | null;
+  cacheKind?: CandleCacheKind;
   warnings?: string[];
 };
 
@@ -169,6 +171,7 @@ async function readCachedCandles(input: {
   timeframe: CandleTimeframe;
   range: CandleRange;
   limit: number;
+  preferLatest?: boolean;
 }) {
   const where = {
     symbol: input.symbol,
@@ -182,13 +185,14 @@ async function readCachedCandles(input: {
       : undefined,
   };
 
+  const descending = !input.range || input.preferLatest;
   const rows = await prisma.marketCandle.findMany({
     where,
-    orderBy: input.range ? { time: "asc" } : { time: "desc" },
+    orderBy: descending ? { time: "desc" } : { time: "asc" },
     take: Math.max(1, input.limit),
   });
 
-  return (input.range ? rows : rows.reverse()).map((row) => ({
+  return (descending ? rows.reverse() : rows).map((row) => ({
     time: Math.floor(row.time.getTime() / 1000),
     open: row.open,
     high: row.high,
@@ -203,6 +207,7 @@ async function readCachedCandlesWithRetry(input: {
   timeframe: CandleTimeframe;
   range: CandleRange;
   limit: number;
+  preferLatest?: boolean;
 }) {
   try {
     return await readCachedCandles(input);
@@ -235,17 +240,50 @@ async function readAggregatedCachedCandles(input: {
   const sourceRange = input.range
     ? {
         from: Math.floor(input.range.from / plan.bucketSeconds) * plan.bucketSeconds,
-        to: input.range.to,
+        to:
+          input.timeframe === "15m"
+            ? Math.floor(input.range.to / plan.bucketSeconds) * plan.bucketSeconds + plan.bucketSeconds - sourceIntervalSeconds
+            : input.range.to,
       }
     : null;
-  const sourceCandles = await readCachedCandlesWithRetry({
-    symbol: input.symbol,
-    timeframe: plan.sourceTimeframe,
-    range: sourceRange,
-    limit: input.limit * sourceBarsPerTargetBar,
-  });
+  let sourceLimit =
+    input.limit * sourceBarsPerTargetBar +
+    (input.timeframe === "15m" ? sourceBarsPerTargetBar - 1 : 0);
+  const maximumSourceLimit = input.limit * sourceBarsPerTargetBar * 2 + sourceBarsPerTargetBar;
+  let clipped: Candle[] = [];
 
-  return aggregateCandles(sourceCandles, plan.bucketSeconds).slice(-input.limit);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const sourceCandles = await readCachedCandlesWithRetry({
+      symbol: input.symbol,
+      timeframe: plan.sourceTimeframe,
+      range: sourceRange,
+      limit: sourceLimit,
+      preferLatest: input.timeframe === "15m",
+    });
+    const aggregated =
+      input.timeframe === "15m"
+        ? aggregateCompleteCandles(sourceCandles, plan.bucketSeconds, sourceIntervalSeconds)
+        : aggregateCandles(sourceCandles, plan.bucketSeconds);
+    clipped = input.range
+      ? aggregated.filter((candle) => candle.time >= input.range!.from && candle.time <= input.range!.to)
+      : aggregated;
+
+    if (
+      input.timeframe !== "15m" ||
+      clipped.length >= input.limit ||
+      sourceCandles.length < sourceLimit ||
+      sourceLimit >= maximumSourceLimit
+    ) {
+      break;
+    }
+    const missingTargetBars = input.limit - clipped.length;
+    sourceLimit = Math.min(
+      maximumSourceLimit,
+      sourceLimit + missingTargetBars * sourceBarsPerTargetBar + sourceBarsPerTargetBar,
+    );
+  }
+
+  return clipped.slice(-input.limit);
 }
 
 function chunked<T>(rows: T[], size: number) {
@@ -528,22 +566,54 @@ export async function loadCandlesForSymbol(input: {
   const warnings: string[] = [];
   let cacheReadFailed = false;
   let cached: Candle[] = [];
+  let cacheKind: CandleCacheKind | undefined = "native";
   try {
-    cached = await readCachedCandlesWithRetry({ symbol, timeframe, range, limit: boundedLimit });
+    cached = await readCachedCandlesWithRetry({
+      symbol,
+      timeframe,
+      range,
+      limit: boundedLimit,
+      preferLatest: timeframe === "15m",
+    });
   } catch {
     cacheReadFailed = true;
   }
-  if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
-    return { symbol, candles: cached.slice(-boundedLimit), source: "cache" };
-  }
-  if (!cacheReadFailed && cached.length === 0 && aggregateCachePlan(timeframe)) {
+
+  if (timeframe === "15m") {
+    const nativeCached = cached;
+    let derivedCached: Candle[] = [];
+    let derivedCacheReadFailed = false;
     try {
-      cached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
+      derivedCached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
     } catch {
-      cacheReadFailed = true;
+      derivedCacheReadFailed = true;
     }
+    const selected = chooseBestCacheCandidate(nativeCached, derivedCached, range, boundedLimit);
+    cached = selected?.candles ?? [];
+    cacheKind = selected?.cacheKind;
+    cacheReadFailed = cacheReadFailed && derivedCacheReadFailed;
+    if (selected?.usable) {
+      return {
+        symbol,
+        candles: selected.candles.slice(-boundedLimit),
+        source: "cache",
+        cacheKind: selected.cacheKind,
+      };
+    }
+  } else {
     if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
-      return { symbol, candles: cached, source: "cache" };
+      return { symbol, candles: cached.slice(-boundedLimit), source: "cache", cacheKind };
+    }
+    if (!cacheReadFailed && cached.length === 0 && aggregateCachePlan(timeframe)) {
+      try {
+        cached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
+        cacheKind = "derived-5m";
+      } catch {
+        cacheReadFailed = true;
+      }
+      if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
+        return { symbol, candles: cached, source: "cache", cacheKind };
+      }
     }
   }
 
@@ -560,21 +630,27 @@ export async function loadCandlesForSymbol(input: {
     warnings.push(providerUnavailableWarning("Alpaca", cached.length > 0));
   }
   if (alpaca) {
-    return {
-      ...alpaca,
-      warnings: [
-        ...(cacheReadFailed ? [cacheUnavailableWarning(true)] : []),
-        ...(alpaca.warnings ?? []),
-      ],
-    };
+    if (providerCandlesShouldReplaceCache(alpaca.candles, cached, timeframe, range, boundedLimit)) {
+      return {
+        ...alpaca,
+        warnings: [
+          ...(cacheReadFailed ? [cacheUnavailableWarning(true)] : []),
+          ...(timeframe === "15m" && cached.length > 0
+            ? ["15-minute candle cache coverage is incomplete; using live provider candles."]
+            : []),
+          ...(alpaca.warnings ?? []),
+        ],
+      };
+    }
+    warnings.push("Alpaca candle provider returned partial coverage; keeping the more complete candle cache.");
   }
 
   if (cacheReadFailed) {
     warnings.push(cacheUnavailableWarning(false));
   }
 
-  if (!range && cached.length > 0) {
-    return { symbol, candles: cached.slice(-boundedLimit), source: "cache", warnings };
+  if (!range && cached.length > 0 && timeframe !== "15m") {
+    return { symbol, candles: cached.slice(-boundedLimit), source: "cache", cacheKind, warnings };
   }
 
   const yahooUrl = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
@@ -600,8 +676,24 @@ export async function loadCandlesForSymbol(input: {
           : timeframe === "10m"
             ? aggregateCandles(parsedRows, 10 * 60)
             : parsedRows;
-      if (rows.length > 0) return { symbol, candles: rows.slice(-boundedLimit), source: "yahoo", warnings };
-        warnings.push(providerEmptyWarning("Yahoo", cached.length > 0));
+      if (rows.length > 0 && providerCandlesShouldReplaceCache(rows, cached, timeframe, range, boundedLimit)) {
+        return {
+          symbol,
+          candles: rows.slice(-boundedLimit),
+          source: "yahoo",
+          warnings: [
+            ...warnings,
+            ...(timeframe === "15m" && cached.length > 0
+              ? ["15-minute candle cache coverage is incomplete; using live provider candles."]
+              : []),
+          ],
+        };
+      }
+      warnings.push(
+        rows.length > 0
+          ? "Yahoo candle provider returned partial coverage; keeping the more complete candle cache."
+          : providerEmptyWarning("Yahoo", cached.length > 0),
+      );
     } else {
       warnings.push(providerUnavailableWarning("Yahoo", cached.length > 0));
     }
@@ -631,8 +723,143 @@ export async function loadCandlesForSymbol(input: {
   }
 
   if (cached.length > 0) {
-    return { symbol, candles: cached.slice(-boundedLimit), source: "cache", warnings };
+    return {
+      symbol,
+      candles: cached.slice(-boundedLimit),
+      source: "cache",
+      cacheKind,
+      warnings: [
+        ...(timeframe === "15m"
+          ? ["15-minute candle cache coverage is incomplete; showing the best available cached candles."]
+          : []),
+        ...warnings,
+      ],
+    };
   }
 
   return { symbol, candles: [], source: null, warnings };
+}
+
+function aggregateCompleteCandles(rows: Candle[], bucketSeconds: number, sourceIntervalSeconds: number) {
+  const normalized = dedupeCandles(rows).filter((row) =>
+    [row.time, row.open, row.high, row.low, row.close].every(Number.isFinite),
+  );
+  const buckets = new Map<number, Map<number, Candle>>();
+  for (const row of normalized) {
+    const bucket = Math.floor(row.time / bucketSeconds) * bucketSeconds;
+    const bucketRows = buckets.get(bucket) ?? new Map<number, Candle>();
+    bucketRows.set(row.time, row);
+    buckets.set(bucket, bucketRows);
+  }
+
+  const expectedRows = Math.floor(bucketSeconds / sourceIntervalSeconds);
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .flatMap(([time, bucketRows]) => {
+      const sorted = Array.from({ length: expectedRows }, (_, index) =>
+        bucketRows.get(time + index * sourceIntervalSeconds),
+      );
+      if (bucketRows.size !== expectedRows || sorted.some((row) => !row)) return [];
+      const completeRows = sorted as Candle[];
+      const hasCompleteVolume = completeRows.every((row) => Number.isFinite(row.volume));
+      return [{
+        time,
+        open: completeRows[0].open,
+        high: Math.max(...completeRows.map((row) => row.high)),
+        low: Math.min(...completeRows.map((row) => row.low)),
+        close: completeRows[completeRows.length - 1].close,
+        volume: hasCompleteVolume
+          ? completeRows.reduce((sum, row) => sum + Number(row.volume), 0)
+          : undefined,
+      }];
+    });
+}
+
+type CacheCandidate = {
+  candles: Candle[];
+  cacheKind: CandleCacheKind;
+  usable: boolean;
+};
+
+function candidateCoverageSeconds(candles: Candle[], range: CandleRange, intervalSeconds: number) {
+  const rows = dedupeCandles(candles);
+  const first = rows[0];
+  const last = rows.at(-1);
+  if (!first || !last) return 0;
+  if (!range) return Math.max(0, last.time - first.time) + intervalSeconds;
+  const start = Math.max(range.from, first.time);
+  const end = Math.min(range.to, last.time + intervalSeconds);
+  return Math.max(0, end - start);
+}
+
+function compareCandleQuality(left: Candle[], right: Candle[], range: CandleRange, intervalSeconds: number) {
+  const leftRows = dedupeCandles(left);
+  const rightRows = dedupeCandles(right);
+  const leftLast = leftRows.at(-1)?.time ?? Number.NEGATIVE_INFINITY;
+  const rightLast = rightRows.at(-1)?.time ?? Number.NEGATIVE_INFINITY;
+
+  if (!range && Math.abs(leftLast - rightLast) > intervalSeconds) {
+    return rightLast - leftLast;
+  }
+  if (range) {
+    const coverageDifference =
+      candidateCoverageSeconds(rightRows, range, intervalSeconds) -
+      candidateCoverageSeconds(leftRows, range, intervalSeconds);
+    if (coverageDifference !== 0) return coverageDifference;
+  }
+  if (leftRows.length !== rightRows.length) return rightRows.length - leftRows.length;
+  if (leftLast !== rightLast) return rightLast - leftLast;
+  return 0;
+}
+
+function providerCandlesShouldReplaceCache(
+  providerCandles: Candle[],
+  cachedCandles: Candle[],
+  timeframe: CandleTimeframe,
+  range: CandleRange,
+  limit: number,
+) {
+  if (timeframe !== "15m" || cachedCandles.length === 0) return providerCandles.length > 0;
+  const providerUsable = cachedCandlesAreUsable(providerCandles, timeframe, limit, range);
+  const cacheUsable = cachedCandlesAreUsable(cachedCandles, timeframe, limit, range);
+  if (providerUsable !== cacheUsable) return providerUsable;
+  if (!providerUsable && providerCandles.length < cachedCandles.length) return false;
+  return compareCandleQuality(providerCandles, cachedCandles, range, timeframeIntervalSeconds(timeframe)) <= 0;
+}
+
+function candleTimesMatch(left: Candle[], right: Candle[]) {
+  const leftTimes = dedupeCandles(left).map((candle) => candle.time);
+  const rightTimes = dedupeCandles(right).map((candle) => candle.time);
+  return leftTimes.length === rightTimes.length && leftTimes.every((time, index) => time === rightTimes[index]);
+}
+
+function chooseBestCacheCandidate(
+  nativeCandles: Candle[],
+  derivedCandles: Candle[],
+  range: CandleRange,
+  limit: number,
+): CacheCandidate | null {
+  const candidates = ([
+    {
+      candles: dedupeCandles(nativeCandles),
+      cacheKind: "native",
+      usable: cachedCandlesAreUsable(nativeCandles, "15m", limit, range),
+    },
+    {
+      candles: dedupeCandles(derivedCandles),
+      cacheKind: "derived-5m",
+      usable: cachedCandlesAreUsable(derivedCandles, "15m", limit, range),
+    },
+  ] satisfies CacheCandidate[]).filter((candidate) => candidate.candles.length > 0);
+  if (candidates.length === 0) return null;
+
+  return candidates.sort((left, right) => {
+    if (left.usable !== right.usable) return left.usable ? -1 : 1;
+    const qualityDifference = compareCandleQuality(left.candles, right.candles, range, 15 * 60);
+    if (qualityDifference !== 0) return qualityDifference;
+    if (!candleTimesMatch(left.candles, right.candles)) {
+      return left.cacheKind === "derived-5m" ? -1 : 1;
+    }
+    return left.cacheKind === "native" ? -1 : 1;
+  })[0];
 }

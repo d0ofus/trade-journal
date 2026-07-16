@@ -2727,6 +2727,12 @@ test("chart workstation waits for saved layout before loading candles", async ({
 test("chart workstation derives 15M candles from the seeded 5M cache", async ({ page }) => {
   const browserErrors = collectBrowserErrors(page);
   let layoutVersion = 40;
+  let layoutMode = "one-plus-two";
+  let layoutPanels: ChartPanelLayout[] = [
+    { id: "panel-1", symbol: "DEMOA", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null },
+    { id: "panel-2", symbol: "DEMOA", timeframe: "1h", rangePreset: "post", visibleFrom: null, visibleTo: null },
+    { id: "panel-3", symbol: "DEMOA", timeframe: "1d", rangePreset: "trade", visibleFrom: null, visibleTo: null },
+  ];
 
   await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
     const request = route.request();
@@ -2739,8 +2745,8 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
           layout: {
             id: "derived-15m-layout",
             groupKey,
-            layoutMode: "single",
-            panels: [{ id: "panel-1", symbol: "DEMOA", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null }],
+            layoutMode,
+            panels: layoutPanels,
             version: layoutVersion,
           },
         }),
@@ -2749,6 +2755,8 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
     }
     if (request.method() === "PUT") {
       const body = request.postDataJSON() as { layoutMode?: string; panels?: ChartPanelLayout[] };
+      layoutMode = body.layoutMode ?? layoutMode;
+      layoutPanels = body.panels ?? layoutPanels;
       layoutVersion += 1;
       await route.fulfill({
         status: 200,
@@ -2757,8 +2765,8 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
           layout: {
             id: "derived-15m-layout",
             groupKey,
-            layoutMode: body.layoutMode ?? "single",
-            panels: body.panels ?? [],
+            layoutMode,
+            panels: layoutPanels,
             version: layoutVersion,
           },
         }),
@@ -2792,16 +2800,85 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
       candles?: Array<{ time?: number }>;
       metadata?: { barIntervalSeconds?: number | null };
       source?: string | null;
+      cacheKind?: string | null;
       timeframe?: string;
     };
     expect(payload.timeframe).toBe("15m");
     expect(payload.source).toBe("cache");
+    expect(payload.cacheKind).toBe("derived-5m");
     expect(payload.candles?.length ?? 0).toBeGreaterThan(0);
     expect(payload.metadata?.barIntervalSeconds).toBe(15 * 60);
     await expect(panel).toHaveAttribute("data-timeframe", "15m");
     await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await expect(panel.getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
     await expect.poll(async () => Number(await panel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
     await expect(panel.getByTestId("chart-warning")).not.toContainText("No candles returned");
+    await expectFirstCanvasPainted(page);
+    await expectChartSavesSettled(page);
+
+    await panel.locator('button[title="Switch to 1H"]').click();
+    await expect(panel).toHaveAttribute("data-timeframe", "1h");
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await panel.locator('button[title="Switch to 15M"]').click();
+    await expect(panel).toHaveAttribute("data-timeframe", "15m");
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await panel.getByRole("button", { name: "1M", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "1M", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await expectChartSavesSettled(page);
+
+    const barCountBeforeFocus = Number(await panel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"));
+    const overlayCountBeforeFocus = await page.locator('[data-testid="execution-overlay-label"][data-panel-id="panel-1"]').count();
+    expect(barCountBeforeFocus).toBeGreaterThan(0);
+    expect(overlayCountBeforeFocus).toBeGreaterThan(0);
+    const focusToggle = page.getByTestId("chart-panel-focus-toggle");
+    await focusToggle.click();
+    await expect(focusToggle).toContainText("Show all");
+    await expect(panel.getByTestId("chart-panel-bar-count")).toHaveAttribute("data-candle-count", String(barCountBeforeFocus));
+    await focusToggle.click();
+    await expect(focusToggle).toContainText("Focus");
+
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}&symbol=DEMOA&groupKey=${encodeURIComponent(groupKey!)}`);
+    const reloadedPanel = page.getByTestId("closed-trade-chart-panel").first();
+    await expect(reloadedPanel).toHaveAttribute("data-timeframe", "15m");
+    await expect(reloadedPanel.getByRole("button", { name: "1M", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(reloadedPanel.getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "true");
+    await expect(reloadedPanel.getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
+    await expect(reloadedPanel.getByTestId("chart-panel-bar-count")).toHaveAttribute("data-candle-count", String(barCountBeforeFocus));
+    await expect(page.locator('[data-testid="execution-overlay-label"][data-panel-id="panel-1"]')).toHaveCount(overlayCountBeforeFocus);
+    await expectFirstCanvasPainted(page);
+
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}`);
+    const demoCTrade = page.locator('button[data-account-code="DEMO-WORKSTATION"]').filter({ hasText: /DEMOC/ }).first();
+    await expect(demoCTrade).toBeVisible();
+    const demoCGroupKey = await demoCTrade.getAttribute("data-group-key");
+    expect(demoCGroupKey).toBeTruthy();
+    layoutPanels = [
+      { id: "panel-1", symbol: "DEMOC", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null },
+      { id: "panel-2", symbol: "DEMOC", timeframe: "1h", rangePreset: "post", visibleFrom: null, visibleTo: null },
+      { id: "panel-3", symbol: "DEMOC", timeframe: "1d", rangePreset: "trade", visibleFrom: null, visibleTo: null },
+    ];
+    await demoCTrade.click();
+    await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", demoCGroupKey!);
+    const demoCPanel = page.getByTestId("closed-trade-chart-panel").first();
+    const demoCSymbolInput = demoCPanel.getByRole("textbox", { name: "Symbol", exact: true });
+    await expect(demoCSymbolInput).toBeEnabled();
+    await demoCSymbolInput.fill("DEMOC");
+    await demoCSymbolInput.press("Enter");
+    await expect(demoCSymbolInput).toHaveValue("DEMOC");
+    const demoCResponsePromise = page.waitForResponse(
+      (candidate) => candidate.url().includes("/api/market/candles") && candidate.url().includes("symbol=DEMOC") && candidate.url().includes("timeframe=15m"),
+    );
+    await demoCPanel.locator('button[title="Switch to 15M"]').click();
+    const demoCResponse = await demoCResponsePromise;
+    const demoCPayload = await demoCResponse.json() as { cacheKind?: string | null; candles?: unknown[]; source?: string | null };
+    expect(demoCPayload).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(demoCPayload.candles?.length ?? 0).toBeGreaterThan(0);
+    await expect(demoCPanel).toHaveAttribute("data-timeframe", "15m");
+    await expect(demoCPanel.getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "true");
+    await expect(demoCPanel.getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
+    await expect.poll(async () => Number(await demoCPanel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
+    await expect(page.locator('[data-testid="execution-overlay-label"][data-panel-id="panel-1"]')).not.toHaveCount(0);
     await expectFirstCanvasPainted(page);
     await expectChartSavesSettled(page);
   } finally {

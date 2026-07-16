@@ -101,12 +101,14 @@ export async function GET(req: NextRequest) {
       timeframe,
       candles: primary.candles,
       source: primary.source ?? null,
+      cacheKind: primary.cacheKind ?? null,
       metadata: primary.metadata,
       compare: compare
         ? {
             symbol: compare.symbol,
             candles: compare.candles,
             source: compare.source ?? null,
+            cacheKind: compare.cacheKind ?? null,
             metadata: compare.metadata,
           }
         : null,
@@ -124,6 +126,7 @@ export async function GET(req: NextRequest) {
     timeframe,
     candles: primary.candles,
     source: primary.source ?? null,
+    cacheKind: primary.cacheKind ?? null,
     metadata: primary.metadata,
   });
 }

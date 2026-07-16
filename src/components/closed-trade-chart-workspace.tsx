@@ -147,6 +147,7 @@ type CandleResponse = {
   timeframe?: string;
   candles?: Candle[];
   source?: string | null;
+  cacheKind?: "native" | "derived-5m" | null;
   metadata?: {
     requestedRange?: { from: number; to: number } | null;
     returnedRange?: { from: number; to: number } | null;
@@ -159,6 +160,7 @@ type CandleResponse = {
     symbol?: string;
     candles?: Candle[];
     source?: string | null;
+    cacheKind?: "native" | "derived-5m" | null;
     metadata?: {
       warnings?: string[];
     } | null;
@@ -2026,6 +2028,8 @@ function ClosedTradeChartPanel({
   const [compareCandles, setCompareCandles] = useState<Candle[]>([]);
   const [compareSource, setCompareSource] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
+  const [cacheKind, setCacheKind] = useState<"native" | "derived-5m" | null>(null);
+  const [compareCacheKind, setCompareCacheKind] = useState<"native" | "derived-5m" | null>(null);
   const [status, setStatus] = useState("");
   const [candleWarnings, setCandleWarnings] = useState<string[]>([]);
   const [loadedCandleRequestPath, setLoadedCandleRequestPath] = useState<string | null>(null);
@@ -2347,7 +2351,9 @@ function ClosedTradeChartPanel({
       setCandles([]);
       setCompareCandles([]);
       setCompareSource(null);
+      setCompareCacheKind(null);
       setSource(null);
+      setCacheKind(null);
       setCandleWarnings([]);
       setLoadedCandleRequestPath(null);
       setStatus("Preparing chart...");
@@ -2359,12 +2365,18 @@ function ClosedTradeChartPanel({
     if (tradeChanged) {
       setCandles([]);
       setSource(null);
+      setCacheKind(null);
     }
     if (tradeChanged || compareSymbolChanged) {
       setCompareCandles([]);
       setCompareSource(null);
+      setCompareCacheKind(null);
     }
     setLoadedCandleRequestPath(null);
+    setSource(null);
+    setCompareSource(null);
+    setCacheKind(null);
+    setCompareCacheKind(null);
     setStatus("Loading bars...");
     setCandleWarnings([]);
     loadCandleResponse(currentCandleRequestPath)
@@ -2376,6 +2388,8 @@ function ClosedTradeChartPanel({
         setCompareCandles(nextCompareCandles);
         setSource(payload.source ?? null);
         setCompareSource(payload.compare?.source ?? null);
+        setCacheKind(payload.cacheKind ?? null);
+        setCompareCacheKind(payload.compare?.cacheKind ?? null);
         setCandleWarnings([
           ...(nextCandles.length === 0 ? ["No candles returned for the requested range."] : []),
           ...(Array.isArray(payload.metadata?.warnings) ? payload.metadata.warnings : []),
@@ -2394,7 +2408,9 @@ function ClosedTradeChartPanel({
         setCandles([]);
         setCompareCandles([]);
         setCompareSource(null);
+        setCompareCacheKind(null);
         setSource(null);
+        setCacheKind(null);
         setCandleWarnings([]);
         setLoadedCandleRequestPath(null);
         setStatus(error instanceof Error ? error.message : "Unable to load candles.");
@@ -3191,8 +3207,17 @@ function ClosedTradeChartPanel({
           <Badge variant={trade.realizedPnl >= 0 ? "success" : "danger"} className={cn("tracking-normal", compact && "hidden")}>
             {formatCurrency(trade.realizedPnl)}
           </Badge>
-          <span data-testid="chart-panel-source">{source ? source.toUpperCase() : "DATA"}</span>
-          {panel.compareSymbol ? <span className="font-medium text-teal-700">vs {panel.compareSymbol}{compareSource ? ` ${compareSource.toUpperCase()}` : ""}</span> : null}
+          <span data-testid="chart-panel-source">
+            {source === "cache" && cacheKind === "derived-5m" ? "5M-DERIVED" : source ? source.toUpperCase() : "DATA"}
+          </span>
+          {panel.compareSymbol ? (
+            <span className="font-medium text-teal-700">
+              vs {panel.compareSymbol}
+              {compareSource
+                ? ` ${compareSource === "cache" && compareCacheKind === "derived-5m" ? "5M-DERIVED" : compareSource.toUpperCase()}`
+                : ""}
+            </span>
+          ) : null}
           {source && source !== "alpaca" && source !== "cache" ? <span className="text-amber-600">Fallback data</span> : null}
           <span data-candle-count={candles.length} data-testid="chart-panel-bar-count">{candles.length.toLocaleString()} bars</span>
         </div>

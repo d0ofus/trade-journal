@@ -13,7 +13,8 @@ vi.mock("@/lib/server/api-auth", () => ({
 vi.mock("@/lib/server/market-candles", () => ({
   SAFE_SYMBOL_PATTERN: /^[A-Z0-9.^=_-]{1,20}$/,
   loadCandlesForSymbol: mocks.loadCandlesForSymbol,
-  parseCandleTimeframe: (value: string | null | undefined) => value === "1d" ? "1d" : "5m",
+  parseCandleTimeframe: (value: string | null | undefined) =>
+    value === "1d" ? "1d" : value === "15m" ? "15m" : "5m",
   summarizeCandleResponse: ({
     candles,
     range,
@@ -78,6 +79,33 @@ describe("market candles route", () => {
       timeframe: "5m",
       range: { from: 1_783_000_000, to: 1_783_010_000 },
       limit: 241,
+    });
+  });
+
+  it("preserves derived cache provenance for 15 minute candle responses", async () => {
+    mocks.loadCandlesForSymbol.mockResolvedValue({
+      symbol: "DEMOA",
+      candles: [{ time: 1_783_000_000, open: 100, high: 101, low: 99, close: 100.5 }],
+      source: "cache",
+      cacheKind: "derived-5m",
+      warnings: [],
+    });
+    const { GET } = await import("./route");
+
+    const response = await GET(candleRequest("http://localhost/api/market/candles?symbol=DEMOA&timeframe=15m"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      timeframe: "15m",
+      source: "cache",
+      cacheKind: "derived-5m",
+    });
+    expect(mocks.loadCandlesForSymbol).toHaveBeenCalledWith({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: null,
+      limit: 121,
     });
   });
 

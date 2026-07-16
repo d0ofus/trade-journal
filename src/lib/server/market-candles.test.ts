@@ -210,7 +210,7 @@ describe("loadCandlesForSymbol", () => {
       limit: 120,
     });
 
-    expect(result).toMatchObject({ symbol: "DEMOA", source: "cache" });
+    expect(result).toMatchObject({ symbol: "DEMOA", source: "cache", cacheKind: "derived-5m" });
     expect(result.candles).toHaveLength(20);
     expect(result.candles[0]).toEqual({
       time: start,
@@ -243,10 +243,360 @@ describe("loadCandlesForSymbol", () => {
     expect(result).toMatchObject({
       symbol: "DEMOA",
       source: "cache",
-      warnings: ["Yahoo candle provider unavailable; showing cached candles."],
+      cacheKind: "derived-5m",
+      warnings: [
+        "15-minute candle cache coverage is incomplete; showing the best available cached candles.",
+        "Yahoo candle provider unavailable; showing cached candles.",
+      ],
     });
     expect(result.candles).toHaveLength(2);
     expect(result.candles.map((candle) => candle.time)).toEqual([start, start + 15 * 60]);
+  });
+
+  it("prefers a complete derived 15 minute cache over partial native candles", async () => {
+    vi.stubEnv("ALPACA_API_KEY_ID", "alpaca-key");
+    vi.stubEnv("ALPACA_API_SECRET_KEY", "alpaca-secret");
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start, 5, 15 * 60);
+    const sourceCandles = makeCandles(start, 60);
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      cachedRows(args.where?.timeframe === "5m" ? sourceCandles : nativeCandles),
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: sourceCandles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(result.candles).toHaveLength(20);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps complete native 15 minute candles when coverage matches the derived cache", async () => {
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start, 20, 15 * 60).map((candle) => ({
+      ...candle,
+      open: candle.open + 100,
+    }));
+    const sourceCandles = makeCandles(start, 60);
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      cachedRows(args.where?.timeframe === "5m" ? sourceCandles : nativeCandles),
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: sourceCandles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "native" });
+    expect(result.candles).toHaveLength(20);
+    expect(result.candles[0].open).toBe(200);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("prefers a fresher derived cache over stale unbounded native candles", async () => {
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start - 24 * 60 * 60, 20, 15 * 60);
+    const sourceCandles = makeCandles(start, 60);
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      cachedRows(args.where?.timeframe === "5m" ? sourceCandles : nativeCandles),
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: null,
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(result.candles[0].time).toBe(start);
+  });
+
+  it("prefers a denser derived cache over native candles with an interior gap", async () => {
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start, 21, 15 * 60).filter((_, index) => index !== 10);
+    const sourceCandles = makeCandles(start, 63);
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      cachedRows(args.where?.timeframe === "5m" ? sourceCandles : nativeCandles),
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: sourceCandles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(result.candles).toHaveLength(21);
+  });
+
+  it("prefers complete derived timestamps when unbounded native data backfills an interior gap", async () => {
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start, 21, 15 * 60).filter((_, index) => index !== 10);
+    const sourceCandles = makeCandles(start + 15 * 60, 60);
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      cachedRows(args.where?.timeframe === "5m" ? sourceCandles : nativeCandles),
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: null,
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(result.candles).toHaveLength(20);
+    expect(result.candles[0].time).toBe(start + 15 * 60);
+    expect(result.candles.at(-1)!.time).toBe(nativeCandles.at(-1)!.time);
+  });
+
+  it("drops incomplete first and terminal 15 minute buckets", async () => {
+    withoutAlpacaCredentials();
+    const start = 1_800_000_000;
+    const completeMiddle = makeCandles(start + 15 * 60, 60);
+    const sourceCandles = [
+      ...makeCandles(start + 5 * 60, 2),
+      ...completeMiddle,
+      ...makeCandles(start + 21 * 15 * 60, 2),
+    ];
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(sourceCandles) : [],
+    );
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNRESET")));
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: start + 21 * 15 * 60 + 5 * 60 },
+      limit: 120,
+    });
+
+    expect(result.candles).toHaveLength(20);
+    expect(result.candles[0].time).toBe(start + 15 * 60);
+    expect(result.candles.at(-1)!.time).toBe(start + 20 * 15 * 60);
+    expect(result.candles.some((candle) => candle.time === start)).toBe(false);
+    expect(result.candles.some((candle) => candle.time === start + 21 * 15 * 60)).toBe(false);
+  });
+
+  it("drops a 15 minute bucket with a missing middle constituent", async () => {
+    withoutAlpacaCredentials();
+    const start = 1_800_000_000;
+    const sourceCandles = makeCandles(start, 63).filter((candle) => candle.time !== start + 10 * 60);
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(sourceCandles) : [],
+    );
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNRESET")));
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: sourceCandles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result.candles).toHaveLength(20);
+    expect(result.candles.some((candle) => candle.time === start)).toBe(false);
+  });
+
+  it("fetches farther back when discarded buckets consume the source-row limit", async () => {
+    const start = 1_800_000_000;
+    const completeRows = makeCandles(start, 75);
+    const sourceCandles = [
+      ...completeRows.filter((candle) => candle.time !== start + 22 * 15 * 60 + 5 * 60),
+      ...makeCandles(start + 25 * 15 * 60, 2),
+    ];
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: {
+      orderBy?: { time?: "asc" | "desc" };
+      take?: number;
+      where?: { timeframe?: string };
+    }) => {
+      if (args.where?.timeframe !== "5m") return [];
+      const rows = cachedRows(sourceCandles).sort((left, right) => left.time.getTime() - right.time.getTime());
+      if (args.orderBy?.time === "desc") rows.reverse();
+      return rows.slice(0, args.take);
+    });
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: null,
+      limit: 21,
+    });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(result.candles).toHaveLength(21);
+    expect(mocks.findMany.mock.calls.filter(([args]) => args.where.timeframe === "5m").length).toBeGreaterThan(1);
+  });
+
+  it("deduplicates and sorts 5 minute rows before exact OHLCV aggregation", async () => {
+    const start = 1_800_000_000;
+    const sourceCandles = makeCandles(start, 60);
+    const duplicate = { ...sourceCandles[1] };
+    const outOfOrder = [...sourceCandles.slice().reverse(), duplicate];
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(outOfOrder) : [],
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: sourceCandles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result.candles[0]).toEqual({
+      time: start,
+      open: 100,
+      high: 103,
+      low: 99,
+      close: 102.5,
+      volume: 3003,
+    });
+  });
+
+  it("preserves zero volume and leaves aggregate volume unknown when a constituent is unknown", async () => {
+    const start = 1_800_000_000;
+    const sourceCandles = makeCandles(start, 60).map((candle, index) => ({
+      ...candle,
+      volume: index < 3 ? 0 : index === 4 ? undefined : candle.volume,
+    }));
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(sourceCandles) : [],
+    );
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: sourceCandles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result.candles[0].volume).toBe(0);
+    expect(result.candles[1].volume).toBeUndefined();
+  });
+
+  it("clips derived bars to requested starts and keeps the latest bars for bounded requests", async () => {
+    const start = 1_800_000_000;
+    const sourceCandles = makeCandles(start, 30);
+    vi.stubGlobal("fetch", vi.fn());
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "5m" ? cachedRows(sourceCandles) : [],
+    );
+
+    const clipped = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start + 60, to: sourceCandles.at(-1)!.time },
+      limit: 9,
+    });
+    const latest = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: null,
+      limit: 2,
+    });
+
+    expect(clipped.candles).toHaveLength(9);
+    expect(clipped.candles[0].time).toBe(start + 15 * 60);
+    expect(latest.candles.map((candle) => candle.time)).toEqual([
+      start + 8 * 15 * 60,
+      start + 9 * 15 * 60,
+    ]);
+    const derivedRangeQuery = mocks.findMany.mock.calls.find(([args]) => args.where.timeframe === "5m" && args.where.time);
+    expect(derivedRangeQuery?.[0].where.time.lte).toEqual(new Date(sourceCandles.at(-1)!.time * 1000));
+  });
+
+  it("uses provider candles with diagnostics when neither 15 minute cache covers", async () => {
+    withoutAlpacaCredentials();
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start, 2, 15 * 60);
+    const sourceCandles = makeCandles(start, 6);
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      cachedRows(args.where?.timeframe === "5m" ? sourceCandles : nativeCandles),
+    );
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        chart: {
+          result: [{
+            timestamp: [start, start + 15 * 60],
+            indicators: { quote: [{
+              open: [200, 201], high: [202, 203], low: [199, 200], close: [201, 202], volume: [10, 20],
+            }] },
+          }],
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: { from: start, to: start + 24 * 60 * 60 },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({
+      source: "yahoo",
+      warnings: ["15-minute candle cache coverage is incomplete; using live provider candles."],
+    });
+    expect(result.candles).toHaveLength(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a more complete partial cache when a provider returns fewer 15 minute candles", async () => {
+    withoutAlpacaCredentials();
+    const start = 1_800_000_000;
+    const nativeCandles = makeCandles(start, 19, 15 * 60);
+    mocks.findMany.mockImplementation(async (args: { where?: { timeframe?: string } }) =>
+      args.where?.timeframe === "15m" ? cachedRows(nativeCandles) : [],
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        chart: {
+          result: [{
+            timestamp: [nativeCandles.at(-1)!.time + 60 * 60],
+            indicators: { quote: [{ open: [200], high: [201], low: [199], close: [200.5], volume: [10] }] },
+          }],
+        },
+      }),
+    }));
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: null,
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({
+      source: "cache",
+      cacheKind: "native",
+      warnings: [
+        "15-minute candle cache coverage is incomplete; showing the best available cached candles.",
+        "Yahoo candle provider returned partial coverage; keeping the more complete candle cache.",
+      ],
+    });
+    expect(result.candles).toHaveLength(19);
   });
 
   it("retries a transient cache read failure before falling through to live providers", async () => {
