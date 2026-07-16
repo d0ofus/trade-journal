@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveImportHistoryPresentation,
+  importHistoryCohortSummary,
+  importHistoryPaginationLabel,
   IMPORT_FAILURE_DIRECT_MARKER,
   IMPORT_FAILURE_ROLLED_BACK_MARKER,
 } from "@/lib/import/import-history";
@@ -44,6 +46,22 @@ describe("deriveImportHistoryPresentation", () => {
     expect(result.visibleNotes).toBe("Legacy failure note.");
   });
 
+  it("prefers persisted cohort roles over legacy note markers", () => {
+    const rolledBack = deriveImportHistoryPresentation({
+      status: "FAILED",
+      cohortRole: "ROLLED_BACK",
+      notes: `${IMPORT_FAILURE_DIRECT_MARKER} old marker\nVisible audit note.`,
+    });
+    const direct = deriveImportHistoryPresentation({
+      status: "FAILED",
+      cohortRole: "DIRECT_FAILURE",
+      notes: `${IMPORT_FAILURE_ROLLED_BACK_MARKER} old marker\nDirect audit note.`,
+    });
+
+    expect(rolledBack.kind).toBe("rolled-back");
+    expect(direct.kind).toBe("failed");
+  });
+
   it("does not trust a rollback marker on a non-failed batch", () => {
     const notes = `${IMPORT_FAILURE_ROLLED_BACK_MARKER} unexpected`;
     const result = deriveImportHistoryPresentation({ status: "MATERIALIZED", notes });
@@ -78,5 +96,44 @@ describe("deriveImportHistoryPresentation", () => {
       { key: "executionChargeUpdated", label: "charge corrections", count: 1 },
       { key: "unchangedDuplicate", label: "unchanged duplicates", count: 1 },
     ]);
+  });
+});
+
+describe("import history grouping labels", () => {
+  it("summarizes records, parent sources, and parsed sections", () => {
+    const batch = {
+      id: "batch-1",
+      filename: "statement.csv::trades",
+      fileType: "flex-trades",
+      rowsSeen: 1,
+      rowsImported: 1,
+      rowsSkipped: 0,
+      status: "MATERIALIZED",
+      errorMessage: null,
+      rawSha256: null,
+      rawBytes: null,
+      rawStorageKey: null,
+      parserVersion: "parser",
+      positionSnapshotMode: null,
+      cohortId: "cohort-1",
+      sourceId: "source-1",
+      sourceFilename: "statement.csv",
+      sourceSection: "trades",
+      cohortRole: "MEMBER" as const,
+      importedAt: "2026-07-16T00:00:00.000Z",
+      notes: null,
+      rowErrorCount: 0,
+      rowErrors: [],
+    };
+    const cohort = {
+      key: "cohort:cohort-1",
+      cohortId: "cohort-1",
+      importedAt: batch.importedAt,
+      batches: [batch, { ...batch, id: "batch-2", filename: "statement.csv::positions", sourceSection: "positions" }],
+    };
+
+    expect(importHistoryCohortSummary(cohort)).toBe("2 records | 1 source | 2 sections");
+    expect(importHistoryPaginationLabel(true)).toBe("Older import attempts");
+    expect(importHistoryPaginationLabel(false)).toBeNull();
   });
 });

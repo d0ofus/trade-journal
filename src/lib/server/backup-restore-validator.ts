@@ -352,6 +352,99 @@ function validateImportArtifacts(payload: JsonRecord) {
   return errors;
 }
 
+function validateImportCohortProvenance(payload: JsonRecord) {
+  const errors: BackupRestoreDryRunIssue[] = [];
+  const roles = new Set(["MEMBER", "DIRECT_FAILURE", "ROLLED_BACK"]);
+  const rolesByCohort = new Map<string, Set<string>>();
+  const sourceIdentity = new Map<string, { cohortId: string; sourceFilename: string; rawStorageKey: string | null }>();
+
+  tableRows(payload, "importBatches").forEach((row, index) => {
+    if (!isRecord(row)) return;
+    const values = [row.cohortId, row.sourceId, row.sourceFilename, row.cohortRole];
+    if (values.every((value) => value == null)) return;
+
+    const cohortId = typeof row.cohortId === "string" && row.cohortId ? row.cohortId : null;
+    const sourceId = typeof row.sourceId === "string" && row.sourceId ? row.sourceId : null;
+    const sourceFilename = typeof row.sourceFilename === "string" && row.sourceFilename ? row.sourceFilename : null;
+    const cohortRole = typeof row.cohortRole === "string" && roles.has(row.cohortRole) ? row.cohortRole : null;
+    if (!cohortId || !sourceId || !sourceFilename || !cohortRole) {
+      errors.push(
+        issue(
+          "INCOMPLETE_IMPORT_COHORT_PROVENANCE",
+          "Import cohort provenance must include cohortId, sourceId, sourceFilename, and a valid cohortRole together.",
+          `importBatches.${index}`,
+        ),
+      );
+      return;
+    }
+    if (row.sourceSection != null && (typeof row.sourceSection !== "string" || row.sourceSection.length === 0)) {
+      errors.push(
+        issue(
+          "INVALID_IMPORT_SOURCE_SECTION",
+          "Import sourceSection must be a non-empty string when present.",
+          `importBatches.${index}.sourceSection`,
+        ),
+      );
+    }
+
+    const status = scalarKey(row.status);
+    if ((cohortRole === "DIRECT_FAILURE" || cohortRole === "ROLLED_BACK") && status !== "FAILED") {
+      errors.push(
+        issue(
+          "IMPORT_COHORT_ROLE_STATUS_MISMATCH",
+          `${cohortRole} import cohort members must have FAILED status.`,
+          `importBatches.${index}.cohortRole`,
+        ),
+      );
+    }
+    if (cohortRole === "MEMBER" && status === "FAILED") {
+      errors.push(
+        issue(
+          "IMPORT_COHORT_ROLE_STATUS_MISMATCH",
+          "Failed import cohort members must identify whether they failed directly or were rolled back.",
+          `importBatches.${index}.cohortRole`,
+        ),
+      );
+    }
+
+    const cohortRoles = rolesByCohort.get(cohortId) ?? new Set<string>();
+    cohortRoles.add(cohortRole);
+    rolesByCohort.set(cohortId, cohortRoles);
+
+    const rawStorageKey = scalarKey(row.rawStorageKey);
+    const existingSource = sourceIdentity.get(sourceId);
+    if (!existingSource) {
+      sourceIdentity.set(sourceId, { cohortId, sourceFilename, rawStorageKey });
+    } else if (
+      existingSource.cohortId !== cohortId ||
+      existingSource.sourceFilename !== sourceFilename ||
+      existingSource.rawStorageKey !== rawStorageKey
+    ) {
+      errors.push(
+        issue(
+          "IMPORT_SOURCE_PROVENANCE_MISMATCH",
+          "One import sourceId must remain within one cohort and retain one parent filename and artifact.",
+          `importBatches.${index}.sourceId`,
+        ),
+      );
+    }
+  });
+
+  for (const [cohortId, cohortRoles] of rolesByCohort.entries()) {
+    if (cohortRoles.has("ROLLED_BACK") && !cohortRoles.has("DIRECT_FAILURE")) {
+      errors.push(
+        issue(
+          "IMPORT_COHORT_DIRECT_FAILURE_MISSING",
+          "A cohort with rolled-back members must contain at least one direct failure.",
+          `importBatches.cohortId.${cohortId}`,
+        ),
+      );
+    }
+  }
+
+  return errors;
+}
+
 function validateJournalScreenshotAssets(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
   const warnings: BackupRestoreDryRunIssue[] = [];
@@ -625,6 +718,7 @@ export function validateBackupRestoreDryRun(payload: unknown): BackupRestoreDryR
   errors.push(...validateClosedTradeJournalLinks(payload));
   errors.push(...validateJsonStateFields(payload));
   errors.push(...validateImportArtifacts(payload));
+  errors.push(...validateImportCohortProvenance(payload));
 
   const screenshotValidation = validateJournalScreenshotAssets(payload);
   errors.push(...screenshotValidation.errors);

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { ensureMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { buildClosedTradeWhere, normalizeTradeTagName, type TradeFilters } from "@/lib/server/closed-trade-filters";
 import { ensureMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
+import { getImportHistoryPage } from "@/lib/server/import-history-query";
 import {
   buildBackupReadinessManifest,
   buildImportArtifactBackupManifest,
@@ -892,10 +893,10 @@ async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>
   };
 }
 
-export async function getSettingsData(options: { includeBackupReadiness?: boolean } = {}) {
+export async function getSettingsData(options: { includeBackupReadiness?: boolean; historyCursor?: string | null } = {}) {
   const [
     accounts,
-    batches,
+    importHistory,
     executionCount,
     activeClosedTradeCount,
     staleClosedTradeCount,
@@ -920,18 +921,7 @@ export async function getSettingsData(options: { includeBackupReadiness?: boolea
     latestBackupAudit,
   ] = await Promise.all([
     prisma.account.findMany({ orderBy: { createdAt: "asc" } }),
-    prisma.importBatch.findMany({
-      orderBy: [{ importedAt: "desc" }, { id: "desc" }],
-      take: 20,
-      include: {
-        _count: { select: { rowErrors: true } },
-        rowErrors: {
-          orderBy: [{ rowNumber: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-          take: 5,
-          select: { id: true, rowNumber: true, code: true, message: true },
-        },
-      },
-    }),
+    getImportHistoryPage({ cursor: options.historyCursor }),
     prisma.execution.count(),
     prisma.closedTrade.count({ where: { isStale: false } }),
     prisma.closedTrade.count({ where: { isStale: true } }),
@@ -1012,7 +1002,7 @@ export async function getSettingsData(options: { includeBackupReadiness?: boolea
 
   return {
     accounts,
-    batches,
+    importHistory,
     backupReadiness,
     health: {
       executionCount,

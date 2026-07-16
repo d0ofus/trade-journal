@@ -228,6 +228,10 @@ async function seedFailedImportHistoryCohort() {
         rawStorageKey: failedImportArtifact.rawStorageKey,
         parserVersion: "phase4-e2e",
         positionSnapshotMode: "FULL",
+        cohortId,
+        sourceId: "e2e-phase6-source-positions",
+        sourceFilename: directFilename,
+        cohortRole: "DIRECT_FAILURE",
         errorMessage: "Full position snapshot failed because one source quantity was invalid.",
         notes: `${IMPORT_FAILURE_DIRECT_MARKER} cohort=${cohortId}; stage=preflight; causes=${encodeURIComponent(directFilename)}\nImport failed during preflight before rows could be committed.`,
         rowErrors: {
@@ -255,6 +259,10 @@ async function seedFailedImportHistoryCohort() {
         rawBytes: failedImportArtifact.rawBytes,
         rawStorageKey: failedImportArtifact.rawStorageKey,
         parserVersion: "phase4-e2e",
+        cohortId,
+        sourceId: "e2e-phase6-source-executions",
+        sourceFilename: siblingFilename,
+        cohortRole: "ROLLED_BACK",
         errorMessage: `Rolled back because a sibling import failed. No rows from ${siblingFilename} were committed.`,
         notes: `${IMPORT_FAILURE_ROLLED_BACK_MARKER} cohort=${cohortId}; stage=preflight; causes=${encodeURIComponent(directFilename)}\nRolled back because "${directFilename}" failed. No rows from this file were committed.`,
       },
@@ -696,7 +704,7 @@ test("import route exposes upload controls and durable import history", async ({
   await expect(page.getByRole("button", { name: "Preview" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Validate & Import" })).toBeDisabled();
   await expect(page.getByText("Recent Import History")).toBeVisible();
-  await expect(page.getByText("demo-workstation-seed.json")).toBeVisible();
+  await expect(page.getByText("demo-workstation-seed.json", { exact: true })).toBeVisible();
   await expect(page.getByText("Completed").first()).toBeVisible();
   await expect(page.getByLabel("Timezone")).toHaveValue("UTC");
   await page.getByLabel("Timezone").selectOption("Australia/Melbourne");
@@ -753,6 +761,59 @@ test("import and settings show the same failed cohort with truthful rollback rol
   } finally {
     await cleanupFailedImportHistoryCohort();
   }
+});
+
+test("import and settings paginate identical complete cohorts on desktop and mobile", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await signIn(page);
+  let importMutationRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "GET" && /\/api\/(import|flex)/.test(request.url())) importMutationRequests += 1;
+  });
+  const visibleBatchIds = async () =>
+    page.locator('[data-testid^="import-history-batch-"]').evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("data-testid")?.replace("import-history-batch-", "") ?? ""),
+    );
+  const expectHistoryFits = async () => {
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    expect(
+      await page.locator('[data-testid^="import-history-batch-"]').evaluateAll((elements) =>
+        elements.every((element) => element.scrollWidth <= element.clientWidth),
+      ),
+    ).toBe(true);
+  };
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await gotoReady(page, "/import");
+  await expect(page.getByTestId("import-history-cohort-cohort:demo-import-cohort-flex")).toContainText(
+    "2 records | 1 source | 2 sections",
+  );
+  await expect(page.getByText("demo-flex-statement.csv::trades", { exact: true })).toBeVisible();
+  await expect(page.getByText("demo-flex-statement.csv::positions", { exact: true })).toBeVisible();
+  await expect(page.getByText("Legacy source provenance unavailable.")).toHaveCount(0);
+  const importFirstPage = await visibleBatchIds();
+  await expect(page.getByTestId("import-history-older")).toBeVisible();
+  await page.getByTestId("import-history-older").click();
+  await expect(page).toHaveURL(/historyCursor=/);
+  const olderCursor = new URL(page.url()).searchParams.get("historyCursor");
+  expect(olderCursor).toBeTruthy();
+  const importOlderPage = await visibleBatchIds();
+  expect(importOlderPage.some((id) => importFirstPage.includes(id))).toBe(false);
+  await expect(page.getByText("Legacy source provenance unavailable.")).toBeVisible();
+  await expectHistoryFits();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await gotoReady(page, "/settings");
+  expect(await visibleBatchIds()).toEqual(importFirstPage);
+  await expectHistoryFits();
+  await gotoReady(page, `/settings?historyCursor=${encodeURIComponent(olderCursor!)}`);
+  expect(await visibleBatchIds()).toEqual(importOlderPage);
+  await expect(page.getByText("Legacy archive metadata unavailable.")).toBeVisible();
+  await expectHistoryFits();
+  await expectNoFrameworkOverlay(page);
+
+  expect(importMutationRequests).toBe(0);
+  expect(browserErrors).toEqual([]);
 });
 
 test("import and settings show the same successful reconciliation on desktop and mobile", async ({ page }) => {
@@ -864,7 +925,7 @@ test("settings route covers accounts, Flex status, health, backup, and import hi
   await expect(reviewArtifactReadiness).toContainText("Journal Links");
   await expect(page.getByTestId("backup-action-download-verify")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Import History" })).toBeVisible();
-  await expect(page.getByText("demo-workstation-seed.json")).toBeVisible();
+  await expect(page.getByText("demo-workstation-seed.json", { exact: true })).toBeVisible();
 
   expect(browserErrors).toEqual([]);
 });

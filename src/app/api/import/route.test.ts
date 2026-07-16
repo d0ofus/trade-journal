@@ -238,6 +238,10 @@ describe("/api/import route", () => {
       expect(batches[1].notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
       expect(batches[1].errorMessage).toContain("stale");
       expect(batches.some((batch) => batch.positionSnapshotMode === "FULL")).toBe(true);
+      expect(new Set(batches.map((batch) => batch.cohortId)).size).toBe(1);
+      expect(batches.every((batch) => batch.cohortId != null)).toBe(true);
+      expect(new Set(batches.map((batch) => batch.sourceId)).size).toBe(2);
+      expect(batches.map((batch) => batch.cohortRole)).toEqual(["ROLLED_BACK", "DIRECT_FAILURE"]);
       expect(artifactCount).toBe(2);
       expect(mocks.refreshMaterializedExecutionAnalytics).not.toHaveBeenCalled();
       expect(mocks.refreshMaterializedClosedTrades).not.toHaveBeenCalled();
@@ -305,6 +309,12 @@ describe("/api/import route", () => {
       expect(positionBatch?.notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)).toBe(true);
       expect(positionBatch?.rowsSeen).toBe(0);
       expect(positionBatch?.rowsSkipped).toBe(0);
+      expect(executionBatch?.cohortId).toBe(positionBatch?.cohortId);
+      expect(executionBatch?.sourceId).not.toBe(positionBatch?.sourceId);
+      expect(executionBatch?.sourceFilename).toBe(executionFilename);
+      expect(positionBatch?.sourceFilename).toBe(positionFilename);
+      expect(executionBatch?.cohortRole).toBe("ROLLED_BACK");
+      expect(positionBatch?.cohortRole).toBe("DIRECT_FAILURE");
     } finally {
       await cleanupRouteImportScenario({
         accountCode,

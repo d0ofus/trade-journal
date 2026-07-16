@@ -77,6 +77,37 @@ describe("runFlexImport lifecycle guardrails", () => {
       expect(batch.rowsSeen).toBe(0);
       expect(batch.rawStorageKey).toBe(identity.rawStorageKey);
       expect(batch.errorMessage).toContain("No importable Flex trade or position rows");
+      expect(batch.cohortId).toBeTruthy();
+      expect(batch.sourceId).toBeTruthy();
+      expect(batch.sourceFilename).toMatch(/^flex-statement-/);
+      expect(batch.sourceSection).toBeNull();
+      expect(batch.cohortRole).toBe("DIRECT_FAILURE");
+    } finally {
+      await cleanupRawImport(identity.rawSha256);
+    }
+  });
+
+  dbIt("retains parent provenance when the whole Flex statement cannot be parsed", async () => {
+    const csv = 'Trades\nClientAccountID,DateTime,Symbol\n"unterminated';
+    const identity = rawImportArchiveIdentity(csv);
+    mockFlexStatement(csv);
+
+    try {
+      await expect(
+        runFlexImport({ token: "token", queryId: "query", baseUrl: "https://flex.example.test" }),
+      ).rejects.toThrow();
+
+      const batch = await prisma.importBatch.findFirstOrThrow({
+        where: { rawSha256: identity.rawSha256 },
+      });
+
+      expect(batch.fileType).toBe("flex");
+      expect(batch.cohortId).toBeTruthy();
+      expect(batch.sourceId).toBeTruthy();
+      expect(batch.sourceFilename).toMatch(/^flex-statement-/);
+      expect(batch.sourceSection).toBeNull();
+      expect(batch.cohortRole).toBe("DIRECT_FAILURE");
+      expect(batch.rawStorageKey).toBe(identity.rawStorageKey);
     } finally {
       await cleanupRawImport(identity.rawSha256);
     }
@@ -129,6 +160,15 @@ describe("runFlexImport lifecycle guardrails", () => {
       expect(positionBatch?.errorMessage).toContain("quantity");
       expect(positionBatch?.rowErrors).toHaveLength(1);
       expect(tradeBatch?.rawStorageKey).toBe(positionBatch?.rawStorageKey);
+      expect(tradeBatch?.cohortId).toBeTruthy();
+      expect(tradeBatch?.cohortId).toBe(positionBatch?.cohortId);
+      expect(tradeBatch?.sourceId).toBe(positionBatch?.sourceId);
+      expect(tradeBatch?.sourceFilename).toBe(positionBatch?.sourceFilename);
+      expect(tradeBatch?.sourceSection).toBe("trades");
+      expect(positionBatch?.sourceSection).toBe("positions");
+      expect(tradeBatch?.cohortRole).toBe("ROLLED_BACK");
+      expect(positionBatch?.cohortRole).toBe("DIRECT_FAILURE");
+      expect(tradeBatch?.importedAt).toEqual(positionBatch?.importedAt);
       expect(artifact?.content).toBe(csv);
     } finally {
       const account = await prisma.account.findUnique({ where: { ibkrAccount: accountCode } });
@@ -171,6 +211,9 @@ describe("runFlexImport lifecycle guardrails", () => {
 
       expect(result.positions.positionSnapshotMode).toBe("partial");
       expect(positionBatch.positionSnapshotMode).toBe("PARTIAL");
+      expect(positionBatch.cohortRole).toBe("MEMBER");
+      expect(positionBatch.sourceSection).toBe("positions");
+      expect(positionBatch.sourceFilename).toMatch(/^flex-statement-/);
       expect(positionBatch.notes).toContain("partial snapshot");
       expect(absentPosition?.quantity).toBe(7);
     } finally {

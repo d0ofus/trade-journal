@@ -56,6 +56,65 @@ describe("validateBackupRestoreDryRun", () => {
     expect(result.tableManifest?.complete).toBe(true);
   });
 
+  it("accepts legacy import batches without cohort provenance", () => {
+    const result = validateBackupRestoreDryRun(
+      buildPayload({
+        importBatches: [{ id: "legacy-batch", filename: "legacy.csv", status: "FAILED" }],
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("validates persisted import cohort roles and parent source identity", () => {
+    const valid = validateBackupRestoreDryRun(
+      buildPayload({
+        importBatches: [
+          {
+            id: "direct",
+            filename: "statement.csv::positions",
+            status: "FAILED",
+            cohortId: "cohort-1",
+            sourceId: "source-1",
+            sourceFilename: "statement.csv",
+            sourceSection: "positions",
+            cohortRole: "DIRECT_FAILURE",
+          },
+          {
+            id: "sibling",
+            filename: "statement.csv::trades",
+            status: "FAILED",
+            cohortId: "cohort-1",
+            sourceId: "source-1",
+            sourceFilename: "statement.csv",
+            sourceSection: "trades",
+            cohortRole: "ROLLED_BACK",
+          },
+        ],
+      }),
+    );
+    const invalid = validateBackupRestoreDryRun(
+      buildPayload({
+        importBatches: [
+          {
+            id: "partial",
+            filename: "partial.csv",
+            status: "FAILED",
+            cohortId: "cohort-2",
+            cohortRole: "ROLLED_BACK",
+          },
+        ],
+      }),
+    );
+
+    expect(valid.ok).toBe(true);
+    expect(invalid.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "INCOMPLETE_IMPORT_COHORT_PROVENANCE" }),
+      ]),
+    );
+  });
+
   it("rejects a backup missing a contracted table", () => {
     const payload = buildPayload();
     delete (payload as Record<string, unknown>).accounts;

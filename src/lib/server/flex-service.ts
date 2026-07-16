@@ -1,4 +1,6 @@
 import {
+  createImportCohortContext,
+  createImportSourceId,
   importParsedFilesAtomic,
   markImportBatchesMaterializationFailed,
   markImportBatchesMaterialized,
@@ -135,17 +137,37 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
     throw new Error("Missing IBKR_FLEX_TOKEN or IBKR_FLEX_QUERY_ID.");
   }
 
-  const csv = await pullFlexStatementCsv({ token, queryId, baseUrl: input?.baseUrl });
+  const cohort = createImportCohortContext();
+  const importTimestamp = cohort.importedAt.toISOString();
+  const sourceId = createImportSourceId();
+  const sourceFilename = `flex-statement-${importTimestamp}.csv`;
+  let csv: string;
+  try {
+    csv = await pullFlexStatementCsv({ token, queryId, baseUrl: input?.baseUrl });
+  } catch (error) {
+    await recordFailedImportAttempt({
+      filename: sourceFilename,
+      fileType: "flex",
+      sourceId,
+      sourceFilename,
+      message: error instanceof Error ? error.message : "Flex statement request failed.",
+      cohort,
+    });
+    throw error;
+  }
   let parsed: ReturnType<typeof parseFlexStatementCsv>;
   try {
     parsed = parseFlexStatementCsv(csv);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Flex statement parsing failed.";
     await recordFailedImportAttempt({
-      filename: `flex-statement-${new Date().toISOString()}.csv`,
+      filename: sourceFilename,
       fileType: "flex",
       rawContent: csv,
+      sourceId,
+      sourceFilename,
       message,
+      cohort,
     });
     throw error;
   }
@@ -153,7 +175,6 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
 
   let tradesResult: ImportParsedFileResult = emptyImportResult("executions");
   let positionsResult: ImportParsedFileResult = emptyImportResult("positions");
-  const importTimestamp = new Date().toISOString();
   const pendingImports: Array<{ kind: "trades" | "positions"; params: ImportParsedFileInput }> = [];
 
   if (hasRowsOrErrors(parsed.trades)) {
@@ -164,6 +185,9 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
         parsed: parsed.trades,
         fileType: "flex-trades",
         rawContent: csv,
+        sourceId,
+        sourceFilename,
+        sourceSection: "trades",
       },
     });
   }
@@ -176,6 +200,9 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
         parsed: parsed.positions,
         fileType: "flex-positions",
         rawContent: csv,
+        sourceId,
+        sourceFilename,
+        sourceSection: "positions",
         positionSnapshotMode: "partial",
       },
     });
@@ -183,15 +210,18 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
 
   if (pendingImports.length === 0) {
     await recordFailedImportAttempt({
-      filename: `flex-empty-${new Date().toISOString()}.csv`,
+      filename: sourceFilename,
       fileType: "flex",
       rawContent: csv,
+      sourceId,
+      sourceFilename,
       message: "No importable Flex trade or position rows were found.",
+      cohort,
     });
     throw new Error("No importable Flex trade or position rows were found.");
   }
 
-  const atomicResults = await importParsedFilesAtomic(pendingImports.map((item) => item.params));
+  const atomicResults = await importParsedFilesAtomic(pendingImports.map((item) => item.params), cohort);
   for (const [index, result] of atomicResults.entries()) {
     const pendingImport = pendingImports[index];
     batchIds.push(result.batchId);

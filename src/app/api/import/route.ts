@@ -9,6 +9,8 @@ import { refreshMaterializedExecutionAnalytics } from "@/lib/server/execution-an
 import { requireApiSession } from "@/lib/server/api-auth";
 import { rejectE2eBlockedMutation } from "@/lib/server/e2e-demo-write-guard";
 import {
+  createImportCohortContext,
+  createImportSourceId,
   importParsedFilesAtomic,
   ImportRejectedError,
   markImportBatchesMaterializationFailed,
@@ -346,6 +348,8 @@ export async function POST(req: NextRequest) {
 
       const modeForPositionFile = (filename: string, sectionFilename = filename): PositionSnapshotImportMode =>
         positionSnapshotModeByFile[sectionFilename] ?? positionSnapshotModeByFile[filename] ?? "partial";
+      const cohort = createImportCohortContext();
+      const attemptFiles = files.map((file) => ({ ...file, sourceId: createImportSourceId() }));
 
       const results = [] as Array<{ filename: string } & ImportParsedFileResult>;
       let shouldRefreshClosedTrades = false;
@@ -355,6 +359,9 @@ export async function POST(req: NextRequest) {
         parsed: ParsedImport;
         fileType: string;
         rawContent: string;
+        sourceId: string;
+        sourceFilename: string;
+        sourceSection?: string;
         positionSnapshotMode?: PositionSnapshotImportMode;
         refreshClosedTrades: boolean;
       }>;
@@ -364,7 +371,7 @@ export async function POST(req: NextRequest) {
         error: unknown;
       }>;
 
-      for (const file of files) {
+      for (const file of attemptFiles) {
         let sections: ReturnType<typeof splitFlexSections>;
         try {
           sections = splitFlexSections(file.content);
@@ -375,6 +382,8 @@ export async function POST(req: NextRequest) {
               filename: file.filename,
               fileType: kind ?? "flex",
               rawContent: file.content,
+              sourceId: file.sourceId,
+              sourceFilename: file.filename,
               rowsSeen: 0,
               positionSnapshotMode: kind === "positions" ? modeForPositionFile(file.filename) : undefined,
             },
@@ -393,6 +402,8 @@ export async function POST(req: NextRequest) {
                 filename: file.filename,
                 fileType: "flex",
                 rawContent: file.content,
+                sourceId: file.sourceId,
+                sourceFilename: file.filename,
                 rowsSeen: 0,
               },
               message: error instanceof Error ? error.message : "Flex statement parsing failed.",
@@ -407,6 +418,9 @@ export async function POST(req: NextRequest) {
               parsed: parsedFlex.trades,
               fileType: "flex-trades",
               rawContent: file.content,
+              sourceId: file.sourceId,
+              sourceFilename: file.filename,
+              sourceSection: "trades",
               refreshClosedTrades: true,
             });
           }
@@ -418,6 +432,9 @@ export async function POST(req: NextRequest) {
               parsed: parsedFlex.positions,
               fileType: "flex-positions",
               rawContent: file.content,
+              sourceId: file.sourceId,
+              sourceFilename: file.filename,
+              sourceSection: "positions",
               positionSnapshotMode: modeForPositionFile(file.filename, sectionFilename),
               refreshClosedTrades: true,
             });
@@ -436,6 +453,8 @@ export async function POST(req: NextRequest) {
               filename: file.filename,
               fileType: kind,
               rawContent: file.content,
+              sourceId: file.sourceId,
+              sourceFilename: file.filename,
               rowsSeen: 0,
               positionSnapshotMode: kind === "positions" ? modeForPositionFile(file.filename) : undefined,
             },
@@ -450,6 +469,8 @@ export async function POST(req: NextRequest) {
           parsed,
           fileType: kind,
           rawContent: file.content,
+          sourceId: file.sourceId,
+          sourceFilename: file.filename,
           positionSnapshotMode: kind === "positions" ? modeForPositionFile(file.filename) : undefined,
           refreshClosedTrades: kind === "executions" || kind === "positions",
         });
@@ -459,6 +480,9 @@ export async function POST(req: NextRequest) {
         filename: item.importFilename,
         fileType: item.fileType,
         rawContent: item.rawContent,
+        sourceId: item.sourceId,
+        sourceFilename: item.sourceFilename,
+        sourceSection: item.sourceSection,
         rowErrors: item.parsed.rowErrors,
         rowsSeen: item.parsed.rawRowCount,
         positionSnapshotMode: item.positionSnapshotMode,
@@ -472,6 +496,7 @@ export async function POST(req: NextRequest) {
             filename: failure.item.filename,
             message: failure.message,
           })),
+          cohort,
         });
         throw parseFailures[0].error;
       }
@@ -490,6 +515,7 @@ export async function POST(req: NextRequest) {
           stage: "preflight",
           items: pendingImports.map(failedCohortItem),
           failures,
+          cohort,
         });
         throw new ImportRejectedError(
           `Import preflight failed before applying rows: ${invalidPendingImports
@@ -504,8 +530,12 @@ export async function POST(req: NextRequest) {
           parsed: item.parsed,
           fileType: item.fileType,
           rawContent: item.rawContent,
+          sourceId: item.sourceId,
+          sourceFilename: item.sourceFilename,
+          sourceSection: item.sourceSection,
           positionSnapshotMode: item.positionSnapshotMode,
         })),
+        cohort,
       );
 
       for (const [index, result] of atomicResults.entries()) {

@@ -2,10 +2,17 @@ import { ImportUploader } from "@/components/import-uploader";
 import { ImportHistoryList } from "@/components/import-history-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
-import { getSettingsData } from "@/lib/server/queries";
+import { getImportHistoryPage } from "@/lib/server/import-history-query";
 
-export default async function ImportPage() {
-  const { batches } = await getSettingsData();
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+export default async function ImportPage(props: { searchParams: SearchParams }) {
+  const searchParams = await props.searchParams;
+  const historyCursor = typeof searchParams.historyCursor === "string" ? searchParams.historyCursor : null;
+  const importHistory = await getImportHistoryPage({ cursor: historyCursor });
+  const olderHref = importHistory.pageInfo.nextCursor
+    ? `/import?historyCursor=${encodeURIComponent(importHistory.pageInfo.nextCursor)}`
+    : null;
 
   return (
     <div className="space-y-6">
@@ -20,27 +27,7 @@ export default async function ImportPage() {
           <CardTitle className="text-base">Recent Import History</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 pt-6 text-sm">
-          <ImportHistoryList
-            batches={batches.map((batch) => ({
-              id: batch.id,
-              filename: batch.filename,
-              fileType: batch.fileType,
-              rowsSeen: batch.rowsSeen,
-              rowsImported: batch.rowsImported,
-              rowsSkipped: batch.rowsSkipped,
-              status: batch.status,
-              errorMessage: batch.errorMessage ?? undefined,
-              rawSha256: batch.rawSha256 ?? undefined,
-              rawBytes: batch.rawBytes ?? undefined,
-              rawStorageKey: batch.rawStorageKey ?? undefined,
-              parserVersion: batch.parserVersion ?? undefined,
-              positionSnapshotMode: batch.positionSnapshotMode ?? undefined,
-              importedAt: batch.importedAt.toISOString(),
-              notes: batch.notes ?? undefined,
-              rowErrorCount: batch._count.rowErrors,
-              rowErrors: batch.rowErrors,
-            }))}
-          />
+          <ImportHistoryList page={importHistory} olderHref={olderHref} newestHref={historyCursor ? "/import" : null} />
         </CardContent>
       </Card>
     </div>

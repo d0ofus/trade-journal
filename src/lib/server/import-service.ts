@@ -32,11 +32,18 @@ type ExecutionImportRow = {
   strongIdentity: boolean;
 };
 export type PositionSnapshotImportMode = "partial" | "full";
+export type ImportCohortContext = {
+  cohortId: string;
+  importedAt: Date;
+};
 export type ImportParsedFileInput = {
   filename: string;
   parsed: ParsedImport;
   fileType: string;
   rawContent?: string;
+  sourceId?: string;
+  sourceFilename?: string;
+  sourceSection?: string;
   positionSnapshotMode?: PositionSnapshotImportMode;
   parserVersion?: string;
 };
@@ -55,6 +62,9 @@ export type FailedImportCohortItem = {
   filename: string;
   fileType: string;
   rawContent?: string;
+  sourceId?: string;
+  sourceFilename?: string;
+  sourceSection?: string;
   parserVersion?: string;
   rowErrors?: ParsedRowError[];
   rowsSeen: number;
@@ -66,6 +76,14 @@ export type FailedImportCohortCause = {
   message: string;
 };
 export type ImportFailureStage = "parse" | "preflight" | "apply";
+
+export function createImportCohortContext(importedAt = new Date()): ImportCohortContext {
+  return { cohortId: crypto.randomUUID(), importedAt };
+}
+
+export function createImportSourceId() {
+  return crypto.randomUUID();
+}
 
 const POSITION_SNAPSHOT_BATCH_MODE: Record<PositionSnapshotImportMode, "PARTIAL" | "FULL"> = {
   partial: "PARTIAL",
@@ -589,26 +607,29 @@ async function ensureInstruments(db: ImportDb, rows: InstrumentSeed[]) {
   return map;
 }
 
-export async function importParsedFile(params: {
-  filename: string;
-  parsed: ParsedImport;
-  fileType: string;
-  rawContent?: string;
-  positionSnapshotMode?: PositionSnapshotImportMode;
-  parserVersion?: string;
-}) {
+export async function importParsedFile(
+  params: ImportParsedFileInput,
+  cohort = createImportCohortContext(),
+) {
   const startedAtMs = Date.now();
   const rawArchive = await archiveRawImportContent(params.rawContent);
   const positionSnapshotMode = normalizePositionSnapshotMode(params.positionSnapshotMode);
+  const sourceId = params.sourceId ?? createImportSourceId();
   const batch = await prisma.importBatch.create({
     data: {
       filename: params.filename,
       fileType: params.fileType,
       status: "STARTED",
+      importedAt: cohort.importedAt,
       rawSha256: rawArchive?.rawSha256,
       rawBytes: rawArchive?.rawBytes,
       rawStorageKey: rawArchive?.rawStorageKey,
       parserVersion: params.parserVersion ?? PARSER_VERSION,
+      cohortId: cohort.cohortId,
+      sourceId,
+      sourceFilename: params.sourceFilename ?? params.filename,
+      sourceSection: params.sourceSection,
+      cohortRole: "MEMBER",
       positionSnapshotMode:
         params.parsed.kind === "positions" ? POSITION_SNAPSHOT_BATCH_MODE[positionSnapshotMode] : undefined,
     },
@@ -863,6 +884,7 @@ export async function importParsedFile(params: {
       where: { id: batch.id },
       data: {
         status: "FAILED",
+        cohortRole: "DIRECT_FAILURE",
         rowsSeen: params.parsed.rawRowCount,
         rowsImported: 0,
         rowsSkipped: params.parsed.rawRowCount,
@@ -881,14 +903,22 @@ type PreparedAtomicImport = ImportParsedFileInput & {
   rawArchive: ReturnType<typeof rawImportArchiveIdentity> | null;
   resolvedPositionSnapshotMode: PositionSnapshotImportMode;
   startedAtMs: number;
+  cohortId: string;
+  importedAt: Date;
+  sourceId: string;
+  sourceFilename: string;
 };
 
-function prepareAtomicImport(params: ImportParsedFileInput): PreparedAtomicImport {
+function prepareAtomicImport(params: ImportParsedFileInput, cohort: ImportCohortContext): PreparedAtomicImport {
   return {
     ...params,
     rawArchive: params.rawContent == null ? null : rawImportArchiveIdentity(params.rawContent),
     resolvedPositionSnapshotMode: normalizePositionSnapshotMode(params.positionSnapshotMode),
     startedAtMs: Date.now(),
+    cohortId: cohort.cohortId,
+    importedAt: cohort.importedAt,
+    sourceId: params.sourceId ?? createImportSourceId(),
+    sourceFilename: params.sourceFilename ?? params.filename,
   };
 }
 
@@ -898,10 +928,16 @@ async function createAtomicImportBatch(tx: ImportDb, item: PreparedAtomicImport)
       filename: item.filename,
       fileType: item.fileType,
       status: "STARTED",
+      importedAt: item.importedAt,
       rawSha256: item.rawArchive?.rawSha256,
       rawBytes: item.rawArchive?.rawBytes,
       rawStorageKey: item.rawArchive?.rawStorageKey,
       parserVersion: item.parserVersion ?? PARSER_VERSION,
+      cohortId: item.cohortId,
+      sourceId: item.sourceId,
+      sourceFilename: item.sourceFilename,
+      sourceSection: item.sourceSection,
+      cohortRole: "MEMBER",
       positionSnapshotMode:
         item.parsed.kind === "positions" ? POSITION_SNAPSHOT_BATCH_MODE[item.resolvedPositionSnapshotMode] : undefined,
     },
@@ -1153,10 +1189,13 @@ async function applyAtomicImportRows(
   };
 }
 
-export async function importParsedFilesAtomic(params: ImportParsedFileInput[]): Promise<ImportParsedFileResult[]> {
+export async function importParsedFilesAtomic(
+  params: ImportParsedFileInput[],
+  cohort = createImportCohortContext(),
+): Promise<ImportParsedFileResult[]> {
   if (params.length === 0) return [];
 
-  const prepared = params.map(prepareAtomicImport);
+  const prepared = params.map((item) => prepareAtomicImport(item, cohort));
   let directFailure: FailedImportCohortCause | null = null;
 
   try {
@@ -1197,6 +1236,9 @@ export async function importParsedFilesAtomic(params: ImportParsedFileInput[]): 
           filename: item.filename,
           fileType: item.fileType,
           rawContent: item.rawContent,
+          sourceId: item.sourceId,
+          sourceFilename: item.sourceFilename,
+          sourceSection: item.sourceSection,
           parserVersion: item.parserVersion,
           rowErrors: item.parsed.rowErrors,
           rowsSeen: item.parsed.rawRowCount,
@@ -1206,6 +1248,7 @@ export async function importParsedFilesAtomic(params: ImportParsedFileInput[]): 
               ? `Import failed before rows could be committed after ${(Math.max(1, Date.now() - item.startedAtMs) / 1000).toFixed(2)}s.`
               : undefined,
         })),
+        cohort,
       });
     } catch (auditError) {
       console.error("Failed to persist the atomic import failure ledger.", auditError);
@@ -1229,14 +1272,14 @@ export async function recordFailedImportCohort(params: {
   items: FailedImportCohortItem[];
   failures: FailedImportCohortCause[];
   stage: ImportFailureStage;
+  cohort?: ImportCohortContext;
 }) {
   if (params.items.length === 0) return [];
   if (params.failures.length === 0) {
     throw new Error("A failed import cohort requires at least one direct failure.");
   }
 
-  const cohortId = crypto.randomUUID();
-  const recordedAt = new Date();
+  const cohort = params.cohort ?? createImportCohortContext();
   const failureByFilename = new Map(params.failures.map((failure) => [failure.filename, failure.message]));
   const causeFilenames = [...failureByFilename.keys()];
   const prepared = params.items.map((item) => {
@@ -1245,6 +1288,8 @@ export async function recordFailedImportCohort(params: {
       ...item,
       rowsSeen: Math.max(0, Math.trunc(item.rowsSeen)),
       rawArchive: item.rawContent == null ? null : rawImportArchiveIdentity(item.rawContent),
+      sourceId: item.sourceId ?? createImportSourceId(),
+      sourceFilename: item.sourceFilename ?? item.filename,
       serializedRowErrors,
       fallbackCount: serializedRowErrors.filter((error) => error.usedFallback).length,
     };
@@ -1270,7 +1315,7 @@ export async function recordFailedImportCohort(params: {
           : "";
         const notes = `${failureLedgerEnvelope({
           marker: isDirectFailure ? IMPORT_FAILURE_DIRECT_MARKER : IMPORT_FAILURE_ROLLED_BACK_MARKER,
-          cohortId,
+          cohortId: cohort.cohortId,
           stage: params.stage,
           causes: isDirectFailure ? [item.filename] : causeFilenames,
         })}\n${visibleNotes}${fallbackNote}`.slice(0, 2000);
@@ -1285,7 +1330,7 @@ export async function recordFailedImportCohort(params: {
             filename: item.filename,
             fileType: item.fileType,
             status: "FAILED",
-            importedAt: recordedAt,
+            importedAt: cohort.importedAt,
             rowsSeen: item.rowsSeen,
             rowsImported: 0,
             rowsSkipped: item.rowsSeen,
@@ -1293,6 +1338,11 @@ export async function recordFailedImportCohort(params: {
             rawBytes: item.rawArchive?.rawBytes,
             rawStorageKey: item.rawArchive?.rawStorageKey,
             parserVersion: item.parserVersion ?? PARSER_VERSION,
+            cohortId: cohort.cohortId,
+            sourceId: item.sourceId,
+            sourceFilename: item.sourceFilename,
+            sourceSection: item.sourceSection,
+            cohortRole: isDirectFailure ? "DIRECT_FAILURE" : "ROLLED_BACK",
             positionSnapshotMode: isPositionImport ? POSITION_SNAPSHOT_BATCH_MODE[positionSnapshotMode] : undefined,
             errorMessage: errorMessage.slice(0, 2000),
             notes,
@@ -1310,11 +1360,14 @@ export async function recordFailedImportCohort(params: {
 export async function recordFailedImportAttempt(params: Omit<FailedImportCohortItem, "rowsSeen"> & {
   message: string;
   rowsSeen?: number;
+  cohort?: ImportCohortContext;
 }) {
+  const { cohort, message, rowsSeen, ...item } = params;
   const batches = await recordFailedImportCohort({
     stage: "parse",
-    failures: [{ filename: params.filename, message: params.message }],
-    items: [{ ...params, rowsSeen: params.rowsSeen ?? params.rowErrors?.length ?? 0 }],
+    failures: [{ filename: item.filename, message }],
+    items: [{ ...item, rowsSeen: rowsSeen ?? item.rowErrors?.length ?? 0 }],
+    cohort,
   });
   return batches[0];
 }
@@ -1384,6 +1437,7 @@ export async function markImportBatchesFailed(batchIds: string[], message: strin
     where: { id: { in: uniqueIds } },
     data: {
       status: "FAILED",
+      cohortRole: "DIRECT_FAILURE",
       errorMessage: message.slice(0, 2000),
       notes: `Import failed: ${message}`.slice(0, 2000),
     },

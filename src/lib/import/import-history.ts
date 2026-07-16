@@ -1,9 +1,56 @@
+import { parseImportAccounting } from "@/lib/import/import-accounting";
+
 export const IMPORT_FAILURE_DIRECT_MARKER = "[import-history:v1:failed]";
 export const IMPORT_FAILURE_ROLLED_BACK_MARKER = "[import-history:v1:rolled-back]";
 
-type ImportHistoryInput = {
+export type ImportHistoryCohortRole = "MEMBER" | "DIRECT_FAILURE" | "ROLLED_BACK";
+
+export type ImportHistoryInput = {
   status: string;
   notes?: string | null;
+  cohortRole?: ImportHistoryCohortRole | null;
+};
+
+export type ImportHistoryBatchItem = ImportHistoryInput & {
+  id: string;
+  filename: string;
+  fileType: string;
+  rowsSeen: number;
+  rowsImported: number;
+  rowsSkipped: number;
+  errorMessage: string | null;
+  rawSha256: string | null;
+  rawBytes: number | null;
+  rawStorageKey: string | null;
+  parserVersion: string | null;
+  positionSnapshotMode: "PARTIAL" | "FULL" | null;
+  cohortId: string | null;
+  sourceId: string | null;
+  sourceFilename: string | null;
+  sourceSection: string | null;
+  importedAt: string;
+  rowErrorCount: number;
+  rowErrors: Array<{
+    id: string;
+    rowNumber: number | null;
+    code: string;
+    message: string;
+  }>;
+};
+
+export type ImportHistoryCohort = {
+  key: string;
+  cohortId: string | null;
+  importedAt: string;
+  batches: ImportHistoryBatchItem[];
+};
+
+export type ImportHistoryPage = {
+  cohorts: ImportHistoryCohort[];
+  pageInfo: {
+    hasNextPage: boolean;
+    nextCursor: string | null;
+  };
 };
 
 export type ImportHistoryPresentation = {
@@ -50,25 +97,30 @@ function stripLedgerEnvelope(notes: string) {
 
 export function deriveImportHistoryPresentation(input: ImportHistoryInput): ImportHistoryPresentation {
   const notes = input.notes?.trim() || null;
+  const visibleFailureNotes =
+    notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER) || notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)
+      ? stripLedgerEnvelope(notes)
+      : notes;
 
-  if (input.status === "FAILED" && notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER)) {
+  if (
+    input.cohortRole === "ROLLED_BACK" ||
+    (input.cohortRole == null && input.status === "FAILED" && notes?.startsWith(IMPORT_FAILURE_ROLLED_BACK_MARKER))
+  ) {
     return {
       kind: "rolled-back",
       label: "Rolled back",
       tone: "warning",
-      visibleNotes: stripLedgerEnvelope(notes),
+      visibleNotes: visibleFailureNotes,
       outcomes: [],
     };
   }
 
-  if (input.status === "FAILED") {
+  if (input.cohortRole === "DIRECT_FAILURE" || input.status === "FAILED") {
     return {
       kind: "failed",
       label: "Failed",
       tone: "danger",
-      visibleNotes: notes?.startsWith(IMPORT_FAILURE_DIRECT_MARKER)
-        ? stripLedgerEnvelope(notes)
-        : notes,
+      visibleNotes: visibleFailureNotes,
       outcomes: [],
     };
   }
@@ -90,4 +142,18 @@ export function deriveImportHistoryPresentation(input: ImportHistoryInput): Impo
       return { kind: "default", label: input.status, tone: "neutral", visibleNotes: parsed.visibleNotes, outcomes };
   }
 }
-import { parseImportAccounting } from "@/lib/import/import-accounting";
+
+export function importHistoryCohortSummary(cohort: ImportHistoryCohort) {
+  const sourceKeys = new Set(
+    cohort.batches.map((batch) => batch.sourceId ?? `legacy:${batch.id}`),
+  );
+  const sectionCount = cohort.batches.filter((batch) => batch.sourceSection).length;
+  const recordLabel = cohort.batches.length === 1 ? "record" : "records";
+  const sourceLabel = sourceKeys.size === 1 ? "source" : "sources";
+  const sections = sectionCount > 0 ? ` | ${sectionCount.toLocaleString()} section${sectionCount === 1 ? "" : "s"}` : "";
+  return `${cohort.batches.length.toLocaleString()} ${recordLabel} | ${sourceKeys.size.toLocaleString()} ${sourceLabel}${sections}`;
+}
+
+export function importHistoryPaginationLabel(hasNextPage: boolean) {
+  return hasNextPage ? "Older import attempts" : null;
+}

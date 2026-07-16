@@ -59,6 +59,11 @@ function compactGraphPayload() {
         rawStorageKey: artifact.rawStorageKey,
         parserVersion: "test",
         positionSnapshotMode: "PARTIAL",
+        cohortId: "cohort-1",
+        sourceId: "source-1",
+        sourceFilename: "activity.csv",
+        sourceSection: "trades",
+        cohortRole: "MEMBER",
       },
     ],
     importRowErrors: [{ id: "row-error-1", importBatchId: "batch-1", rowNumber: 2, severity: "WARNING", code: "SKIPPED", message: "Skipped row", rawJson: "{}", createdAt: importedAt }],
@@ -171,6 +176,15 @@ describe("backup restore planning", () => {
     expect(planTable(plan, "journalCharts").rows[0]).not.toHaveProperty("markers");
     expect(planTable(plan, "closedTrades").rows[0].openTime).toBeInstanceOf(Date);
     expect(planTable(plan, "marketCandles").rows[0].time).toBeInstanceOf(Date);
+    expect(planTable(plan, "importBatches").rows[0]).toEqual(
+      expect.objectContaining({
+        cohortId: "cohort-1",
+        sourceId: "source-1",
+        sourceFilename: "activity.csv",
+        sourceSection: "trades",
+        cohortRole: "MEMBER",
+      }),
+    );
   });
 
   it("rejects payloads that cannot be converted into valid restore rows", () => {

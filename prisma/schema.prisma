@@ -140,6 +140,12 @@ enum ImportBatchStatus {
   MATERIALIZATION_FAILED
 }
 
+enum ImportCohortRole {
+  MEMBER
+  DIRECT_FAILURE
+  ROLLED_BACK
+}
+
 enum PositionSnapshotMode {
   PARTIAL
   FULL
@@ -193,6 +199,11 @@ model ImportBatch {
   rawStorageKey        String?
   parserVersion        String?
   positionSnapshotMode PositionSnapshotMode?
+  cohortId             String?
+  sourceId             String?
+  sourceFilename       String?
+  sourceSection        String?
+  cohortRole           ImportCohortRole?
   errorMessage         String?
   notes                String?
   executions           Execution[]
@@ -200,6 +211,9 @@ model ImportBatch {
   rawArtifact          ImportArtifact?       @relation(fields: [rawStorageKey], references: [storageKey], onDelete: SetNull)
 
   @@index([status, importedAt])
+  @@index([importedAt, id])
+  @@index([cohortId, importedAt, id])
+  @@index([sourceId])
   @@index([rawSha256])
 }
 

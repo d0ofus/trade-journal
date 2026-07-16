@@ -61,8 +61,18 @@ function ReadinessItem({ label, value, complete, testId }: { label: string; valu
   );
 }
 
-export default async function SettingsPage() {
-  const { accounts, batches, backupReadiness, health } = await getSettingsData({ includeBackupReadiness: true });
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+export default async function SettingsPage(props: { searchParams: SearchParams }) {
+  const searchParams = await props.searchParams;
+  const historyCursor = typeof searchParams.historyCursor === "string" ? searchParams.historyCursor : null;
+  const { accounts, importHistory, backupReadiness, health } = await getSettingsData({
+    includeBackupReadiness: true,
+    historyCursor,
+  });
+  const olderHistoryHref = importHistory.pageInfo.nextCursor
+    ? `/settings?historyCursor=${encodeURIComponent(importHistory.pageInfo.nextCursor)}`
+    : null;
   const flexConfigured = Boolean(process.env.IBKR_FLEX_TOKEN && process.env.IBKR_FLEX_QUERY_ID);
   const screenshotReadiness = backupReadiness?.assets.journalScreenshots;
   const importReadiness = backupReadiness?.assets.importArtifacts;
@@ -280,25 +290,9 @@ export default async function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-2 pt-6 text-sm">
           <ImportHistoryList
-            batches={batches.map((batch) => ({
-              id: batch.id,
-              filename: batch.filename,
-              fileType: batch.fileType,
-              rowsSeen: batch.rowsSeen,
-              rowsImported: batch.rowsImported,
-              rowsSkipped: batch.rowsSkipped,
-              status: batch.status,
-              errorMessage: batch.errorMessage ?? undefined,
-              rawSha256: batch.rawSha256 ?? undefined,
-              rawBytes: batch.rawBytes ?? undefined,
-              rawStorageKey: batch.rawStorageKey ?? undefined,
-              parserVersion: batch.parserVersion ?? undefined,
-              positionSnapshotMode: batch.positionSnapshotMode ?? undefined,
-              importedAt: batch.importedAt.toISOString(),
-              notes: batch.notes ?? undefined,
-              rowErrorCount: batch._count.rowErrors,
-              rowErrors: batch.rowErrors,
-            }))}
+            page={importHistory}
+            olderHref={olderHistoryHref}
+            newestHref={historyCursor ? "/settings" : null}
           />
         </CardContent>
       </Card>
