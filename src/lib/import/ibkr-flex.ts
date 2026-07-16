@@ -104,21 +104,18 @@ function toRows(csvText: string): Record<string, string>[] {
 }
 
 function readByAliases(row: Record<string, string>, aliases: string[]) {
-  const entries = Object.entries(row);
-  for (const [key, value] of entries) {
-    const normalizedKey = normalizeHeader(key);
-    if (aliases.includes(normalizedKey)) {
-      return String(value ?? "").trim();
-    }
+  const values = new Map(Object.entries(row).map(([key, value]) => [normalizeHeader(key), String(value ?? "").trim()]));
+  for (const alias of aliases.map(normalizeHeader)) {
+    if (values.has(alias)) return values.get(alias) ?? "";
   }
   return "";
 }
 
-function parseNumber(value: string) {
+function parseOptionalNumber(value: string) {
   const cleaned = value.replace(/[,$]/g, "").trim();
-  if (!cleaned) return 0;
+  if (!cleaned) return undefined;
   const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isIdealFxCommissionRow(row: Record<string, string>) {
@@ -133,35 +130,65 @@ export function filterOutIdealFxCommissionRows(rows: Record<string, string>[]) {
 }
 
 function mergeCommissions(executions: ExecutionImport[], commissionsCsv: string | null) {
-  if (!commissionsCsv || executions.length === 0) return executions;
+  const emptyAccounting = { seen: 0, matched: 0, excluded: 0, unmatched: 0, ambiguous: 0 };
+  if (!commissionsCsv) return { executions, accounting: emptyAccounting };
 
-  const rows = filterOutIdealFxCommissionRows(toRows(commissionsCsv));
-  const byOrderId = new Map<string, { commission: number; fees: number }>();
+  const allRows = toRows(commissionsCsv);
+  const accounting = { ...emptyAccounting, seen: allRows.length };
+  const chargesByExecution = new Map<number, { commission?: number; fees?: number }>();
 
-  for (const row of rows) {
-    const orderId = readByAliases(row, ["orderid", "orderreference", "tradeid", "transactionid"]);
-    if (!orderId) continue;
+  for (const detail of allRows) {
+    if (isIdealFxCommissionRow(detail)) {
+      accounting.excluded += 1;
+      continue;
+    }
 
-    const commission = parseNumber(readByAliases(row, ["commission", "ibcommission", "totalcommission"]));
-    const fees = parseNumber(readByAliases(row, ["fee", "fees", "tax", "taxes", "other"]));
-    const current = byOrderId.get(orderId) ?? { commission: 0, fees: 0 };
+    const references = [
+      { field: "ibExecId" as const, value: readByAliases(detail, ["ibexecid", "execid"]) },
+      { field: "tradeId" as const, value: readByAliases(detail, ["tradeid"]) },
+      { field: "transactionId" as const, value: readByAliases(detail, ["transactionid"]) },
+    ].filter((reference) => reference.value);
+    let matches: number[] = [];
+    for (const reference of references) {
+      matches = executions.flatMap((execution, index) =>
+        execution[reference.field] === reference.value ? [index] : [],
+      );
+      if (matches.length > 0) break;
+    }
 
-    current.commission += Math.abs(commission);
-    current.fees += Math.abs(fees);
-    byOrderId.set(orderId, current);
+    if (matches.length === 0) {
+      const orderId = readByAliases(detail, ["iborderid", "brokerageorderid", "orderid", "orderreference"]);
+      if (orderId) {
+        matches = executions.flatMap((execution, index) => (execution.orderId === orderId ? [index] : []));
+      }
+    }
+
+    if (matches.length === 0) {
+      accounting.unmatched += 1;
+      continue;
+    }
+    if (matches.length > 1) {
+      accounting.ambiguous += 1;
+      continue;
+    }
+
+    const index = matches[0];
+    const commission = parseOptionalNumber(readByAliases(detail, ["totalcommission", "commission", "ibcommission"]));
+    const fees = parseOptionalNumber(readByAliases(detail, ["fees", "fee", "taxes", "tax", "other"]));
+    const current = chargesByExecution.get(index) ?? {};
+    if (commission != null) current.commission = (current.commission ?? 0) + Math.abs(commission);
+    if (fees != null) current.fees = (current.fees ?? 0) + Math.abs(fees);
+    chargesByExecution.set(index, current);
+    accounting.matched += 1;
   }
 
-  return executions.map((row) => {
-    if (!row.orderId) return row;
-    const found = byOrderId.get(row.orderId);
-    if (!found) return row;
-
-    return {
-      ...row,
-      commission: found.commission,
-      fees: found.fees,
-    };
-  });
+  return {
+    executions: executions.map((execution, index) => {
+      const charges = chargesByExecution.get(index);
+      return charges ? { ...execution, ...charges } : execution;
+    }),
+    accounting,
+  };
 }
 
 export function splitFlexSections(csvText: string): FlexSections {
@@ -221,11 +248,18 @@ export function parseFlexStatementCsv(csvText: string): {
         rowErrors: [],
       } satisfies ParsedImport);
 
-  const mergedExecutions = mergeCommissions(tradesParsed.executions, sections.commissionsCsv);
-  const commissionsSeen = sections.commissionsCsv ? filterOutIdealFxCommissionRows(toRows(sections.commissionsCsv)).length : 0;
+  const merged = mergeCommissions(tradesParsed.executions, sections.commissionsCsv);
+  const commissionsSeen = merged.accounting.seen;
 
   return {
-    trades: { ...tradesParsed, executions: mergedExecutions },
+    trades: {
+      ...tradesParsed,
+      executions: merged.executions,
+      sourceDispositions: {
+        ...tradesParsed.sourceDispositions,
+        flexCommissions: merged.accounting,
+      },
+    },
     positions: positionsParsed,
     commissionsSeen,
   };

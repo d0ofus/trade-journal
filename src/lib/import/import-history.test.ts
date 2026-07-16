@@ -5,6 +5,7 @@ import {
   IMPORT_FAILURE_DIRECT_MARKER,
   IMPORT_FAILURE_ROLLED_BACK_MARKER,
 } from "@/lib/import/import-history";
+import { createImportAccounting, serializeImportAccounting } from "@/lib/import/import-accounting";
 
 describe("deriveImportHistoryPresentation", () => {
   it("shows marked direct failures as Failed without leaking the ledger envelope", () => {
@@ -18,6 +19,7 @@ describe("deriveImportHistoryPresentation", () => {
       label: "Failed",
       tone: "danger",
       visibleNotes: "The position file failed validation.",
+      outcomes: [],
     });
   });
 
@@ -47,7 +49,34 @@ describe("deriveImportHistoryPresentation", () => {
     const result = deriveImportHistoryPresentation({ status: "MATERIALIZED", notes });
 
     expect(result.kind).toBe("default");
-    expect(result.label).toBe("Materialized");
+    expect(result.label).toBe("Completed");
     expect(result.visibleNotes).toBe(notes);
+  });
+
+  it("turns a successful accounting envelope into concise row dispositions", () => {
+    const accounting = createImportAccounting({
+      kind: "executions",
+      rawRowCount: 3,
+      executions: [],
+      positions: [],
+      snapshots: [],
+      rowErrors: [],
+    });
+    accounting.primary.executionInserted = 1;
+    accounting.primary.executionChargeUpdated = 1;
+    accounting.primary.unchangedDuplicate = 1;
+
+    const result = deriveImportHistoryPresentation({
+      status: "MATERIALIZED",
+      notes: serializeImportAccounting(accounting, "Import duration: 0.01s"),
+    });
+
+    expect(result.label).toBe("Completed");
+    expect(result.visibleNotes).toBe("Import duration: 0.01s");
+    expect(result.outcomes).toEqual([
+      { key: "executionInserted", label: "executions inserted", count: 1 },
+      { key: "executionChargeUpdated", label: "charge corrections", count: 1 },
+      { key: "unchangedDuplicate", label: "unchanged duplicates", count: 1 },
+    ]);
   });
 });

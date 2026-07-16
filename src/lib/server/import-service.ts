@@ -4,8 +4,19 @@ import {
   IMPORT_FAILURE_DIRECT_MARKER,
   IMPORT_FAILURE_ROLLED_BACK_MARKER,
 } from "@/lib/import/import-history";
+import {
+  appendVisibleImportNote,
+  assertImportAccountingConservesRows,
+  createImportAccounting,
+  importRowsApplied,
+  importRowsNotApplied,
+  serializeImportAccounting,
+  type ImportAccounting,
+} from "@/lib/import/import-accounting";
 import type { ParsedImport, ParsedRowError } from "@/lib/import/ibkr-parser";
+import { isIntentionalExecutionExclusionOnly } from "@/lib/import/import-preflight";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
+import type { ExecutionImport } from "@/lib/import/schemas";
 import { prisma } from "@/lib/prisma";
 
 const EXECUTION_CHUNK_SIZE = 500;
@@ -13,7 +24,13 @@ const PARSER_VERSION = "2026-06-25-workstation-uplift";
 
 type ImportDb = Prisma.TransactionClient;
 type ImportArtifactDb = Pick<Prisma.TransactionClient, "importArtifact">;
-type ExecutionImportRow = Prisma.ExecutionCreateManyInput;
+type ExecutionImportRow = {
+  data: Prisma.ExecutionCreateManyInput;
+  legacyDedupeKey: string;
+  commissionProvided: boolean;
+  feesProvided: boolean;
+  strongIdentity: boolean;
+};
 export type PositionSnapshotImportMode = "partial" | "full";
 export type ImportParsedFileInput = {
   filename: string;
@@ -32,6 +49,7 @@ export type ImportParsedFileResult = {
   durationMs: number;
   rowsPerSecond: number;
   positionSnapshotMode: PositionSnapshotImportMode | null;
+  accounting: ImportAccounting;
 };
 export type FailedImportCohortItem = {
   filename: string;
@@ -225,58 +243,260 @@ function chunked<T>(rows: T[], size: number) {
 
 function chargeFieldsChanged(
   existing: { commission: number; fees: number },
-  incoming: { commission?: number | null; fees?: number | null },
+  incoming: ExecutionImportRow,
 ) {
-  return existing.commission !== (incoming.commission ?? 0) || existing.fees !== (incoming.fees ?? 0);
+  return (
+    (incoming.commissionProvided && existing.commission !== incoming.data.commission) ||
+    (incoming.feesProvided && existing.fees !== incoming.data.fees)
+  );
 }
 
-async function applyExecutionRows(db: ImportDb, rows: ExecutionImportRow[]) {
+function executionIdentityFieldsMatch(
+  existing: {
+    accountId: string;
+    instrumentId: string;
+    executedAt: Date;
+    side: Side;
+    quantity: number;
+    price: number;
+    currency: string;
+  },
+  incoming: Prisma.ExecutionCreateManyInput,
+) {
+  const incomingExecutedAt =
+    incoming.executedAt instanceof Date ? incoming.executedAt : new Date(incoming.executedAt);
+  return (
+    existing.accountId === incoming.accountId &&
+    existing.instrumentId === incoming.instrumentId &&
+    existing.executedAt.getTime() === incomingExecutedAt.getTime() &&
+    existing.side === incoming.side &&
+    existing.quantity === incoming.quantity &&
+    existing.price === incoming.price &&
+    existing.currency === incoming.currency
+  );
+}
+
+async function applyExecutionRows(
+  db: ImportDb,
+  rows: ExecutionImportRow[],
+  options: { preserveExistingCharges?: boolean } = {},
+) {
   let created = 0;
   let updatedCharges = 0;
   let unchangedDuplicates = 0;
 
-  for (const chunk of chunked(rows, EXECUTION_CHUNK_SIZE)) {
+  const collapsed: ExecutionImportRow[] = [];
+  const byCanonicalKey = new Map<string, ExecutionImportRow>();
+  for (const row of rows) {
+    const existing = byCanonicalKey.get(row.data.dedupeKey);
+    if (!existing) {
+      byCanonicalKey.set(row.data.dedupeKey, row);
+      collapsed.push(row);
+      continue;
+    }
+    if (!row.strongIdentity) {
+      throw new ImportRejectedError(
+        "Two execution rows have the same fallback identity but no distinct execution IDs. Export per-fill IBExecID or TradeID values before retrying.",
+      );
+    }
+    if (JSON.stringify(existing.data) !== JSON.stringify(row.data)) {
+      throw new ImportRejectedError(
+        `Execution ID ${row.data.dedupeKey.slice(0, 12)} appears more than once with conflicting values in the same import.`,
+      );
+    }
+    unchangedDuplicates += 1;
+  }
+
+  const lockKeys = [...new Set(collapsed.flatMap((row) => [row.data.dedupeKey, row.legacyDedupeKey]))].sort();
+  for (const key of lockKeys) {
+    await db.$queryRaw(
+      Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text AS acquired`,
+    );
+  }
+
+  for (const chunk of chunked(collapsed, EXECUTION_CHUNK_SIZE)) {
+    const lookupKeys = [...new Set(chunk.flatMap((row) => [row.data.dedupeKey, row.legacyDedupeKey]))];
     const existingRows = await db.execution.findMany({
-      where: { dedupeKey: { in: chunk.map((row) => row.dedupeKey) } },
-      select: { dedupeKey: true, commission: true, fees: true },
+      where: { dedupeKey: { in: lookupKeys } },
+      select: {
+        id: true,
+        dedupeKey: true,
+        accountId: true,
+        instrumentId: true,
+        executedAt: true,
+        side: true,
+        quantity: true,
+        price: true,
+        currency: true,
+        commission: true,
+        fees: true,
+      },
     });
     const existingByDedupeKey = new Map(existingRows.map((row) => [row.dedupeKey, row]));
-    const rowsToCreate: ExecutionImportRow[] = [];
-    const rowsToUpdate: ExecutionImportRow[] = [];
 
     for (const row of chunk) {
-      const existing = existingByDedupeKey.get(row.dedupeKey);
-      if (!existing) {
-        rowsToCreate.push(row);
-      } else if (chargeFieldsChanged(existing, row)) {
-        rowsToUpdate.push(row);
-      } else {
-        unchangedDuplicates += 1;
+      let existing = existingByDedupeKey.get(row.data.dedupeKey);
+      const legacy = existingByDedupeKey.get(row.legacyDedupeKey);
+      if (!existing && legacy && row.legacyDedupeKey !== row.data.dedupeKey) {
+        existing = await db.execution.update({
+          where: { id: legacy.id },
+          data: { dedupeKey: row.data.dedupeKey },
+          select: {
+            id: true,
+            dedupeKey: true,
+            accountId: true,
+            instrumentId: true,
+            executedAt: true,
+            side: true,
+            quantity: true,
+            price: true,
+            currency: true,
+            commission: true,
+            fees: true,
+          },
+        });
+        existingByDedupeKey.delete(row.legacyDedupeKey);
+        existingByDedupeKey.set(row.data.dedupeKey, existing);
       }
-    }
 
-    if (rowsToCreate.length > 0) {
-      const result = await db.execution.createMany({
-        data: rowsToCreate,
-        skipDuplicates: true,
-      });
-      created += result.count;
-      unchangedDuplicates += rowsToCreate.length - result.count;
-    }
+      if (!existing) {
+        const createdRow = await db.execution.create({
+          data: row.data,
+          select: {
+            id: true,
+            dedupeKey: true,
+            accountId: true,
+            instrumentId: true,
+            executedAt: true,
+            side: true,
+            quantity: true,
+            price: true,
+            currency: true,
+            commission: true,
+            fees: true,
+          },
+        });
+        existingByDedupeKey.set(row.data.dedupeKey, createdRow);
+        created += 1;
+        continue;
+      }
 
-    for (const row of rowsToUpdate) {
-      await db.execution.update({
-        where: { dedupeKey: row.dedupeKey },
-        data: {
-          commission: row.commission ?? 0,
-          fees: row.fees ?? 0,
-        },
-      });
+      if (!executionIdentityFieldsMatch(existing, row.data)) {
+        throw new ImportRejectedError(
+          `A matching execution ID has different fill economics (${row.data.dedupeKey.slice(0, 12)}). No existing row was changed.`,
+        );
+      }
+
+      if (options.preserveExistingCharges || !chargeFieldsChanged(existing, row)) {
+        unchangedDuplicates += 1;
+        continue;
+      }
+
+      const chargeUpdate: Prisma.ExecutionUpdateInput = {};
+      if (row.commissionProvided) chargeUpdate.commission = row.data.commission;
+      if (row.feesProvided) chargeUpdate.fees = row.data.fees;
+      await db.execution.update({ where: { id: existing.id }, data: chargeUpdate });
       updatedCharges += 1;
     }
   }
 
   return { created, updatedCharges, unchangedDuplicates };
+}
+
+function legacyExecutionKey(row: ExecutionImport) {
+  return dedupeKey([
+    row.account,
+    row.executedAt.toISOString(),
+    row.symbol,
+    row.side,
+    String(row.quantity),
+    String(row.price),
+    row.legacyIdentityId ?? row.orderId ?? "",
+  ]);
+}
+
+function canonicalExecutionKey(row: ExecutionImport) {
+  if (!row.sourceExecutionId) return legacyExecutionKey(row);
+  return dedupeKey([
+    "ibkr-execution-v2",
+    row.account,
+    row.sourceExecutionIdKind ?? "execution",
+    row.sourceExecutionId,
+  ]);
+}
+
+async function resolveExecutionRows(db: ImportDb, rows: ExecutionImport[], importBatchId: string) {
+  const accountMap = await ensureAccounts(db, rows);
+  const instrumentMap = await ensureInstruments(
+    db,
+    rows.map((row) => ({
+      symbol: row.symbol,
+      exchange: row.exchange,
+      assetType: row.assetType as AssetType,
+      currency: row.currency,
+    })),
+  );
+  const resolved = rows.flatMap((row): ExecutionImportRow[] => {
+    const account = accountMap.get(row.account);
+    const instrument = instrumentMap.get(
+      instrumentKey({ symbol: row.symbol, exchange: row.exchange, assetType: row.assetType as AssetType }),
+    );
+    if (!account || !instrument) return [];
+    const data: Prisma.ExecutionCreateManyInput = {
+      dedupeKey: canonicalExecutionKey(row),
+      accountId: account.id,
+      instrumentId: instrument.id,
+      importBatchId,
+      executedAt: row.executedAt,
+      side: row.side as Side,
+      quantity: row.quantity,
+      price: row.price,
+      ...(row.commission != null ? { commission: row.commission } : {}),
+      ...(row.fees != null ? { fees: row.fees } : {}),
+      currency: row.currency,
+      orderId: row.orderId,
+      strategy: row.strategy,
+    };
+    return [{
+      data,
+      legacyDedupeKey: legacyExecutionKey(row),
+      commissionProvided: row.commission != null,
+      feesProvided: row.fees != null,
+      strongIdentity: Boolean(row.sourceExecutionId),
+    }];
+  });
+  return {
+    rows: resolved,
+    unresolved: rows.length - resolved.length,
+    accountId: resolved[0]?.data.accountId,
+  };
+}
+
+async function isExactAppliedExecutionReplay(
+  db: ImportDb,
+  rawSha256: string | undefined,
+  fileType: string,
+  batchId: string,
+) {
+  if (!rawSha256) return false;
+  const prior = await db.importBatch.findFirst({
+    where: {
+      id: { not: batchId },
+      rawSha256,
+      fileType,
+      status: { in: ["SUCCEEDED", "ROWS_APPLIED", "MATERIALIZED", "MATERIALIZATION_FAILED"] },
+    },
+    select: { id: true },
+  });
+  return Boolean(prior);
+}
+
+function finalizeImportAccounting(accounting: ImportAccounting, rowsSeen: number) {
+  assertImportAccountingConservesRows(accounting, rowsSeen);
+  return {
+    rowsImported: importRowsApplied(accounting),
+    rowsSkipped: importRowsNotApplied(accounting),
+  };
 }
 
 async function ensureAccounts(db: ImportDb, rows: Array<{ account: string; currency?: string }>) {
@@ -398,7 +618,7 @@ export async function importParsedFile(params: {
     await prisma.$transaction((tx) => persistImportRowErrors(tx, batch.id, params.parsed.rowErrors));
 
     const validRows = parsedValidRowCount(params.parsed);
-    if (validRows === 0) {
+    if (validRows === 0 && !isIntentionalExecutionExclusionOnly(params.parsed)) {
       throw new ImportRejectedError(noValidRowsMessage(params.parsed));
     }
     if (params.parsed.kind === "positions" && positionSnapshotMode === "full" && params.parsed.rowErrors.length > 0) {
@@ -413,6 +633,7 @@ export async function importParsedFile(params: {
       let rowsSkipped = params.parsed.rowErrors.length;
       let accountId: string | undefined;
       const notes: string[] = [];
+      const accounting = createImportAccounting(params.parsed);
 
       if (params.parsed.rowErrors.length > 0) {
         notes.push(
@@ -421,66 +642,26 @@ export async function importParsedFile(params: {
       }
 
       if (params.parsed.kind === "executions") {
-        const accountMap = await ensureAccounts(tx, params.parsed.executions);
-        const instrumentMap = await ensureInstruments(
+        const exactReplay = await isExactAppliedExecutionReplay(
           tx,
-          params.parsed.executions.map((row) => ({
-            symbol: row.symbol,
-            exchange: row.exchange,
-            assetType: row.assetType as AssetType,
-            currency: row.currency,
-          })),
+          rawArchive?.rawSha256,
+          params.fileType,
+          batch.id,
         );
-
-        const executionRows = params.parsed.executions
-          .map((row) => {
-            const account = accountMap.get(row.account);
-            if (!account) return null;
-            const instrument = instrumentMap.get(
-              instrumentKey({
-                symbol: row.symbol,
-                exchange: row.exchange,
-                assetType: row.assetType as AssetType,
-              }),
-            );
-            if (!instrument) return null;
-            return {
-              dedupeKey: dedupeKey([
-                row.account,
-                row.executedAt.toISOString(),
-                row.symbol,
-                row.side,
-                String(row.quantity),
-                String(row.price),
-                row.orderId ?? "",
-              ]),
-              accountId: account.id,
-              instrumentId: instrument.id,
-              importBatchId: batch.id,
-              executedAt: row.executedAt,
-              side: row.side as Side,
-              quantity: row.quantity,
-              price: row.price,
-              commission: row.commission,
-              fees: row.fees,
-              currency: row.currency,
-              orderId: row.orderId,
-              strategy: row.strategy,
-            };
-          })
-          .filter((row): row is NonNullable<typeof row> => row !== null);
-        rowsSkipped += params.parsed.executions.length - executionRows.length;
-
-        if (executionRows.length > 0) {
-          accountId = executionRows[0].accountId;
-        }
-
-        const executionResult = await applyExecutionRows(tx, executionRows);
-        rowsImported += executionResult.created + executionResult.updatedCharges;
-        rowsSkipped += executionResult.unchangedDuplicates;
-        if (executionResult.updatedCharges > 0) {
+        const resolved = await resolveExecutionRows(tx, params.parsed.executions, batch.id);
+        accountId = resolved.accountId;
+        accounting.primary.unresolvedReference += resolved.unresolved;
+        const executionResult = await applyExecutionRows(tx, resolved.rows, {
+          preserveExistingCharges: exactReplay,
+        });
+        accounting.primary.executionInserted += executionResult.created;
+        accounting.primary.executionChargeUpdated += executionResult.updatedCharges;
+        accounting.primary.unchangedDuplicate += executionResult.unchangedDuplicates;
+        if (exactReplay) {
+          notes.push("Exact archived-file retry detected; newer charges on existing executions were preserved.");
+        } else if (executionResult.updatedCharges > 0) {
           notes.push(
-            `Updated commission or fee values on ${executionResult.updatedCharges.toLocaleString()} existing execution(s).`,
+            `Updated supplied commission or fee values on ${executionResult.updatedCharges.toLocaleString()} existing execution(s).`,
           );
         }
       }
@@ -512,7 +693,7 @@ export async function importParsedFile(params: {
           })
           .filter((item): item is NonNullable<typeof item> => item !== null);
 
-        rowsSkipped += params.parsed.positions.length - resolvedRows.length;
+        accounting.primary.unresolvedReference += params.parsed.positions.length - resolvedRows.length;
         const seenInstrumentsByAccount = new Map<string, Set<string>>();
         const seenAccounts = new Set<string>();
 
@@ -582,7 +763,7 @@ export async function importParsedFile(params: {
             },
           });
 
-          rowsImported += 1;
+          accounting.primary.positionApplied += 1;
         }
 
         if (positionSnapshotMode === "full") {
@@ -615,7 +796,7 @@ export async function importParsedFile(params: {
           })
           .filter((item): item is NonNullable<typeof item> => item !== null);
 
-        rowsSkipped += params.parsed.snapshots.length - resolvedRows.length;
+        accounting.primary.unresolvedReference += params.parsed.snapshots.length - resolvedRows.length;
         for (const item of resolvedRows) {
           const { row, accountId: resolvedAccountId } = item;
           accountId = resolvedAccountId;
@@ -643,13 +824,13 @@ export async function importParsedFile(params: {
             },
           });
 
-          rowsImported += 1;
+          accounting.primary.dailySnapshotApplied += 1;
         }
       }
 
+      ({ rowsImported, rowsSkipped } = finalizeImportAccounting(accounting, rowsSeen));
       const durationMs = Math.max(1, Date.now() - startedAtMs);
       const rowsPerSecond = Number(((rowsImported / durationMs) * 1000).toFixed(2));
-      if (rowsSkipped) notes.push("Some rows were skipped due to parser validation, unresolved references, or duplicate keys.");
       notes.push(`Import duration: ${(durationMs / 1000).toFixed(2)}s (${rowsPerSecond.toLocaleString()} rows/s)`);
 
       await tx.importBatch.update({
@@ -660,7 +841,7 @@ export async function importParsedFile(params: {
           rowsImported,
           rowsSkipped,
           status: "ROWS_APPLIED",
-          notes: notes.join(" "),
+          notes: serializeImportAccounting(accounting, notes),
         },
       });
 
@@ -673,6 +854,7 @@ export async function importParsedFile(params: {
         durationMs,
         rowsPerSecond,
         positionSnapshotMode: params.parsed.kind === "positions" ? positionSnapshotMode : null,
+        accounting,
       };
     });
   } catch (error) {
@@ -687,7 +869,7 @@ export async function importParsedFile(params: {
         errorMessage: message.slice(0, 2000),
         notes:
           error instanceof ImportRejectedError
-            ? "Import failed because no valid rows could be applied."
+            ? "Import was rejected before any rows were committed."
             : `Import failed after ${(Math.max(1, Date.now() - startedAtMs) / 1000).toFixed(2)}s.`,
       },
     });
@@ -734,7 +916,7 @@ async function applyAtomicImportRows(
   await persistImportRowErrors(tx, batchId, item.parsed.rowErrors);
 
   const validRows = parsedValidRowCount(item.parsed);
-  if (validRows === 0) {
+  if (validRows === 0 && !isIntentionalExecutionExclusionOnly(item.parsed)) {
     throw new ImportRejectedError(noValidRowsMessage(item.parsed));
   }
   if (item.parsed.kind === "positions" && item.resolvedPositionSnapshotMode === "full" && item.parsed.rowErrors.length > 0) {
@@ -748,71 +930,34 @@ async function applyAtomicImportRows(
   let rowsSkipped = item.parsed.rowErrors.length;
   let accountId: string | undefined;
   const notes: string[] = [];
+  const accounting = createImportAccounting(item.parsed);
 
   if (item.parsed.rowErrors.length > 0) {
     notes.push(`Parser rejected ${item.parsed.rowErrors.length} row(s): ${summarizeRowErrors(item.parsed.rowErrors)}`);
   }
 
   if (item.parsed.kind === "executions") {
-    const accountMap = await ensureAccounts(tx, item.parsed.executions);
-    const instrumentMap = await ensureInstruments(
+    const exactReplay = await isExactAppliedExecutionReplay(
       tx,
-      item.parsed.executions.map((row) => ({
-        symbol: row.symbol,
-        exchange: row.exchange,
-        assetType: row.assetType as AssetType,
-        currency: row.currency,
-      })),
+      item.rawArchive?.rawSha256,
+      item.fileType,
+      batchId,
     );
-
-    const executionRows = item.parsed.executions
-      .map((row) => {
-        const account = accountMap.get(row.account);
-        if (!account) return null;
-        const instrument = instrumentMap.get(
-          instrumentKey({
-            symbol: row.symbol,
-            exchange: row.exchange,
-            assetType: row.assetType as AssetType,
-          }),
-        );
-        if (!instrument) return null;
-        return {
-          dedupeKey: dedupeKey([
-            row.account,
-            row.executedAt.toISOString(),
-            row.symbol,
-            row.side,
-            String(row.quantity),
-            String(row.price),
-            row.orderId ?? "",
-          ]),
-          accountId: account.id,
-          instrumentId: instrument.id,
-          importBatchId: batchId,
-          executedAt: row.executedAt,
-          side: row.side as Side,
-          quantity: row.quantity,
-          price: row.price,
-          commission: row.commission,
-          fees: row.fees,
-          currency: row.currency,
-          orderId: row.orderId,
-          strategy: row.strategy,
-        };
-      })
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-    rowsSkipped += item.parsed.executions.length - executionRows.length;
-
-    if (executionRows.length > 0) {
-      accountId = executionRows[0].accountId;
-    }
-
-    const executionResult = await applyExecutionRows(tx, executionRows);
-    rowsImported += executionResult.created + executionResult.updatedCharges;
-    rowsSkipped += executionResult.unchangedDuplicates;
-    if (executionResult.updatedCharges > 0) {
-      notes.push(`Updated commission or fee values on ${executionResult.updatedCharges.toLocaleString()} existing execution(s).`);
+    const resolved = await resolveExecutionRows(tx, item.parsed.executions, batchId);
+    accountId = resolved.accountId;
+    accounting.primary.unresolvedReference += resolved.unresolved;
+    const executionResult = await applyExecutionRows(tx, resolved.rows, {
+      preserveExistingCharges: exactReplay,
+    });
+    accounting.primary.executionInserted += executionResult.created;
+    accounting.primary.executionChargeUpdated += executionResult.updatedCharges;
+    accounting.primary.unchangedDuplicate += executionResult.unchangedDuplicates;
+    if (exactReplay) {
+      notes.push("Exact archived-file retry detected; newer charges on existing executions were preserved.");
+    } else if (executionResult.updatedCharges > 0) {
+      notes.push(
+        `Updated supplied commission or fee values on ${executionResult.updatedCharges.toLocaleString()} existing execution(s).`,
+      );
     }
   }
 
@@ -843,7 +988,7 @@ async function applyAtomicImportRows(
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
 
-    rowsSkipped += item.parsed.positions.length - resolvedRows.length;
+    accounting.primary.unresolvedReference += item.parsed.positions.length - resolvedRows.length;
     const seenInstrumentsByAccount = new Map<string, Set<string>>();
     const seenAccounts = new Set<string>();
 
@@ -913,7 +1058,7 @@ async function applyAtomicImportRows(
         },
       });
 
-      rowsImported += 1;
+      accounting.primary.positionApplied += 1;
     }
 
     if (item.resolvedPositionSnapshotMode === "full") {
@@ -946,7 +1091,7 @@ async function applyAtomicImportRows(
       })
       .filter((row): row is NonNullable<typeof row> => row !== null);
 
-    rowsSkipped += item.parsed.snapshots.length - resolvedRows.length;
+    accounting.primary.unresolvedReference += item.parsed.snapshots.length - resolvedRows.length;
     for (const resolved of resolvedRows) {
       const { row, accountId: resolvedAccountId } = resolved;
       accountId = resolvedAccountId;
@@ -974,13 +1119,13 @@ async function applyAtomicImportRows(
         },
       });
 
-      rowsImported += 1;
+      accounting.primary.dailySnapshotApplied += 1;
     }
   }
 
+  ({ rowsImported, rowsSkipped } = finalizeImportAccounting(accounting, rowsSeen));
   const durationMs = Math.max(1, Date.now() - item.startedAtMs);
   const rowsPerSecond = Number(((rowsImported / durationMs) * 1000).toFixed(2));
-  if (rowsSkipped) notes.push("Some rows were skipped due to parser validation, unresolved references, or duplicate keys.");
   notes.push(`Import duration: ${(durationMs / 1000).toFixed(2)}s (${rowsPerSecond.toLocaleString()} rows/s)`);
 
   await tx.importBatch.update({
@@ -991,7 +1136,7 @@ async function applyAtomicImportRows(
       rowsImported,
       rowsSkipped,
       status: "ROWS_APPLIED",
-      notes: notes.join(" "),
+      notes: serializeImportAccounting(accounting, notes),
     },
   });
 
@@ -1004,6 +1149,7 @@ async function applyAtomicImportRows(
     durationMs,
     rowsPerSecond,
     positionSnapshotMode: item.parsed.kind === "positions" ? item.resolvedPositionSnapshotMode : null,
+    accounting,
   };
 }
 
@@ -1181,28 +1327,53 @@ export async function markImportBatchesMaterialized(batchIds: string[], note?: s
   const uniqueIds = uniqueBatchIds(batchIds);
   if (uniqueIds.length === 0) return;
 
-  await prisma.importBatch.updateMany({
-    where: { id: { in: uniqueIds } },
-    data: {
-      status: "MATERIALIZED",
-      errorMessage: null,
-      notes: note ? note.slice(0, 2000) : undefined,
-    },
-  });
+  const batches = note
+    ? await prisma.importBatch.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, notes: true } })
+    : [];
+  if (!note) {
+    await prisma.importBatch.updateMany({
+      where: { id: { in: uniqueIds } },
+      data: { status: "MATERIALIZED", errorMessage: null },
+    });
+    return;
+  }
+  await prisma.$transaction(
+    batches.map((batch) =>
+      prisma.importBatch.update({
+        where: { id: batch.id },
+        data: {
+          status: "MATERIALIZED",
+          errorMessage: null,
+          notes: appendVisibleImportNote(batch.notes, note).slice(0, 2000),
+        },
+      }),
+    ),
+  );
 }
 
 export async function markImportBatchesMaterializationFailed(batchIds: string[], message: string) {
   const uniqueIds = uniqueBatchIds(batchIds);
   if (uniqueIds.length === 0) return;
 
-  await prisma.importBatch.updateMany({
+  const batches = await prisma.importBatch.findMany({
     where: { id: { in: uniqueIds } },
-    data: {
-      status: "MATERIALIZATION_FAILED",
-      errorMessage: message.slice(0, 2000),
-      notes: `Import rows were written, but materialization did not complete: ${message}`.slice(0, 2000),
-    },
+    select: { id: true, notes: true },
   });
+  await prisma.$transaction(
+    batches.map((batch) =>
+      prisma.importBatch.update({
+        where: { id: batch.id },
+        data: {
+          status: "MATERIALIZATION_FAILED",
+          errorMessage: message.slice(0, 2000),
+          notes: appendVisibleImportNote(
+            batch.notes,
+            `Import rows were written, but materialization did not complete: ${message}`,
+          ).slice(0, 2000),
+        },
+      }),
+    ),
+  );
 }
 
 export async function markImportBatchesFailed(batchIds: string[], message: string) {

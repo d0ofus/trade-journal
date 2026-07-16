@@ -6,6 +6,7 @@ import {
   IMPORT_FAILURE_ROLLED_BACK_MARKER,
 } from "../../src/lib/import/import-history";
 import { rawImportArchiveIdentity } from "../../src/lib/import/raw-archive";
+import { serializeImportAccounting, type ImportAccounting } from "../../src/lib/import/import-accounting";
 import { prisma } from "../../src/lib/prisma";
 
 function readDotEnv() {
@@ -36,6 +37,24 @@ const failedImportBatchId = "e2e-phase4-direct-failure";
 const rolledBackImportBatchId = "e2e-phase4-sibling-rollback";
 const failedImportRawContent = "phase4 deterministic failed import cohort\n";
 const failedImportArtifact = rawImportArchiveIdentity(failedImportRawContent);
+const reconciliationBatchId = "e2e-phase5-reconciliation";
+const reconciliationRawContent = "phase5 deterministic mixed reconciliation\n";
+const reconciliationArtifact = rawImportArchiveIdentity(reconciliationRawContent);
+const reconciliationAccounting: ImportAccounting = {
+  version: 1,
+  kind: "executions",
+  primary: {
+    parserRejected: 1,
+    idealFxExcluded: 1,
+    unresolvedReference: 0,
+    executionInserted: 1,
+    executionChargeUpdated: 1,
+    unchangedDuplicate: 1,
+    positionApplied: 0,
+    dailySnapshotApplied: 0,
+  },
+  flexCommissions: { seen: 3, matched: 2, excluded: 0, unmatched: 1, ambiguous: 0 },
+};
 
 const ROUTE_READY_HEADINGS: Record<string, { name: string; exact?: boolean }> = {
   "/dashboard": { name: "Trading analytics, framed like a premium desk platform." },
@@ -134,6 +153,48 @@ async function cleanupFailedImportHistoryCohort() {
     where: { id: { in: [failedImportBatchId, rolledBackImportBatchId] } },
   });
   await prisma.importArtifact.deleteMany({ where: { storageKey: failedImportArtifact.rawStorageKey } });
+}
+
+async function cleanupReconciliationHistory() {
+  await prisma.importBatch.deleteMany({ where: { id: reconciliationBatchId } });
+  await prisma.importArtifact.deleteMany({ where: { storageKey: reconciliationArtifact.rawStorageKey } });
+}
+
+async function seedReconciliationHistory() {
+  await cleanupReconciliationHistory();
+  await prisma.importArtifact.create({
+    data: {
+      storageKey: reconciliationArtifact.rawStorageKey,
+      rawSha256: reconciliationArtifact.rawSha256,
+      rawBytes: reconciliationArtifact.rawBytes,
+      content: reconciliationRawContent,
+    },
+  });
+  await prisma.importBatch.create({
+    data: {
+      id: reconciliationBatchId,
+      filename: "phase5-mixed-reconciliation-review.csv",
+      fileType: "flex-trades",
+      status: "MATERIALIZED",
+      rowsSeen: 5,
+      rowsImported: 2,
+      rowsSkipped: 3,
+      rawSha256: reconciliationArtifact.rawSha256,
+      rawBytes: reconciliationArtifact.rawBytes,
+      rawStorageKey: reconciliationArtifact.rawStorageKey,
+      parserVersion: "phase5-reconciliation-v1",
+      notes: serializeImportAccounting(reconciliationAccounting, "Deterministic Phase 5 reconciliation review."),
+      rowErrors: {
+        create: {
+          rowNumber: 5,
+          severity: "ERROR",
+          code: "EXECUTION_ROW_INVALID",
+          message: "Quantity is invalid in the deterministic review fixture.",
+          rawJson: JSON.stringify({ Quantity: "bad" }),
+        },
+      },
+    },
+  });
 }
 
 async function seedFailedImportHistoryCohort() {
@@ -636,7 +697,7 @@ test("import route exposes upload controls and durable import history", async ({
   await expect(page.getByRole("button", { name: "Validate & Import" })).toBeDisabled();
   await expect(page.getByText("Recent Import History")).toBeVisible();
   await expect(page.getByText("demo-workstation-seed.json")).toBeVisible();
-  await expect(page.getByText("Materialized").first()).toBeVisible();
+  await expect(page.getByText("Completed").first()).toBeVisible();
   await expect(page.getByLabel("Timezone")).toHaveValue("UTC");
   await page.getByLabel("Timezone").selectOption("Australia/Melbourne");
   await expect(page.getByText("Showing Melbourne")).toBeVisible();
@@ -691,6 +752,47 @@ test("import and settings show the same failed cohort with truthful rollback rol
     expect(browserErrors).toEqual([]);
   } finally {
     await cleanupFailedImportHistoryCohort();
+  }
+});
+
+test("import and settings show the same successful reconciliation on desktop and mobile", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await signIn(page);
+  let importMutationRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "GET" && /\/api\/(import|flex)/.test(request.url())) importMutationRequests += 1;
+  });
+
+  try {
+    await seedReconciliationHistory();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await gotoReady(page, "/import");
+    const importBatch = page.getByTestId(`import-history-batch-${reconciliationBatchId}`);
+    await expect(page.getByTestId(`import-history-status-${reconciliationBatchId}`)).toHaveText("Completed");
+    await expect(importBatch).toContainText("seen 5, applied 2, not applied 3");
+    await expect(importBatch).toContainText("1 executions inserted");
+    await expect(importBatch).toContainText("1 charge corrections");
+    await expect(importBatch).toContainText("1 unchanged duplicates");
+    await expect(importBatch).toContainText("1 IDEALFX excluded");
+    await expect(importBatch).toContainText("1 parser rejected");
+    await expect(importBatch).toContainText("1 commission details unmatched");
+    await expect(importBatch).not.toContainText("[import-accounting:v1]");
+    const importText = (await importBatch.innerText()).replace(/\s+/g, " ").trim();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoReady(page, "/settings");
+    const settingsBatch = page.getByTestId(`import-history-batch-${reconciliationBatchId}`);
+    await expect(settingsBatch).toBeVisible();
+    expect((await settingsBatch.innerText()).replace(/\s+/g, " ").trim()).toBe(importText);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    expect(await settingsBatch.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expectNoFrameworkOverlay(page);
+
+    expect(importMutationRequests).toBe(0);
+    expect(browserErrors).toEqual([]);
+  } finally {
+    await cleanupReconciliationHistory();
   }
 });
 

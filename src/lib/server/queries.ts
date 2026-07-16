@@ -942,7 +942,12 @@ export async function getSettingsData(options: { includeBackupReadiness?: boolea
     prisma.marketCandle.count(),
     prisma.importBatch.count({ where: { status: "FAILED" } }),
     prisma.importBatch.count({ where: { status: "MATERIALIZATION_FAILED" } }),
-    prisma.importBatch.count({ where: { rowsSkipped: { gt: 0 } } }),
+    prisma.importBatch.count({
+      where: {
+        rowsSkipped: { gt: 0 },
+        status: { in: ["SUCCEEDED", "ROWS_APPLIED", "MATERIALIZED", "MATERIALIZATION_FAILED"] },
+      },
+    }),
     prisma.importRowError.count(),
     prisma.journalChart.findMany({
       where: {

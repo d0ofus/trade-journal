@@ -42,6 +42,16 @@ export interface ParsedImport {
   snapshots: SnapshotImport[];
   rawRowCount: number;
   rowErrors: ParsedRowError[];
+  sourceDispositions?: {
+    idealFxExcluded?: number;
+    flexCommissions?: {
+      seen: number;
+      matched: number;
+      excluded: number;
+      unmatched: number;
+      ambiguous: number;
+    };
+  };
 }
 
 const executionAliases: Record<string, string[]> = {
@@ -58,7 +68,7 @@ const executionAliases: Record<string, string[]> = {
   // Commission details section provides TotalCommission, merged separately.
   fees: ["fees", "fee", "taxes"],
   currency: ["currency", "curr"],
-  orderId: ["orderid", "order id", "tradeid", "execid", "iborderid", "brokerageorderid"],
+  orderId: ["iborderid", "brokerageorderid", "orderid", "order id", "orderreference"],
   strategy: ["strategy", "setup", "system"],
 };
 
@@ -209,7 +219,10 @@ function detectMapping(headers: string[], aliases: Record<string, string[]>): He
   const normalizedHeaders = headers.map((header) => ({ original: header, normalized: normalizeHeader(header) }));
 
   for (const [field, candidates] of Object.entries(aliases)) {
-    const found = normalizedHeaders.find((header) => candidates.includes(header.normalized));
+    const found = candidates
+      .map(normalizeHeader)
+      .map((candidate) => normalizedHeaders.find((header) => header.normalized === candidate))
+      .find(Boolean);
     map[field] = found?.original ?? null;
   }
 
@@ -236,10 +249,17 @@ function readField(row: PreviewRow, mapping: HeaderMap, field: string): string |
 }
 
 function readFieldByHeaderAliases(row: PreviewRow, aliases: string[]): string | undefined {
+  const values = new Map(Object.entries(row).map(([key, value]) => [normalizeHeader(key), value]));
+  for (const alias of aliases.map(normalizeHeader)) {
+    if (values.has(alias)) return values.get(alias);
+  }
+  return undefined;
+}
+
+function readLegacyExecutionIdentity(row: PreviewRow) {
+  const aliases = ["orderid", "tradeid", "execid", "iborderid", "brokerageorderid"];
   for (const [key, value] of Object.entries(row)) {
-    if (aliases.includes(normalizeHeader(key))) {
-      return value;
-    }
+    if (aliases.includes(normalizeHeader(key)) && value.trim()) return value.trim();
   }
   return undefined;
 }
@@ -256,9 +276,11 @@ function validationMessage(error: z.ZodError) {
 function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
   parsed: ExecutionImport[];
   rowErrors: ParsedRowError[];
+  idealFxExcluded: number;
 } {
   const parsed: ExecutionImport[] = [];
   const rowErrors: ParsedRowError[] = [];
+  let idealFxExcluded = 0;
 
   for (const [index, row] of rows.entries()) {
     const symbol = (readField(row, mapping, "symbol") ?? "").trim();
@@ -270,6 +292,7 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
       (exchange ?? "").toUpperCase() === "IDEALFX" ||
       ((rawAssetClass === "CASH" || rawAssetClass === "FOREX") && isExcludedFxPairSymbol(symbol));
     if (isForexLike) {
+      idealFxExcluded += 1;
       continue;
     }
 
@@ -278,6 +301,24 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
     const inferredSide =
       parsedSide ?? (typeof rawQty === "number" ? (rawQty < 0 ? "SELL" : rawQty > 0 ? "BUY" : undefined) : undefined);
     const normalizedQty = typeof rawQty === "number" ? Math.abs(rawQty) : undefined;
+
+    const ibExecId = (readFieldByHeaderAliases(row, ["ibexecid", "execid"]) ?? "").trim() || undefined;
+    const tradeId = (readFieldByHeaderAliases(row, ["tradeid"]) ?? "").trim() || undefined;
+    const transactionId = (readFieldByHeaderAliases(row, ["transactionid", "transaction id"]) ?? "").trim() || undefined;
+    const externalExecutionId =
+      (readFieldByHeaderAliases(row, ["extexecid", "externalexecutionid"]) ?? "").trim() || undefined;
+    const sourceExecutionId = ibExecId ?? tradeId ?? transactionId ?? externalExecutionId;
+    const sourceExecutionIdKind = ibExecId
+      ? "ibexecid"
+      : tradeId
+        ? "tradeid"
+        : transactionId
+          ? "transactionid"
+          : externalExecutionId
+            ? "extexecid"
+            : undefined;
+    const rawCommission = parseNumber(readField(row, mapping, "commission"));
+    const rawFees = parseNumber(readField(row, mapping, "fees"));
 
     const candidate = {
       account: readField(row, mapping, "account") ?? "DEFAULT",
@@ -288,10 +329,16 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
       side: inferredSide,
       quantity: normalizedQty,
       price: parseNumber(readField(row, mapping, "price")),
-      commission: parseNumber(readField(row, mapping, "commission")) ?? 0,
-      fees: parseNumber(readField(row, mapping, "fees")) ?? 0,
+      commission: rawCommission == null ? undefined : Math.abs(rawCommission),
+      fees: rawFees == null ? undefined : Math.abs(rawFees),
       currency: (readField(row, mapping, "currency") ?? "USD").trim() || "USD",
       orderId: (readField(row, mapping, "orderId") ?? "").trim() || undefined,
+      sourceExecutionId,
+      sourceExecutionIdKind,
+      ibExecId,
+      tradeId,
+      transactionId,
+      legacyIdentityId: readLegacyExecutionIdentity(row),
       strategy: (readField(row, mapping, "strategy") ?? "").trim() || undefined,
     };
 
@@ -309,7 +356,7 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
     }
   }
 
-  return { parsed, rowErrors };
+  return { parsed, rowErrors, idealFxExcluded };
 }
 
 function parsePositionRows(rows: PreviewRow[], mapping: HeaderMap): {
@@ -466,6 +513,7 @@ export function parseCsvWithMapping(
     const result = parseExecutionRows(rows, mapping);
     parsed.executions = result.parsed;
     parsed.rowErrors = result.rowErrors;
+    parsed.sourceDispositions = { idealFxExcluded: result.idealFxExcluded };
   }
 
   if (kind === "positions") {

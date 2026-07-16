@@ -67,6 +67,20 @@ describe("import preflight", () => {
     ).toEqual([]);
   });
 
+  it("allows an execution section made entirely of intentional IDEALFX exclusions", () => {
+    expect(
+      importPreflightFailures([
+        {
+          filename: "fx.csv",
+          parsed: parsedImport({
+            rawRowCount: 2,
+            sourceDispositions: { idealFxExcluded: 2 },
+          }),
+        },
+      ]),
+    ).toEqual([]);
+  });
+
   it("rejects full position snapshots with parser row errors before durable writes start", () => {
     expect(
       importPreflightFailures([

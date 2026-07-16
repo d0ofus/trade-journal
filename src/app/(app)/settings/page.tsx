@@ -161,7 +161,7 @@ export default async function SettingsPage() {
             <HealthItem label="Candle Rows" value={health.marketCandleCount.toLocaleString()} testId="storage-health-candle-rows" />
             <HealthItem label="Failed / Rolled Back Imports" value={health.failedImportBatchCount.toLocaleString()} />
             <HealthItem label="Materialization Failures" value={health.materializationFailedImportBatchCount.toLocaleString()} />
-            <HealthItem label="Skipped Import Batches" value={health.skippedImportBatchCount.toLocaleString()} />
+            <HealthItem label="Imports With Unapplied Rows" value={health.skippedImportBatchCount.toLocaleString()} />
             <HealthItem label="Parser Row Errors" value={health.importRowErrorCount.toLocaleString()} />
             <HealthItem label="Inline Screenshots" value={health.inlineScreenshotCount.toLocaleString()} />
             <HealthItem label="Invalid Inline Images" value={health.invalidInlineScreenshotCount.toLocaleString()} />

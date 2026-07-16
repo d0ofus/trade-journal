@@ -15,6 +15,7 @@ import {
   markImportBatchesMaterialized,
   recordFailedImportCohort,
   type FailedImportCohortItem,
+  type ImportParsedFileResult,
   type PositionSnapshotImportMode,
 } from "@/lib/server/import-service";
 
@@ -191,8 +192,8 @@ export async function POST(req: NextRequest) {
               side: row.side,
               quantity: String(row.quantity),
               price: String(row.price),
-              commission: String(row.commission),
-              fees: String(row.fees),
+              commission: row.commission == null ? "" : String(row.commission),
+              fees: row.fees == null ? "" : String(row.fees),
               currency: row.currency,
               orderId: row.orderId ?? "",
               strategy: row.strategy ?? "",
@@ -346,17 +347,7 @@ export async function POST(req: NextRequest) {
       const modeForPositionFile = (filename: string, sectionFilename = filename): PositionSnapshotImportMode =>
         positionSnapshotModeByFile[sectionFilename] ?? positionSnapshotModeByFile[filename] ?? "partial";
 
-      const results = [] as Array<{
-        filename: string;
-        batchId: string;
-        rowsSeen: number;
-        rowsImported: number;
-        rowsSkipped: number;
-        rowErrors: number;
-        durationMs: number;
-        rowsPerSecond: number;
-        positionSnapshotMode: PositionSnapshotImportMode | null;
-      }>;
+      const results = [] as Array<{ filename: string } & ImportParsedFileResult>;
       let shouldRefreshClosedTrades = false;
       const pendingImports = [] as Array<{
         filename: string;

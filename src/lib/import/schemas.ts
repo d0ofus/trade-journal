@@ -12,10 +12,16 @@ export const executionImportSchema = z.object({
   side: sideSchema,
   quantity: z.number().positive(),
   price: z.number().nonnegative(),
-  commission: z.number().default(0),
-  fees: z.number().default(0),
+  commission: z.number().nonnegative().optional(),
+  fees: z.number().nonnegative().optional(),
   currency: z.string().default("USD"),
   orderId: z.string().optional(),
+  sourceExecutionId: z.string().optional(),
+  sourceExecutionIdKind: z.string().optional(),
+  ibExecId: z.string().optional(),
+  tradeId: z.string().optional(),
+  transactionId: z.string().optional(),
+  legacyIdentityId: z.string().optional(),
   strategy: z.string().optional(),
 });
 

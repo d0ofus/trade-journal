@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   getExecutionAnalyticsSourceSnapshot,
@@ -133,12 +134,22 @@ export async function refreshMaterializedExecutionAnalytics(options: { accountId
     ? analyticsRows.filter((row) => scopedExecutionIds.has(row.executionId))
     : analyticsRows;
 
-  await prisma.$transaction(async (tx) => {
+  const persistedRows = await prisma.$transaction(async (tx) => {
+    const lockedExecutionIds = new Set<string>();
+    for (const idChunk of chunked(analyticsRowsToPersist.map((row) => row.executionId), 500)) {
+      if (idChunk.length === 0) continue;
+      const locked = await tx.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`SELECT "id" FROM "Execution" WHERE "id" IN (${Prisma.join(idChunk)}) FOR KEY SHARE`,
+      );
+      for (const execution of locked) lockedExecutionIds.add(execution.id);
+    }
+
     await tx.executionAnalytics.deleteMany({
       where: scoped ? { executionId: { in: [...scopedExecutionIds] } } : undefined,
     });
 
-    for (const chunk of chunked(analyticsRowsToPersist, 500)) {
+    const rowsStillPresent = analyticsRowsToPersist.filter((row) => lockedExecutionIds.has(row.executionId));
+    for (const chunk of chunked(rowsStillPresent, 500)) {
       await tx.executionAnalytics.createMany({
         data: chunk.map((row) => ({
           executionId: row.executionId,
@@ -155,9 +166,10 @@ export async function refreshMaterializedExecutionAnalytics(options: { accountId
     if (sourceSnapshot) {
       await writeMaterializationWatermark(tx, MATERIALIZATION_WATERMARK_KEYS.executionAnalytics, sourceSnapshot);
     }
+    return rowsStillPresent.length;
   });
 
-  return { rows: analyticsRowsToPersist.length };
+  return { rows: persistedRows };
 }
 
 export async function ensureMaterializedExecutionAnalytics() {

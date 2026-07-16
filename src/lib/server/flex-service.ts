@@ -10,6 +10,7 @@ import { refreshMaterializedClosedTrades } from "@/lib/server/closed-trades-mate
 import { refreshMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
 import { parseFlexStatementCsv } from "@/lib/import/ibkr-flex";
 import type { ParsedImport } from "@/lib/import/ibkr-parser";
+import { createImportAccounting } from "@/lib/import/import-accounting";
 
 const DEFAULT_BASE = "https://gdcdyn.interactivebrokers.com/Universal/servlet";
 
@@ -64,7 +65,15 @@ function hasRowsOrErrors(parsed: ParsedImport) {
   return parsed.rawRowCount > 0 || parsed.rowErrors.length > 0;
 }
 
-function emptyImportResult() {
+function emptyImportResult(kind: "executions" | "positions") {
+  const parsed: ParsedImport = {
+    kind,
+    executions: [],
+    positions: [],
+    snapshots: [],
+    rawRowCount: 0,
+    rowErrors: [],
+  };
   return {
     batchId: "",
     rowsSeen: 0,
@@ -74,6 +83,7 @@ function emptyImportResult() {
     durationMs: 0,
     rowsPerSecond: 0,
     positionSnapshotMode: null,
+    accounting: createImportAccounting(parsed),
   };
 }
 
@@ -141,8 +151,8 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
   }
   const batchIds: string[] = [];
 
-  let tradesResult: ImportParsedFileResult = emptyImportResult();
-  let positionsResult: ImportParsedFileResult = emptyImportResult();
+  let tradesResult: ImportParsedFileResult = emptyImportResult("executions");
+  let positionsResult: ImportParsedFileResult = emptyImportResult("positions");
   const importTimestamp = new Date().toISOString();
   const pendingImports: Array<{ kind: "trades" | "positions"; params: ImportParsedFileInput }> = [];
 

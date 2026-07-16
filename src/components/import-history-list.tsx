@@ -146,7 +146,8 @@ export function ImportHistoryList({ batches }: { batches: ImportBatchItem[] }) {
               </div>
             </div>
             <p className="text-slate-600">
-              {batch.fileType} | seen {batch.rowsSeen}, imported {batch.rowsImported}, skipped {batch.rowsSkipped}
+              <span className="[overflow-wrap:anywhere]">{batch.fileType}</span> | seen {batch.rowsSeen}, applied{" "}
+              {batch.rowsImported}, not applied {batch.rowsSkipped}
             </p>
             {presentation.kind === "failed" && (batch.rowsSeen > 0 || (batch.rowErrorCount ?? 0) > 0) ? (
               <p className="rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 [overflow-wrap:anywhere]">
@@ -155,9 +156,21 @@ export function ImportHistoryList({ batches }: { batches: ImportBatchItem[] }) {
               </p>
             ) : !isFailedOutcome && (batch.rowsSkipped > 0 || (batch.rowErrorCount ?? 0) > 0) ? (
               <p className="rounded-[14px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                {batch.rowErrorCount?.toLocaleString() ?? "0"} parser row error(s) recorded. Skipped rows can also
-                include duplicate-key skips.
+                {batch.rowErrorCount?.toLocaleString() ?? "0"} parser row error(s) recorded. The disposition counts
+                below explain every row that was not applied.
               </p>
+            ) : null}
+            {presentation.outcomes.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5" data-testid={`import-history-outcomes-${batch.id}`}>
+                {presentation.outcomes.map((outcome) => (
+                  <span
+                    key={outcome.key}
+                    className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
+                  >
+                    {outcome.count.toLocaleString()} {outcome.label}
+                  </span>
+                ))}
+              </div>
             ) : null}
             {batch.rowErrors && batch.rowErrors.length > 0 ? (
               <div className="min-w-0 space-y-1 rounded-[14px] border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -184,7 +197,9 @@ export function ImportHistoryList({ batches }: { batches: ImportBatchItem[] }) {
                 </p>
               </div>
             ) : null}
-            {batch.parserVersion ? <p className="text-xs text-slate-500">Parser: {batch.parserVersion}</p> : null}
+            {batch.parserVersion ? (
+              <p className="text-xs text-slate-500 [overflow-wrap:anywhere]">Parser: {batch.parserVersion}</p>
+            ) : null}
             {presentation.visibleNotes ? (
               <p className="text-xs text-slate-600 [overflow-wrap:anywhere]">{presentation.visibleNotes}</p>
             ) : null}

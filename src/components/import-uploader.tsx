@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { importAccountingOutcomes } from "@/lib/import/import-history";
+import type { ImportAccounting } from "@/lib/import/import-accounting";
 
 type Preview = {
   filename: string;
@@ -37,6 +39,7 @@ type ImportResult = {
   durationMs: number;
   rowsPerSecond: number;
   positionSnapshotMode?: PositionSnapshotMode | null;
+  accounting?: ImportAccounting;
 };
 
 type PositionSnapshotMode = "partial" | "full";
@@ -195,7 +198,7 @@ export function ImportUploader() {
         | undefined;
       if (summary) {
         setMessage(
-          `Import complete. Seen ${summary.totalRowsSeen}, imported ${summary.totalRowsImported}, skipped ${summary.totalRowsSkipped}. Duration ${formatDurationMs(summary.totalDurationMs)} at ${formatRate(summary.totalRowsPerSecond)}.`,
+          `Import complete. Seen ${summary.totalRowsSeen}, applied ${summary.totalRowsImported}, not applied ${summary.totalRowsSkipped}. Duration ${formatDurationMs(summary.totalDurationMs)} at ${formatRate(summary.totalRowsPerSecond)}.`,
         );
       } else {
         setMessage("Import complete.");
@@ -441,8 +444,9 @@ export function ImportUploader() {
                   <tr>
                     <th className="px-2 py-2 text-left font-semibold text-slate-700">File</th>
                     <th className="px-2 py-2 text-left font-semibold text-slate-700">Seen</th>
-                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Imported</th>
-                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Skipped</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Applied</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Not Applied</th>
+                    <th className="px-2 py-2 text-left font-semibold text-slate-700">Disposition</th>
                     <th className="px-2 py-2 text-left font-semibold text-slate-700">Row Errors</th>
                     <th className="px-2 py-2 text-left font-semibold text-slate-700">Mode</th>
                     <th className="px-2 py-2 text-left font-semibold text-slate-700">Duration</th>
@@ -458,6 +462,11 @@ export function ImportUploader() {
                       <td className={result.rowsSkipped > 0 ? "px-2 py-1.5 font-medium text-amber-700" : "px-2 py-1.5 text-slate-700"}>
                         {result.rowsSkipped.toLocaleString()}
                       </td>
+                      <td className="min-w-48 px-2 py-1.5 text-slate-700 [overflow-wrap:anywhere]">
+                        {importAccountingOutcomes(result.accounting ?? null)
+                          .map((outcome) => `${outcome.count} ${outcome.label}`)
+                          .join(", ") || "-"}
+                      </td>
                       <td className={result.rowErrors > 0 ? "px-2 py-1.5 font-medium text-red-700" : "px-2 py-1.5 text-slate-700"}>
                         {result.rowErrors.toLocaleString()}
                       </td>
@@ -471,7 +480,7 @@ export function ImportUploader() {
             </div>
             {importResults.some((result) => result.rowsSkipped > 0 || result.rowErrors > 0) ? (
               <p className="mt-3 rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Skipped rows can include parser validation failures, unresolved references, and duplicate-key skips. Row errors are stored with the import batch.
+                Not-applied rows are itemized by parser rejection, intentional exclusion, unresolved reference, or unchanged duplicate. Row errors remain stored with the import batch.
               </p>
             ) : null}
           </CardContent>

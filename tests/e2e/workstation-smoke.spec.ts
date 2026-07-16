@@ -841,7 +841,7 @@ test("demo workstation flow loads, saves, filters, and protects mutation APIs", 
     await route.continue();
   });
   await page.getByRole("button", { name: "Validate & Import" }).click();
-  await expect(page.getByText("Import complete. Seen 1, imported 1, skipped 0.")).toBeVisible();
+  await expect(page.getByText("Import complete. Seen 1, applied 1, not applied 0.")).toBeVisible();
   await expect(page.getByText("Full snapshot").last()).toBeVisible();
   expect(importCommitPayload).toContain("positionSnapshotModeByFile");
   expect(importCommitPayload).toContain('"positions-mode.csv :: Positions":"full"');
