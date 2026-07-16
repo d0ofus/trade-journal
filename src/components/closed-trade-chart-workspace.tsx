@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { alignExecutionToBarTime, inferBarIntervalSeconds, inferExecutionOffsetSeconds } from "@/lib/charts/execution-marker-alignment";
 import { prepareChartSeriesData } from "@/lib/charts/chart-series-data";
+import { isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
 import {
   formatExecutionCandleDiagnosticWarning,
   getExecutionCandleDiagnostics,
@@ -203,7 +204,8 @@ function loadCandleResponse(url: string) {
   const request = fetch(url).then(async (res) => {
     const payload = (await res.json().catch(() => ({}))) as CandleResponse;
     if (!res.ok) throw new Error(payload.error || "Unable to load candles.");
-    rememberCandleResponse(url, payload);
+    const requiresComparison = new URLSearchParams(url.split("?", 2)[1] ?? "").has("compare");
+    if (isReusableCandleResponse(payload, { requiresComparison })) rememberCandleResponse(url, payload);
     return payload;
   });
   candleRequestInflight.set(url, request);
@@ -608,6 +610,10 @@ function annotationSignature(annotations: ChartAnnotation[]) {
   return JSON.stringify(annotations.map(serializeForApi));
 }
 
+function annotationsFromSignature(signature: string): ChartAnnotation[] {
+  return JSON.parse(signature) as ChartAnnotation[];
+}
+
 function executionOverlayIdentitySignature(overlays: ExecutionOverlay[]) {
   return overlays
     .map((item) => [
@@ -687,6 +693,7 @@ export function ClosedTradeChartWorkspace({
   const annotationSaveStateRef = useRef<SaveState>("clean");
   const layoutVersionRef = useRef<number | null>(null);
   const annotationVersionRef = useRef<number | null>(null);
+  const onSaveActivityChangeRef = useRef(onSaveActivityChange);
   const workspaceEpochRef = useRef(0);
   const readOnlyRef = useRef(false);
   const layoutSaveTimerRef = useRef<number | null>(null);
@@ -695,6 +702,7 @@ export function ClosedTradeChartWorkspace({
   const annotationSaveInFlightRef = useRef(false);
   const pendingLayoutSaveRef = useRef<LayoutSaveJob | null>(null);
   const pendingAnnotationSaveRef = useRef<AnnotationSaveJob | null>(null);
+  const visibleRangeFlushersRef = useRef(new Map<string, () => boolean>());
   const skipNextLayoutSaveRef = useRef(false);
   const skipNextAnnotationSaveRef = useRef(false);
   const lastSavedLayoutSignatureRef = useRef("");
@@ -727,11 +735,11 @@ export function ClosedTradeChartWorkspace({
   }, []);
   const handlePendingVisibleRangeChange = useCallback((panelId: string, pending: boolean) => {
     if (pending) {
-      onSaveActivityChange?.({
+      onSaveActivityChangeRef.current?.({
         blocking: true,
         message: "Chart range save pending.",
-        layoutSaveState,
-        annotationSaveState,
+        layoutSaveState: layoutSaveStateRef.current,
+        annotationSaveState: annotationSaveStateRef.current,
       });
     }
     setPendingVisibleRangePanelIds((current) => {
@@ -739,7 +747,7 @@ export function ClosedTradeChartWorkspace({
       if (pending) return hasPanel ? current : [...current, panelId];
       return hasPanel ? current.filter((id) => id !== panelId) : current;
     });
-  }, [annotationSaveState, layoutSaveState, onSaveActivityChange]);
+  }, []);
   const handleExecutionAnchorsChange = useCallback((panelId: string, snapshot: ExecutionAnchorSnapshot | null) => {
     setExecutionAnchorSnapshots((current) => {
       if (!snapshot) {
@@ -753,6 +761,16 @@ export function ClosedTradeChartWorkspace({
       if (current[panelId]?.signature === signature) return current;
       return { ...current, [panelId]: { ...snapshot, signature } };
     });
+  }, []);
+  const handleRegisterVisibleRangeFlusher = useCallback((panelId: string, flusher: (() => boolean) | null) => {
+    if (flusher) {
+      visibleRangeFlushersRef.current.set(panelId, flusher);
+    } else {
+      visibleRangeFlushersRef.current.delete(panelId);
+    }
+  }, []);
+  const flushPendingVisibleRanges = useCallback(() => {
+    for (const flusher of visibleRangeFlushersRef.current.values()) flusher();
   }, []);
   const saveActivity = useMemo<ChartWorkspaceSaveActivity>(() => {
     const visibleRangePending = pendingVisibleRangePanelIds.length > 0;
@@ -801,13 +819,17 @@ export function ClosedTradeChartWorkspace({
     annotationVersionRef.current = annotationVersion;
   }, [annotationVersion]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     layoutSaveStateRef.current = layoutSaveState;
   }, [layoutSaveState]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     annotationSaveStateRef.current = annotationSaveState;
   }, [annotationSaveState]);
+
+  useLayoutEffect(() => {
+    onSaveActivityChangeRef.current = onSaveActivityChange;
+  }, [onSaveActivityChange]);
 
   useEffect(() => {
     tradeSymbolRef.current = tradeSymbol;
@@ -1511,7 +1533,10 @@ export function ClosedTradeChartWorkspace({
 
   function selectLayout(nextLayout: LayoutMode) {
     if (readOnly) return;
-    if (nextLayout !== layoutMode) markWorkspaceEdited();
+    if (nextLayout !== layoutMode) {
+      flushPendingVisibleRanges();
+      markWorkspaceEdited();
+    }
     setFocusedPanelId(null);
     setLayoutMode(nextLayout);
     setPanels((current) => normalizePanels({ symbol: tradeSymbol }, current, nextLayout));
@@ -1664,6 +1689,7 @@ export function ClosedTradeChartWorkspace({
           pendingTrend={pendingTrend}
           onExecutionAnchorsChange={handleExecutionAnchorsChange}
           onPendingVisibleRangeChange={handlePendingVisibleRangeChange}
+          onRegisterVisibleRangeFlusher={handleRegisterVisibleRangeFlusher}
           resetSignal={resetRequests[panel.id] ?? 0}
           scope={scope}
           setPendingTrend={setPendingTrend}
@@ -1917,6 +1943,7 @@ function ClosedTradeChartPanel({
   onActivate,
   onExecutionAnchorsChange,
   onPendingVisibleRangeChange,
+  onRegisterVisibleRangeFlusher,
   overlayRightReserve = 0,
   panel,
   pendingTrend,
@@ -1937,6 +1964,7 @@ function ClosedTradeChartPanel({
   onActivate: (panelId: string) => void;
   onExecutionAnchorsChange: (panelId: string, snapshot: ExecutionAnchorSnapshot | null) => void;
   onPendingVisibleRangeChange: (panelId: string, pending: boolean) => void;
+  onRegisterVisibleRangeFlusher: (panelId: string, flusher: (() => boolean) | null) => void;
   overlayRightReserve?: number;
   panel: ChartPanelState;
   pendingTrend: PendingTrend;
@@ -1959,6 +1987,7 @@ function ClosedTradeChartPanel({
   const annotationLineRefs = useRef<IPriceLine[]>([]);
   const annotationSeriesRefs = useRef<Array<ISeriesApi<"Line">>>([]);
   const updateExecutionOverlayPositionsRef = useRef<() => void>(() => undefined);
+  const applyExecutionOverlayPositionsRef = useRef<() => void>(() => undefined);
   const toolRef = useRef<Tool>(tool);
   const annotationsRef = useRef<ChartAnnotation[]>(annotations);
   const pendingTrendRef = useRef<PendingTrend>(pendingTrend);
@@ -1966,9 +1995,12 @@ function ClosedTradeChartPanel({
   const scopeRef = useRef<AnnotationScope>(scope);
   const readOnlyRef = useRef(readOnly);
   const commitRef = useRef(commitAnnotations);
+  const updatePanelRef = useRef(updatePanel);
+  const onPendingVisibleRangeChangeRef = useRef(onPendingVisibleRangeChange);
   const setPendingTrendRef = useRef(setPendingTrend);
   const hasFreshCandleDataRef = useRef(false);
   const candleTradeGroupKeyRef = useRef(trade.groupKey);
+  const candleCompareSymbolRef = useRef(panel.compareSymbol ?? null);
   const restoringRangeRef = useRef(false);
   const restoreVisibleRangeRef = useRef<(options?: RestoreVisibleRangeOptions) => void>(() => undefined);
   const visibleRangeSaveTimerRef = useRef<number | null>(null);
@@ -1984,6 +2016,7 @@ function ClosedTradeChartPanel({
   const skipNextVisibleRangeRestoreRef = useRef(false);
   const executionOverlayFrameRef = useRef<number | null>(null);
   const liveVisibleRangeFrameRef = useRef<number | null>(null);
+  const visibleRangeRestoreFrameRef = useRef<number | null>(null);
   const pendingLiveVisibleRangeRef = useRef<{ from: Time; to: Time } | null>(null);
   const lastExecutionOverlaySignatureRef = useRef("");
   const latestExecutionOverlaysRef = useRef<ExecutionOverlay[]>([]);
@@ -2069,9 +2102,14 @@ function ClosedTradeChartPanel({
     () => [fillPriceWarning, ...candleWarnings].filter(Boolean).join(" "),
     [candleWarnings, fillPriceWarning],
   );
-  const panelAnnotations = useMemo(
+  const filteredPanelAnnotations = useMemo(
     () => annotations.filter((annotation) => annotationMatchesPanel(annotation, { id: panelId, symbol: panelSymbol, timeframe: panelTimeframe })),
     [annotations, panelId, panelSymbol, panelTimeframe],
+  );
+  const filteredPanelAnnotationSignature = annotationSignature(filteredPanelAnnotations);
+  const panelAnnotations = useMemo(
+    () => annotationsFromSignature(filteredPanelAnnotationSignature),
+    [filteredPanelAnnotationSignature],
   );
   const overlayHeight = chartHeight || baseHeight;
 
@@ -2125,7 +2163,7 @@ function ClosedTradeChartPanel({
 
   useLayoutEffect(() => {
     applyExecutionOverlayElementPositions(latestExecutionOverlaysRef.current);
-  });
+  }, [applyExecutionOverlayElementPositions, executionOverlays]);
 
   useLayoutEffect(() => {
     hasFreshCandleDataRef.current = hasFreshCandleData;
@@ -2134,8 +2172,8 @@ function ClosedTradeChartPanel({
   const setVisibleRangePending = useCallback((pending: boolean) => {
     if (visibleRangePendingRef.current === pending) return;
     visibleRangePendingRef.current = pending;
-    onPendingVisibleRangeChange(panel.id, pending);
-  }, [onPendingVisibleRangeChange, panel.id]);
+    onPendingVisibleRangeChangeRef.current(panelRef.current.id, pending);
+  }, []);
 
   const commitPendingVisibleRange = useCallback(() => {
     const nextRange = pendingVisibleRangeRef.current;
@@ -2160,10 +2198,10 @@ function ClosedTradeChartPanel({
 
     skipNextVisibleRangeRestoreRef.current = true;
     visibleRangeInteractionUntilRef.current = 0;
-    updatePanel(panelRef.current.id, nextRange, { userEdit: true });
+    updatePanelRef.current(panelRef.current.id, nextRange, { userEdit: true });
     visibleRangePendingRef.current = false;
     return true;
-  }, [setVisibleRangePending, updatePanel]);
+  }, [setVisibleRangePending]);
 
   const armVisibleRangeInteraction = useCallback(() => {
     if (readOnlyRef.current) return;
@@ -2206,6 +2244,7 @@ function ClosedTradeChartPanel({
       const deltaX = event.clientX - start.x;
       const deltaY = event.clientY - start.y;
       if (Math.hypot(deltaX, deltaY) < VISIBLE_RANGE_DRAG_THRESHOLD_PX) return;
+      visibleRangeDragStartRef.current = null;
       armVisibleRangeInteraction();
     };
     const armWheel = () => armVisibleRangeInteraction();
@@ -2231,8 +2270,10 @@ function ClosedTradeChartPanel({
     scopeRef.current = scope;
     readOnlyRef.current = readOnly;
     commitRef.current = commitAnnotations;
+    updatePanelRef.current = updatePanel;
+    onPendingVisibleRangeChangeRef.current = onPendingVisibleRangeChange;
     setPendingTrendRef.current = setPendingTrend;
-  }, [annotations, commitAnnotations, panel, pendingTrend, readOnly, scope, setPendingTrend, tool]);
+  }, [annotations, commitAnnotations, onPendingVisibleRangeChange, panel, pendingTrend, readOnly, scope, setPendingTrend, tool, updatePanel]);
 
   useEffect(() => {
     if (!hasFreshCandleData) {
@@ -2284,13 +2325,23 @@ function ClosedTradeChartPanel({
       window.cancelAnimationFrame(executionOverlayFrameRef.current);
       executionOverlayFrameRef.current = null;
     }
-    // Leave pending range drafts for the time-scale cleanup, which can flush
-    // them into the saved panel state before a Focus/Show all remount.
-  }, [panel.id, trade.groupKey]);
+    const committedPendingRange = commitPendingVisibleRange();
+    if (!committedPendingRange) {
+      visibleRangeInteractionUntilRef.current = 0;
+      setVisibleRangePending(false);
+    }
+  }, [commitPendingVisibleRange, panel.id, setVisibleRangePending, trade.groupKey]);
+
+  useEffect(() => {
+    onRegisterVisibleRangeFlusher(panel.id, commitPendingVisibleRange);
+    return () => onRegisterVisibleRangeFlusher(panel.id, null);
+  }, [commitPendingVisibleRange, onRegisterVisibleRangeFlusher, panel.id]);
 
   useEffect(() => {
     const tradeChanged = candleTradeGroupKeyRef.current !== trade.groupKey;
+    const compareSymbolChanged = candleCompareSymbolRef.current !== (panel.compareSymbol ?? null);
     candleTradeGroupKeyRef.current = trade.groupKey;
+    candleCompareSymbolRef.current = panel.compareSymbol ?? null;
 
     if (deferCandles) {
       setCandles([]);
@@ -2309,8 +2360,10 @@ function ClosedTradeChartPanel({
       setCandles([]);
       setSource(null);
     }
-    setCompareCandles([]);
-    setCompareSource(null);
+    if (tradeChanged || compareSymbolChanged) {
+      setCompareCandles([]);
+      setCompareSource(null);
+    }
     setLoadedCandleRequestPath(null);
     setStatus("Loading bars...");
     setCandleWarnings([]);
@@ -2422,8 +2475,12 @@ function ClosedTradeChartPanel({
     if (executionOverlayFrameRef.current != null) return;
     executionOverlayFrameRef.current = window.requestAnimationFrame(() => {
       executionOverlayFrameRef.current = null;
-      applyExecutionOverlayPositions();
+      applyExecutionOverlayPositionsRef.current();
     });
+  }, []);
+
+  useLayoutEffect(() => {
+    applyExecutionOverlayPositionsRef.current = applyExecutionOverlayPositions;
   }, [applyExecutionOverlayPositions]);
 
   const setLiveVisibleRangeAttributes = useCallback((range: { from: Time; to: Time } | null) => {
@@ -2460,6 +2517,25 @@ function ClosedTradeChartPanel({
     }
     pendingLiveVisibleRangeRef.current = null;
   }, []);
+
+  const cancelVisibleRangeRestoreFrame = useCallback(() => {
+    if (visibleRangeRestoreFrameRef.current != null) {
+      window.cancelAnimationFrame(visibleRangeRestoreFrameRef.current);
+      visibleRangeRestoreFrameRef.current = null;
+    }
+  }, []);
+
+  const scheduleVisibleRangeRestoreCompletion = useCallback((chart: IChartApi) => {
+    cancelVisibleRangeRestoreFrame();
+    visibleRangeRestoreFrameRef.current = window.requestAnimationFrame(() => {
+      visibleRangeRestoreFrameRef.current = null;
+      restoringRangeRef.current = false;
+      if (chartRef.current !== chart) return;
+      cancelLiveVisibleRangeAttributesUpdate();
+      setLiveVisibleRangeAttributes(chart.timeScale().getVisibleRange());
+      scheduleExecutionOverlayPositionsUpdate();
+    });
+  }, [cancelLiveVisibleRangeAttributesUpdate, cancelVisibleRangeRestoreFrame, scheduleExecutionOverlayPositionsUpdate, setLiveVisibleRangeAttributes]);
 
   const restoreVisibleRange = useCallback((options?: RestoreVisibleRangeOptions) => {
     const chart = chartRef.current;
@@ -2509,17 +2585,13 @@ function ClosedTradeChartPanel({
     } else {
       chart.timeScale().fitContent();
     }
-    window.requestAnimationFrame(() => {
-      restoringRangeRef.current = false;
-      cancelLiveVisibleRangeAttributesUpdate();
-      setLiveVisibleRangeAttributes(chart.timeScale().getVisibleRange());
-      scheduleExecutionOverlayPositionsUpdate();
-    });
+    scheduleVisibleRangeRestoreCompletion(chart);
   }, [
     cancelLiveVisibleRangeAttributesUpdate,
     candles,
     hasActiveVisibleRangeInteraction,
     scheduleExecutionOverlayPositionsUpdate,
+    scheduleVisibleRangeRestoreCompletion,
     setLiveVisibleRangeAttributes,
   ]);
 
@@ -2719,6 +2791,7 @@ function ClosedTradeChartPanel({
 
     return () => {
       if (resizeFrame != null) window.cancelAnimationFrame(resizeFrame);
+      cancelVisibleRangeRestoreFrame();
       cancelLiveVisibleRangeAttributesUpdate();
       resizeObserver.disconnect();
       chart.unsubscribeClick(clickHandler);
@@ -2730,7 +2803,7 @@ function ClosedTradeChartPanel({
       smaRefs.current = [];
       markerPluginRef.current = null;
     };
-  }, [cancelLiveVisibleRangeAttributesUpdate]);
+  }, [cancelLiveVisibleRangeAttributesUpdate, cancelVisibleRangeRestoreFrame]);
 
   useEffect(() => {
     chartRef.current?.applyOptions({
@@ -2754,7 +2827,7 @@ function ClosedTradeChartPanel({
       const visibleTo = toUnixSeconds(range?.to);
       scheduleLiveVisibleRangeAttributesUpdate(range);
       if (visibleFrom == null || visibleTo == null || visibleFrom >= visibleTo) return;
-      if (readOnly) return;
+      if (readOnlyRef.current) return;
       if (restoringRangeRef.current) return;
       const now = Date.now();
       if (!visibleRangePendingRef.current && now > visibleRangeInteractionUntilRef.current) return;
@@ -2796,7 +2869,7 @@ function ClosedTradeChartPanel({
         }
         skipNextVisibleRangeRestoreRef.current = true;
         visibleRangeInteractionUntilRef.current = 0;
-        updatePanel(panel.id, nextRange, { userEdit: true });
+        updatePanelRef.current(panelRef.current.id, nextRange, { userEdit: true });
         visibleRangePendingRef.current = false;
       }, 600);
     };
@@ -2807,43 +2880,22 @@ function ClosedTradeChartPanel({
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(visibleLogicalRangeHandler);
       chart.timeScale().unsubscribeVisibleTimeRangeChange(visibleTimeRangeHandler);
       cancelLiveVisibleRangeAttributesUpdate();
-      if (visibleRangeSaveTimerRef.current != null) {
-        window.clearTimeout(visibleRangeSaveTimerRef.current);
-        visibleRangeSaveTimerRef.current = null;
-      }
-      if (visibleRangeInteractionTimerRef.current != null) {
-        window.clearTimeout(visibleRangeInteractionTimerRef.current);
-        visibleRangeInteractionTimerRef.current = null;
-      }
-      const committedPendingRange = commitPendingVisibleRange();
-      if (!committedPendingRange) {
-        visibleRangeInteractionUntilRef.current = 0;
-        setVisibleRangePending(false);
-      }
     };
   }, [
     cancelLiveVisibleRangeAttributesUpdate,
-    commitPendingVisibleRange,
-    panel.id,
-    readOnly,
     scheduleExecutionOverlayPositionsUpdate,
     scheduleLiveVisibleRangeAttributesUpdate,
     setLiveVisibleRangeAttributes,
     setVisibleRangePending,
-    updatePanel,
   ]);
 
   useEffect(() => {
     if (resetSignal === 0) return;
     restoringRangeRef.current = true;
     chartRef.current?.timeScale().fitContent();
-    window.requestAnimationFrame(() => {
-      restoringRangeRef.current = false;
-      cancelLiveVisibleRangeAttributesUpdate();
-      setLiveVisibleRangeAttributes(chartRef.current?.timeScale().getVisibleRange() ?? null);
-      updateExecutionOverlayPositionsRef.current();
-    });
-  }, [cancelLiveVisibleRangeAttributesUpdate, resetSignal, setLiveVisibleRangeAttributes]);
+    const chart = chartRef.current;
+    if (chart) scheduleVisibleRangeRestoreCompletion(chart);
+  }, [resetSignal, scheduleVisibleRangeRestoreCompletion]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -3151,7 +3203,6 @@ function ClosedTradeChartPanel({
         data-panel-id={panel.id}
         data-testid="closed-trade-chart-plot"
         data-candle-fresh={hasFreshCandleData ? "true" : "false"}
-        onWheel={armVisibleRangeInteraction}
       >
         <div
           ref={containerRef}

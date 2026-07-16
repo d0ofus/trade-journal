@@ -1972,26 +1972,44 @@ test("chart workstation surfaces execution labels and candle diagnostics", async
   expect(browserErrors).toEqual([]);
 });
 
-test("chart workstation renders provider warnings when candle payloads are empty", async ({ page }) => {
+test("chart workstation retries empty provider responses after a timeframe round trip", async ({ page }) => {
   const browserErrors = collectBrowserErrors(page);
+  const recoveredCandles = Array.from({ length: 40 }, (_, index) => {
+    const base = 100 + index * 0.15;
+    return {
+      time: unixSeconds("2026-06-17T12:00:00.000Z") + index * 300,
+      open: Number(base.toFixed(2)),
+      high: Number((base + 1).toFixed(2)),
+      low: Number((base - 0.8).toFixed(2)),
+      close: Number((base + 0.2).toFixed(2)),
+      volume: 1_000 + index * 10,
+    };
+  });
+  let fiveMinuteRequestCount = 0;
 
   await page.route("**/api/market/candles**", async (route) => {
     const url = new URL(route.request().url());
     const symbol = (url.searchParams.get("symbol") ?? "DEMOA").toUpperCase();
+    const timeframe = url.searchParams.get("timeframe") ?? "5m";
+    if (timeframe === "5m") fiveMinuteRequestCount += 1;
+    const emptyResponse = timeframe === "5m" && fiveMinuteRequestCount === 1;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         symbol,
-        source: null,
-        candles: [],
+        timeframe,
+        source: emptyResponse ? null : "cache",
+        candles: emptyResponse ? [] : recoveredCandles,
         metadata: {
           requestedRange: null,
-          returnedRange: null,
-          barIntervalSeconds: null,
+          returnedRange: emptyResponse
+            ? null
+            : { from: recoveredCandles[0].time, to: recoveredCandles.at(-1)?.time ?? recoveredCandles[0].time },
+          barIntervalSeconds: timeframe === "1d" ? 86_400 : timeframe === "1h" ? 3_600 : 300,
           limit: 30000,
           truncated: false,
-          warnings: ["Yahoo candle provider unavailable; no candle data returned."],
+          warnings: emptyResponse ? ["Yahoo candle provider unavailable; no candle data returned."] : [],
         },
       }),
     });
@@ -2011,6 +2029,17 @@ test("chart workstation renders provider warnings when candle payloads are empty
     await expect(warning).toBeVisible();
     await expect(page.getByText("Unable to load candles.")).toHaveCount(0);
     await expect(page.getByText("No candle data found.")).toHaveCount(0);
+
+    const firstPanel = page.getByTestId("closed-trade-chart-panel").first();
+    await firstPanel.locator('button[title="Switch to 1H"]').click();
+    await expect(firstPanel).toHaveAttribute("data-timeframe", "1h");
+    await expect.poll(async () => Number(await firstPanel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
+    await firstPanel.locator('button[title="Switch to 5M"]').click();
+    await expect(firstPanel).toHaveAttribute("data-timeframe", "5m");
+    await expect.poll(async () => Number(await firstPanel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
+    await expect(warning).toBeHidden();
+    expect(fiveMinuteRequestCount).toBe(2);
+    await expectChartSavesSettled(page);
   } finally {
     await page.unroute("**/api/market/candles**");
   }
@@ -2096,6 +2125,26 @@ test("chart workstation stores demo fills as aligned execution-line annotations"
             version: 8,
           },
         }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/closed-trades/*/annotations", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ annotations: [], version: 1, updatedAt: "2026-06-26T00:00:00.000Z" }),
+      });
+      return;
+    }
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as { annotations?: unknown[] };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ annotations: body.annotations ?? [], version: 2, updatedAt: "2026-06-26T00:01:00.000Z" }),
       });
       return;
     }
@@ -3004,6 +3053,15 @@ test("chart workstation persists panned visible range, restores it, and keeps it
     });
     const visibleRangeSaveResponse = page.waitForResponse((response) => response.request().method() === "PUT" && response.url().includes(layoutPath));
     await panFirstChart(page);
+    const workspace = page.getByTestId("closed-trade-chart-workspace");
+    const firstPlot = page.getByTestId("closed-trade-chart-panel").first().getByTestId("closed-trade-chart-plot");
+    const firstPlotBox = await firstPlot.boundingBox();
+    expect(firstPlotBox).toBeTruthy();
+    await page.getByTitle("Horizontal").click();
+    await page.mouse.click(firstPlotBox!.x + firstPlotBox!.width * 0.2, firstPlotBox!.y + firstPlotBox!.height * 0.4);
+    await expect(workspace).toHaveAttribute("data-annotation-save-state", "queued");
+    await page.waitForTimeout(250);
+    await expect(workspace).toHaveAttribute("data-layout-save-state", "clean");
 
     const saveRequest = await visibleRangeSaveRequest;
     const saveBody = saveRequest.postDataJSON() as { panels?: ChartPanelLayout[] };
@@ -3078,6 +3136,7 @@ test("chart workstation persists panned visible range, restores it, and keeps it
   } finally {
     await page.unroute("**/api/market/candles**");
     await page.unroute("**/api/closed-trades/*/chart-layout");
+    await page.unroute("**/api/closed-trades/*/annotations");
   }
 
   expect(browserErrors).toEqual([]);
