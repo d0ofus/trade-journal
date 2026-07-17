@@ -12,6 +12,8 @@ vi.mock("@/lib/server/api-auth", () => ({
 
 vi.mock("@/lib/server/market-candles", () => ({
   SAFE_SYMBOL_PATTERN: /^[A-Z0-9.^=_-]{1,20}$/,
+  isCandleRequestAbort: (error: unknown, signal?: AbortSignal) =>
+    Boolean(signal?.aborted) || (error instanceof DOMException && error.name === "AbortError"),
   loadCandlesForSymbol: mocks.loadCandlesForSymbol,
   parseCandleTimeframe: (value: string | null | undefined) =>
     value === "1d" ? "1d" : value === "15m" ? "15m" : "5m",
@@ -79,6 +81,7 @@ describe("market candles route", () => {
       timeframe: "5m",
       range: { from: 1_783_000_000, to: 1_783_010_000 },
       limit: 241,
+      signal: expect.anything(),
     });
   });
 
@@ -106,7 +109,36 @@ describe("market candles route", () => {
       timeframe: "15m",
       range: null,
       limit: 121,
+      signal: expect.anything(),
     });
+  });
+
+  it("forwards the exact request abort signal to the candle loader", async () => {
+    const controller = new AbortController();
+    const request = new NextRequest(
+      "http://localhost/api/market/candles?symbol=DEMOA&timeframe=5m",
+      { signal: controller.signal },
+    );
+    const { GET } = await import("./route");
+
+    await GET(request);
+
+    expect(mocks.loadCandlesForSymbol).toHaveBeenCalledWith(expect.objectContaining({ signal: request.signal }));
+  });
+
+  it("propagates cancellation without converting it to a service warning", async () => {
+    const controller = new AbortController();
+    const request = new NextRequest(
+      "http://localhost/api/market/candles?symbol=DEMOA&timeframe=5m",
+      { signal: controller.signal },
+    );
+    mocks.loadCandlesForSymbol.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+      controller.abort(new DOMException("client disconnected", "AbortError"));
+      throw signal.reason;
+    });
+    const { GET } = await import("./route");
+
+    await expect(GET(request)).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("rejects unauthenticated candle requests before loading market data", async () => {
@@ -147,5 +179,38 @@ describe("market candles route", () => {
       },
       compareError: null,
     });
+  });
+
+  it("waits for sibling compare work to settle before propagating cancellation", async () => {
+    const controller = new AbortController();
+    const request = new NextRequest(
+      "http://localhost/api/market/candles?symbol=DEMOA&timeframe=5m&compare=SPY",
+      { signal: controller.signal },
+    );
+    let finishCompare!: () => void;
+    const comparePending = new Promise<void>((resolve) => {
+      finishCompare = resolve;
+    });
+    mocks.loadCandlesForSymbol
+      .mockImplementationOnce(async () => {
+        controller.abort(new DOMException("client disconnected", "AbortError"));
+        throw controller.signal.reason;
+      })
+      .mockImplementationOnce(async () => {
+        await comparePending;
+        return { symbol: "SPY", candles: [], source: null, warnings: [] };
+      });
+    const { GET } = await import("./route");
+    let settled = false;
+
+    const result = GET(request).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    finishCompare();
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
   });
 });

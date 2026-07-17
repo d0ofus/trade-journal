@@ -4,6 +4,7 @@ import {
   type Candle,
   type CandleRange,
   type CandleTimeframe,
+  isCandleRequestAbort,
   loadCandlesForSymbol,
   parseCandleTimeframe,
   SAFE_SYMBOL_PATTERN,
@@ -41,16 +42,23 @@ async function loadCandlesForRoute(input: {
   timeframe: CandleTimeframe;
   range: CandleRange;
   limit: number;
+  signal: AbortSignal;
 }) {
-  const loaded = await loadCandlesForSymbol({
-    ...input,
-    limit: input.limit + 1,
-  }).catch(() => ({
-    symbol: input.symbol,
-    candles: [],
-    source: null,
-    warnings: [CANDLE_SERVICE_UNAVAILABLE_WARNING],
-  }));
+  let loaded;
+  try {
+    loaded = await loadCandlesForSymbol({
+      ...input,
+      limit: input.limit + 1,
+    });
+  } catch (error) {
+    if (isCandleRequestAbort(error, input.signal)) throw error;
+    loaded = {
+      symbol: input.symbol,
+      candles: [],
+      source: null,
+      warnings: [CANDLE_SERVICE_UNAVAILABLE_WARNING],
+    };
+  }
   if (!loaded) return null;
   const payload = buildCandlePayload({ candles: loaded.candles, range: input.range, limit: input.limit, warnings: loaded.warnings });
   return { ...loaded, ...payload };
@@ -87,10 +95,14 @@ export async function GET(req: NextRequest) {
   }
 
   if (compareSymbol) {
-    const [primary, compare] = await Promise.all([
-      loadCandlesForRoute({ symbol, timeframe, range, limit }),
-      loadCandlesForRoute({ symbol: compareSymbol, timeframe, range, limit }),
+    const [primaryResult, compareResult] = await Promise.allSettled([
+      loadCandlesForRoute({ symbol, timeframe, range, limit, signal: req.signal }),
+      loadCandlesForRoute({ symbol: compareSymbol, timeframe, range, limit, signal: req.signal }),
     ]);
+    const rejected = [primaryResult, compareResult].find((result) => result.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
+    const primary = primaryResult.status === "fulfilled" ? primaryResult.value : null;
+    const compare = compareResult.status === "fulfilled" ? compareResult.value : null;
 
     if (!primary) {
       return NextResponse.json({ error: "No candle data found." }, { status: 404 });
@@ -116,7 +128,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const primary = await loadCandlesForRoute({ symbol, timeframe, range, limit });
+  const primary = await loadCandlesForRoute({ symbol, timeframe, range, limit, signal: req.signal });
   if (!primary) {
     return NextResponse.json({ error: "No candle data found." }, { status: 404 });
   }

@@ -105,6 +105,121 @@ describe("summarizeCandleResponse", () => {
 });
 
 describe("loadCandlesForSymbol", () => {
+  it("does no cache or provider work for a pre-aborted request", async () => {
+    withoutAlpacaCredentials();
+    const controller = new AbortController();
+    controller.abort(new DOMException("request closed", "AbortError"));
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "5m",
+      range: { from: 1_783_000_000, to: 1_783_010_000 },
+      limit: 120,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(mocks.findMany).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("stops after an in-progress cache read observes cancellation", async () => {
+    withoutAlpacaCredentials();
+    const controller = new AbortController();
+    mocks.findMany.mockImplementationOnce(async () => {
+      controller.abort(new DOMException("request closed", "AbortError"));
+      return [];
+    });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "5m",
+      range: { from: 1_783_000_000, to: 1_783_010_000 },
+      limit: 120,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(mocks.findMany).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("forwards cancellation to provider fetch and does not continue to fallbacks", async () => {
+    withoutAlpacaCredentials();
+    const controller = new AbortController();
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.signal).toBe(controller.signal);
+      controller.abort(new DOMException("request closed", "AbortError"));
+      throw controller.signal.reason;
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "5m",
+      range: { from: 1_783_000_000, to: 1_783_010_000 },
+      limit: 120,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes an accepted Alpaca cache write before propagating cancellation", async () => {
+    vi.stubEnv("ALPACA_API_KEY_ID", "alpaca-key");
+    vi.stubEnv("ALPACA_API_SECRET_KEY", "alpaca-secret");
+    const controller = new AbortController();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        bars: {
+          DEMOA: [{ t: "2026-06-17T13:35:00.000Z", o: 100, h: 102, l: 99, c: 101, v: 1000 }],
+        },
+      }),
+    });
+    mocks.createMany.mockImplementationOnce(async () => {
+      controller.abort(new DOMException("request closed", "AbortError"));
+      return { count: 1 };
+    });
+    mocks.upsert.mockResolvedValue({});
+    vi.stubGlobal("fetch", fetch);
+
+    const result = loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "5m",
+      range: { from: 1_783_000_000, to: 1_783_001_000 },
+      limit: 120,
+      signal: controller.signal,
+    });
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ signal: controller.signal }));
+    expect(mocks.createMany).toHaveBeenCalledTimes(1);
+    expect(mocks.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not enter a fallback after cancellation races with a non-ok provider response", async () => {
+    withoutAlpacaCredentials();
+    const controller = new AbortController();
+    const fetch = vi.fn(async () => {
+      controller.abort(new DOMException("request closed", "AbortError"));
+      return { ok: false };
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "1d",
+      range: { from: 1_783_000_000, to: 1_783_010_000 },
+      limit: 120,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("returns an empty warning result when the external provider request fails", async () => {
     withoutAlpacaCredentials();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNRESET")));

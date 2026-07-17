@@ -42,6 +42,7 @@ import {
 import { alignExecutionToBarTime, inferBarIntervalSeconds, inferExecutionOffsetSeconds } from "@/lib/charts/execution-marker-alignment";
 import { prepareChartSeriesData } from "@/lib/charts/chart-series-data";
 import { isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
+import { createSharedRequestPool } from "@/lib/charts/shared-request-pool";
 import {
   formatExecutionCandleDiagnosticWarning,
   getExecutionCandleDiagnostics,
@@ -170,63 +171,31 @@ type CandleResponse = {
 };
 
 const DEFAULT_LAYOUT_MODE: LayoutMode = "one-plus-two";
-const candleRequestInflight = new Map<string, Promise<CandleResponse>>();
-const candleResponseCache = new Map<string, { expiresAt: number; payload: CandleResponse }>();
+const EMPTY_CANDLES: Candle[] = [];
 const CANDLE_RESPONSE_CACHE_TTL_MS = 5 * 60 * 1000;
 const CANDLE_RESPONSE_CACHE_MAX_ENTRIES = 48;
-
-function cachedCandleResponse(url: string) {
-  const cached = candleResponseCache.get(url);
-  if (!cached) return null;
-  if (cached.expiresAt <= Date.now()) {
-    candleResponseCache.delete(url);
-    return null;
-  }
-  candleResponseCache.delete(url);
-  candleResponseCache.set(url, cached);
-  return cached.payload;
-}
-
-function rememberCandleResponse(url: string, payload: CandleResponse) {
-  candleResponseCache.set(url, { expiresAt: Date.now() + CANDLE_RESPONSE_CACHE_TTL_MS, payload });
-  while (candleResponseCache.size > CANDLE_RESPONSE_CACHE_MAX_ENTRIES) {
-    const oldestKey = candleResponseCache.keys().next().value;
-    if (!oldestKey) break;
-    candleResponseCache.delete(oldestKey);
-  }
-}
-
-function loadCandleResponse(url: string) {
-  const cached = cachedCandleResponse(url);
-  if (cached) return Promise.resolve(cached);
-
-  const existing = candleRequestInflight.get(url);
-  if (existing) return existing;
-
-  const request = fetch(url).then(async (res) => {
+const CANDLE_REQUEST_TIMEOUT_MS = 30_000;
+const candleRequestPool = createSharedRequestPool<CandleResponse>({
+  load: async (url, signal) => {
+    const res = await fetch(url, { signal });
     const payload = (await res.json().catch(() => ({}))) as CandleResponse;
     if (!res.ok) throw new Error(payload.error || "Unable to load candles.");
-    const requiresComparison = new URLSearchParams(url.split("?", 2)[1] ?? "").has("compare");
-    if (isReusableCandleResponse(payload, { requiresComparison })) rememberCandleResponse(url, payload);
     return payload;
-  });
-  candleRequestInflight.set(url, request);
-  void request.then(
-    () => candleRequestInflight.delete(url),
-    () => candleRequestInflight.delete(url),
-  );
-  return request;
-}
+  },
+  shouldCache: (payload) => isReusableCandleResponse(payload),
+  cacheTtlMs: CANDLE_RESPONSE_CACHE_TTL_MS,
+  maxCacheEntries: CANDLE_RESPONSE_CACHE_MAX_ENTRIES,
+  requestTimeoutMs: CANDLE_REQUEST_TIMEOUT_MS,
+});
 
 function candleRequestPath(
-  panel: Pick<ChartPanelState, "symbol" | "timeframe" | "compareSymbol" | "rangePreset">,
+  panel: Pick<ChartPanelState, "symbol" | "timeframe" | "rangePreset">,
   trade: Pick<ClosedTradeChartWorkspaceTrade, "openTime" | "closeTime">,
 ) {
   const params = new URLSearchParams();
   params.set("symbol", panel.symbol);
   params.set("timeframe", panel.timeframe);
   params.set("limit", String(candleLimitForPanel(panel.timeframe, panel.rangePreset)));
-  if (panel.compareSymbol) params.set("compare", panel.compareSymbol);
   const range = rangeForPreset({ openTime: trade.openTime, closeTime: trade.closeTime }, panel.timeframe, panel.rangePreset);
   if (range) {
     params.set("from", String(range.from));
@@ -1647,6 +1616,7 @@ export function ClosedTradeChartWorkspace({
   const toolIcon = TOOL_OPTIONS.find((option) => option.value === tool)?.icon ?? Crosshair;
   const ToolIcon = toolIcon;
   const shouldRenderChartPanels = layoutLoaded || Boolean(layoutLoadError);
+  const candleOwnerKey = shouldRenderChartPanels && layoutStateGroupKey === tradeGroupKey ? tradeGroupKey : null;
   const visibleRangeStatus = pendingVisibleRangePanelIds.length > 0 ? "Chart range save pending." : "";
   const focusButtonDisabled = readOnly || layoutOrDrawingSaveBlocking || normalizedPanels.length <= 1;
   const activePanelForMarkers = normalizedPanels.find((panel) => panel.id === activePanelId) ?? normalizedPanels[0];
@@ -1683,8 +1653,9 @@ export function ClosedTradeChartWorkspace({
           annotations={annotations}
           commitAnnotations={commitAnnotations}
           active={isFocusedPanel || panel.id === activePanelId}
+          candleOwnerKey={candleOwnerKey}
           compact={compact}
-          deferCandles={!layoutLoaded || (deferSecondaryCandles && panel.id !== activePanelId)}
+          deferCandles={!candleOwnerKey || (deferSecondaryCandles && panel.id !== activePanelId)}
           featured={featured}
           overlayRightReserve={overlayRightReserve}
           panel={panel}
@@ -1939,6 +1910,7 @@ function ClosedTradeChartPanel({
   annotations,
   commitAnnotations,
   active,
+  candleOwnerKey,
   compact = false,
   deferCandles,
   featured = false,
@@ -1960,6 +1932,7 @@ function ClosedTradeChartPanel({
   annotations: ChartAnnotation[];
   commitAnnotations: (annotations: ChartAnnotation[]) => void;
   active: boolean;
+  candleOwnerKey: string | null;
   compact?: boolean;
   deferCandles: boolean;
   featured?: boolean;
@@ -2002,7 +1975,10 @@ function ClosedTradeChartPanel({
   const setPendingTrendRef = useRef(setPendingTrend);
   const hasFreshCandleDataRef = useRef(false);
   const candleTradeGroupKeyRef = useRef(trade.groupKey);
+  const candlePrimarySymbolRef = useRef(panel.symbol);
   const candleCompareSymbolRef = useRef(panel.compareSymbol ?? null);
+  const primaryRequestGenerationRef = useRef(0);
+  const compareRequestGenerationRef = useRef(0);
   const restoringRangeRef = useRef(false);
   const restoreVisibleRangeRef = useRef<(options?: RestoreVisibleRangeOptions) => void>(() => undefined);
   const visibleRangeSaveTimerRef = useRef<number | null>(null);
@@ -2026,13 +2002,18 @@ function ClosedTradeChartPanel({
   const executionOverlayLabelRefs = useRef(new Map<string, HTMLDivElement>());
   const [candles, setCandles] = useState<Candle[]>([]);
   const [compareCandles, setCompareCandles] = useState<Candle[]>([]);
+  const [primaryDataOwnerKey, setPrimaryDataOwnerKey] = useState<string | null>(null);
+  const [compareDataOwnerKey, setCompareDataOwnerKey] = useState<string | null>(null);
   const [compareSource, setCompareSource] = useState<string | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [cacheKind, setCacheKind] = useState<"native" | "derived-5m" | null>(null);
   const [compareCacheKind, setCompareCacheKind] = useState<"native" | "derived-5m" | null>(null);
-  const [status, setStatus] = useState("");
-  const [candleWarnings, setCandleWarnings] = useState<string[]>([]);
-  const [loadedCandleRequestPath, setLoadedCandleRequestPath] = useState<string | null>(null);
+  const [primaryStatus, setPrimaryStatus] = useState("");
+  const [compareStatus, setCompareStatus] = useState("");
+  const [primaryCandleWarnings, setPrimaryCandleWarnings] = useState<string[]>([]);
+  const [compareCandleWarnings, setCompareCandleWarnings] = useState<string[]>([]);
+  const [loadedPrimaryRequestPath, setLoadedPrimaryRequestPath] = useState<string | null>(null);
+  const [loadedCompareRequestPath, setLoadedCompareRequestPath] = useState<string | null>(null);
   const [symbolInput, setSymbolInput] = useState(panel.symbol);
   const [compareInput, setCompareInput] = useState(panel.compareSymbol ?? "");
   const [timeframeInput, setTimeframeInput] = useState(timeframeCommand(panel.timeframe));
@@ -2045,21 +2026,38 @@ function ClosedTradeChartPanel({
   const tradeExecutions = useMemo(() => executionsFromSignature(tradeExecutionsSignature), [tradeExecutionsSignature]);
   const tradeOpenTime = trade.openTime;
   const tradeCloseTime = trade.closeTime;
-  const currentCandleRequestPath = useMemo(
+  const currentPrimaryRequestPath = useMemo(
     () =>
       candleRequestPath(
         {
           symbol: panel.symbol,
           timeframe: panel.timeframe,
-          compareSymbol: panel.compareSymbol,
           rangePreset: panel.rangePreset,
         },
         { openTime: tradeOpenTime, closeTime: tradeCloseTime },
       ),
-    [panel.compareSymbol, panel.rangePreset, panel.symbol, panel.timeframe, tradeCloseTime, tradeOpenTime],
+    [panel.rangePreset, panel.symbol, panel.timeframe, tradeCloseTime, tradeOpenTime],
   );
-  const hasFreshCandleData = loadedCandleRequestPath === currentCandleRequestPath;
-  const chartSeriesData = useMemo(() => prepareChartSeriesData(candles, SMA_PERIODS), [candles]);
+  const currentCompareRequestPath = useMemo(
+    () => panel.compareSymbol
+      ? candleRequestPath(
+          {
+            symbol: panel.compareSymbol,
+            timeframe: panel.timeframe,
+            rangePreset: panel.rangePreset,
+          },
+          { openTime: tradeOpenTime, closeTime: tradeCloseTime },
+        )
+      : null,
+    [panel.compareSymbol, panel.rangePreset, panel.timeframe, tradeCloseTime, tradeOpenTime],
+  );
+  const hasFreshCandleData = loadedPrimaryRequestPath === currentPrimaryRequestPath;
+  const hasFreshCompareData = Boolean(currentCompareRequestPath && loadedCompareRequestPath === currentCompareRequestPath);
+  const currentPrimaryDataOwnerKey = `${trade.groupKey}:${panel.symbol}`;
+  const currentCompareDataOwnerKey = panel.compareSymbol ? `${trade.groupKey}:${panel.compareSymbol}` : null;
+  const displayedCandles = primaryDataOwnerKey === currentPrimaryDataOwnerKey ? candles : EMPTY_CANDLES;
+  const displayedCompareCandles = compareDataOwnerKey === currentCompareDataOwnerKey ? compareCandles : EMPTY_CANDLES;
+  const chartSeriesData = useMemo(() => prepareChartSeriesData(displayedCandles, SMA_PERIODS), [displayedCandles]);
   const fallbackPriceRange = useMemo<PriceRange>(() => {
     const prices = [
       chartSeriesData.priceMin,
@@ -2103,9 +2101,10 @@ function ClosedTradeChartPanel({
     return formatExecutionCandleDiagnosticWarning(getExecutionCandleDiagnostics(tradeExecutions, chartSeriesData.validCandles));
   }, [chartSeriesData.validCandles, showsTradeExecutions, tradeExecutions]);
   const chartWarning = useMemo(
-    () => [fillPriceWarning, ...candleWarnings].filter(Boolean).join(" "),
-    [candleWarnings, fillPriceWarning],
+    () => [fillPriceWarning, ...primaryCandleWarnings, ...compareCandleWarnings].filter(Boolean).join(" "),
+    [compareCandleWarnings, fillPriceWarning, primaryCandleWarnings],
   );
+  const status = primaryStatus || compareStatus;
   const filteredPanelAnnotations = useMemo(
     () => annotations.filter((annotation) => annotationMatchesPanel(annotation, { id: panelId, symbol: panelSymbol, timeframe: panelTimeframe })),
     [annotations, panelId, panelSymbol, panelTimeframe],
@@ -2342,84 +2341,140 @@ function ClosedTradeChartPanel({
   }, [commitPendingVisibleRange, onRegisterVisibleRangeFlusher, panel.id]);
 
   useEffect(() => {
+    const generation = primaryRequestGenerationRef.current + 1;
+    primaryRequestGenerationRef.current = generation;
     const tradeChanged = candleTradeGroupKeyRef.current !== trade.groupKey;
-    const compareSymbolChanged = candleCompareSymbolRef.current !== (panel.compareSymbol ?? null);
+    const symbolChanged = candlePrimarySymbolRef.current !== panel.symbol;
     candleTradeGroupKeyRef.current = trade.groupKey;
-    candleCompareSymbolRef.current = panel.compareSymbol ?? null;
+    candlePrimarySymbolRef.current = panel.symbol;
 
-    if (deferCandles) {
+    if (tradeChanged || symbolChanged) {
       setCandles([]);
-      setCompareCandles([]);
-      setCompareSource(null);
-      setCompareCacheKind(null);
+      setPrimaryDataOwnerKey(null);
       setSource(null);
       setCacheKind(null);
-      setCandleWarnings([]);
-      setLoadedCandleRequestPath(null);
-      setStatus("Preparing chart...");
+    }
+    setLoadedPrimaryRequestPath(null);
+    setPrimaryCandleWarnings([]);
+
+    if (deferCandles || candleOwnerKey !== trade.groupKey) {
+      setPrimaryStatus("Preparing chart...");
       return;
     }
 
-    let cancelled = false;
-
-    if (tradeChanged) {
-      setCandles([]);
-      setSource(null);
-      setCacheKind(null);
-    }
-    if (tradeChanged || compareSymbolChanged) {
-      setCompareCandles([]);
-      setCompareSource(null);
-      setCompareCacheKind(null);
-    }
-    setLoadedCandleRequestPath(null);
-    setSource(null);
-    setCompareSource(null);
-    setCacheKind(null);
-    setCompareCacheKind(null);
-    setStatus("Loading bars...");
-    setCandleWarnings([]);
-    loadCandleResponse(currentCandleRequestPath)
+    let current = true;
+    setPrimaryStatus("Loading bars...");
+    const lease = candleRequestPool.acquire(currentPrimaryRequestPath);
+    void lease.promise
       .then((payload) => {
-        if (cancelled) return;
-        const nextCandles = (payload.candles ?? []).filter((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
-        const nextCompareCandles = (payload.compare?.candles ?? []).filter((candle) => [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
-        setCandles(nextCandles);
-        setCompareCandles(nextCompareCandles);
-        setSource(payload.source ?? null);
-        setCompareSource(payload.compare?.source ?? null);
-        setCacheKind(payload.cacheKind ?? null);
-        setCompareCacheKind(payload.compare?.cacheKind ?? null);
-        setCandleWarnings([
-          ...(nextCandles.length === 0 ? ["No candles returned for the requested range."] : []),
+        if (!current || primaryRequestGenerationRef.current !== generation) return;
+        const nextCandles = (payload.candles ?? []).filter((candle) =>
+          [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite),
+        );
+        const warnings = [
+          ...(nextCandles.length === 0 ? ["No candles returned for the requested range; keeping the previous chart."] : []),
           ...(Array.isArray(payload.metadata?.warnings) ? payload.metadata.warnings : []),
-          ...(Array.isArray(payload.compare?.metadata?.warnings)
-            ? payload.compare.metadata.warnings.map((warning) => `${payload.compare?.symbol ?? panel.compareSymbol}: ${warning}`)
+          ...(!isReusableCandleResponse(payload) && nextCandles.length > 0
+            ? ["Candle response was incomplete; keeping the previous chart."]
             : []),
-          ...(panel.compareSymbol && nextCompareCandles.length === 0 && payload.compare ? [`No comparison candles returned for ${panel.compareSymbol}.`] : []),
-          ...(payload.compareError ? [payload.compareError] : []),
-          ...(panel.compareSymbol && !payload.compare && !payload.compareError ? [`No comparison candle data found for ${panel.compareSymbol}.`] : []),
-        ]);
-        setLoadedCandleRequestPath(currentCandleRequestPath);
-        setStatus("");
+        ];
+        setPrimaryCandleWarnings(warnings);
+        if (!isReusableCandleResponse(payload)) {
+          setPrimaryStatus("");
+          return;
+        }
+        setCandles(nextCandles);
+        setPrimaryDataOwnerKey(currentPrimaryDataOwnerKey);
+        setSource(payload.source ?? null);
+        setCacheKind(payload.cacheKind ?? null);
+        setLoadedPrimaryRequestPath(currentPrimaryRequestPath);
+        setPrimaryStatus("");
       })
       .catch((error) => {
-        if (cancelled) return;
-        setCandles([]);
-        setCompareCandles([]);
-        setCompareSource(null);
-        setCompareCacheKind(null);
-        setSource(null);
-        setCacheKind(null);
-        setCandleWarnings([]);
-        setLoadedCandleRequestPath(null);
-        setStatus(error instanceof Error ? error.message : "Unable to load candles.");
+        if (!current || primaryRequestGenerationRef.current !== generation) return;
+        setLoadedPrimaryRequestPath(null);
+        setPrimaryStatus(error instanceof Error ? error.message : "Unable to load candles.");
       });
 
     return () => {
-      cancelled = true;
+      current = false;
+      lease.release();
     };
-  }, [currentCandleRequestPath, deferCandles, panel.compareSymbol, trade.groupKey]);
+  }, [candleOwnerKey, currentPrimaryDataOwnerKey, currentPrimaryRequestPath, deferCandles, panel.symbol, trade.groupKey]);
+
+  useEffect(() => {
+    const generation = compareRequestGenerationRef.current + 1;
+    compareRequestGenerationRef.current = generation;
+    const compareSymbol = panel.compareSymbol ?? null;
+    const compareSymbolChanged = candleCompareSymbolRef.current !== compareSymbol;
+    candleCompareSymbolRef.current = compareSymbol;
+
+    if (!compareSymbol) {
+      setCompareCandles([]);
+      setCompareDataOwnerKey(null);
+      setCompareSource(null);
+      setCompareCacheKind(null);
+      setLoadedCompareRequestPath(null);
+      setCompareCandleWarnings([]);
+      setCompareStatus("");
+      return;
+    }
+
+    if (compareSymbolChanged || candleOwnerKey !== trade.groupKey) {
+      setCompareCandles([]);
+      setCompareDataOwnerKey(null);
+      setCompareSource(null);
+      setCompareCacheKind(null);
+    }
+    setLoadedCompareRequestPath(null);
+    setCompareCandleWarnings([]);
+
+    if (deferCandles || candleOwnerKey !== trade.groupKey || !currentCompareRequestPath) {
+      setCompareStatus("Preparing comparison...");
+      return;
+    }
+
+    let current = true;
+    setCompareStatus("Loading comparison...");
+    const lease = candleRequestPool.acquire(currentCompareRequestPath);
+    void lease.promise
+      .then((payload) => {
+        if (!current || compareRequestGenerationRef.current !== generation) return;
+        const nextCandles = (payload.candles ?? []).filter((candle) =>
+          [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite),
+        );
+        const warnings = [
+          ...(nextCandles.length === 0 ? [`No comparison candles returned for ${compareSymbol}; keeping the previous comparison.`] : []),
+          ...(Array.isArray(payload.metadata?.warnings)
+            ? payload.metadata.warnings.map((warning) => `${compareSymbol}: ${warning}`)
+            : []),
+          ...(!isReusableCandleResponse(payload) && nextCandles.length > 0
+            ? [`${compareSymbol}: comparison response was incomplete; keeping the previous comparison.`]
+            : []),
+        ];
+        setCompareCandleWarnings(warnings);
+        if (!isReusableCandleResponse(payload)) {
+          setCompareStatus("");
+          return;
+        }
+        setCompareCandles(nextCandles);
+        setCompareDataOwnerKey(currentCompareDataOwnerKey);
+        setCompareSource(payload.source ?? null);
+        setCompareCacheKind(payload.cacheKind ?? null);
+        setLoadedCompareRequestPath(currentCompareRequestPath);
+        setCompareStatus("");
+      })
+      .catch((error) => {
+        if (!current || compareRequestGenerationRef.current !== generation) return;
+        setLoadedCompareRequestPath(null);
+        setCompareStatus(error instanceof Error ? error.message : `Unable to load comparison candles for ${compareSymbol}.`);
+      });
+
+    return () => {
+      current = false;
+      lease.release();
+    };
+  }, [candleOwnerKey, currentCompareDataOwnerKey, currentCompareRequestPath, deferCandles, panel.compareSymbol, trade.groupKey]);
 
   const applyExecutionOverlayPositions = useCallback(() => {
     const chart = chartRef.current;
@@ -2562,8 +2617,8 @@ function ClosedTradeChartPanel({
       scheduleExecutionOverlayPositionsUpdate();
       return;
     }
-    const firstCandleTime = candles[0]?.time;
-    const lastCandleTime = candles.at(-1)?.time;
+    const firstCandleTime = displayedCandles[0]?.time;
+    const lastCandleTime = displayedCandles.at(-1)?.time;
     const committedRange = lastCommittedVisibleRangeRef.current;
     const visibleFrom = committedRange.visibleFrom;
     const visibleTo = committedRange.visibleTo;
@@ -2604,7 +2659,7 @@ function ClosedTradeChartPanel({
     scheduleVisibleRangeRestoreCompletion(chart);
   }, [
     cancelLiveVisibleRangeAttributesUpdate,
-    candles,
+    displayedCandles,
     hasActiveVisibleRangeInteraction,
     scheduleExecutionOverlayPositionsUpdate,
     scheduleVisibleRangeRestoreCompletion,
@@ -2716,7 +2771,7 @@ function ClosedTradeChartPanel({
       const activePanel = panelRef.current;
       if (activeTool === "cursor" || !seriesRef.current || !param.point) return;
       if (!hasFreshCandleDataRef.current) {
-        setStatus("Wait for current chart candles before drawing.");
+        setPrimaryStatus("Wait for current chart candles before drawing.");
         return;
       }
       const time = toUnixSeconds(param.time);
@@ -2955,12 +3010,12 @@ function ClosedTradeChartPanel({
     const series = compareRef.current;
     const chart = chartRef.current;
     if (!series || !chart) return;
-    if (!panel.compareSymbol || compareCandles.length === 0) {
+    if (!panel.compareSymbol || displayedCompareCandles.length === 0) {
       series.setData([]);
       chart.applyOptions({ leftPriceScale: { visible: false } });
       return;
     }
-    const compareSeries = buildPercentChangeSeries(compareCandles);
+    const compareSeries = buildPercentChangeSeries(displayedCompareCandles);
     if (compareSeries.length === 0) {
       series.setData([]);
       chart.applyOptions({ leftPriceScale: { visible: false } });
@@ -2973,7 +3028,7 @@ function ClosedTradeChartPanel({
         value: point.value,
       })),
     );
-  }, [compareCandles, panel.compareSymbol]);
+  }, [displayedCompareCandles, panel.compareSymbol]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -2985,9 +3040,9 @@ function ClosedTradeChartPanel({
     annotationLineRefs.current = [];
     annotationSeriesRefs.current = [];
 
-    const lastTime = candles.at(-1)?.time ?? Math.floor(Date.now() / 1000);
-    const firstTime = candles[0]?.time ?? lastTime - 86400;
-    const intervalSeconds = candles.length > 1 ? inferBarIntervalSeconds(candles) : 86400;
+    const lastTime = displayedCandles.at(-1)?.time ?? Math.floor(Date.now() / 1000);
+    const firstTime = displayedCandles[0]?.time ?? lastTime - 86400;
+    const intervalSeconds = displayedCandles.length > 1 ? inferBarIntervalSeconds(displayedCandles) : 86400;
     for (const annotation of panelAnnotations) {
       const color = annotationColor(annotation);
       if (annotation.type === "horizontal" && typeof annotation.price === "number") {
@@ -3049,7 +3104,7 @@ function ClosedTradeChartPanel({
           } as SeriesMarker<Time>];
         }),
     );
-  }, [candles, panelAnnotations, showsTradeExecutions, tradeExecutions]);
+  }, [displayedCandles, panelAnnotations, showsTradeExecutions, tradeExecutions]);
 
   function commitSymbol() {
     if (readOnly) return;
@@ -3068,7 +3123,7 @@ function ClosedTradeChartPanel({
     }
     if (!SYMBOL_PATTERN.test(next)) {
       setCompareInput(panel.compareSymbol ?? "");
-      setStatus("Invalid compare symbol.");
+      setCompareStatus("Invalid compare symbol.");
       return;
     }
     updatePanel(panel.id, { compareSymbol: next, visibleFrom: null, visibleTo: null }, { userEdit: true });
@@ -3219,7 +3274,7 @@ function ClosedTradeChartPanel({
             </span>
           ) : null}
           {source && source !== "alpaca" && source !== "cache" ? <span className="text-amber-600">Fallback data</span> : null}
-          <span data-candle-count={candles.length} data-testid="chart-panel-bar-count">{candles.length.toLocaleString()} bars</span>
+          <span data-candle-count={displayedCandles.length} data-testid="chart-panel-bar-count">{displayedCandles.length.toLocaleString()} bars</span>
         </div>
       </div>
       <div
@@ -3228,6 +3283,7 @@ function ClosedTradeChartPanel({
         data-panel-id={panel.id}
         data-testid="closed-trade-chart-plot"
         data-candle-fresh={hasFreshCandleData ? "true" : "false"}
+        data-compare-fresh={hasFreshCompareData ? "true" : "false"}
       >
         <div
           ref={containerRef}
@@ -3285,7 +3341,7 @@ function ClosedTradeChartPanel({
               SMA {config.period}
             </span>
           ))}
-          {panel.compareSymbol && compareCandles.length > 0 ? (
+          {panel.compareSymbol && displayedCompareCandles.length > 0 ? (
             <span className="font-medium text-teal-700">Compare {panel.compareSymbol} %</span>
           ) : null}
         </div>

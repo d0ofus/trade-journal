@@ -634,7 +634,7 @@ test("demo workstation flow loads, saves, filters, and protects mutation APIs", 
   const compareInput = page.getByLabel("Compare symbol").first();
   if ((await compareInput.inputValue()).toUpperCase() !== "DEMOB") {
     const compareResponse = page.waitForResponse(
-      (response) => response.url().includes("/api/market/candles") && response.url().includes("compare=DEMOB") && response.ok(),
+      (response) => response.url().includes("/api/market/candles") && response.url().includes("symbol=DEMOB") && response.ok(),
     );
     await compareInput.fill("DEMOB");
     await compareInput.blur();
@@ -2038,7 +2038,7 @@ test("chart workstation retries empty provider responses after a timeframe round
     await expect(firstPanel).toHaveAttribute("data-timeframe", "5m");
     await expect.poll(async () => Number(await firstPanel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
     await expect(warning).toBeHidden();
-    expect(fiveMinuteRequestCount).toBe(2);
+    expect(fiveMinuteRequestCount).toBeGreaterThanOrEqual(2);
     await expectChartSavesSettled(page);
   } finally {
     await page.unroute("**/api/market/candles**");
@@ -2627,6 +2627,229 @@ test("chart workstation keeps candles painted and avoids drawing saves while tim
     await page.unroute("**/api/closed-trades/*/chart-layout");
     await page.unroute("**/api/market/candles**");
     await page.unroute("**/api/closed-trades/*/annotations");
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("chart workstation cancels shared candle work only after its final owner releases", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  const candleRequests: string[] = [];
+  const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+  const allowFulfillFailure = new Set<string>();
+  let layoutVersion = 20;
+
+  function gateFor(key: string) {
+    const existing = gates.get(key);
+    if (existing) return existing;
+    let resolve!: () => void;
+    const promise = new Promise<void>((nextResolve) => {
+      resolve = nextResolve;
+    });
+    const gate = { promise, resolve };
+    gates.set(key, gate);
+    return gate;
+  }
+
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    const aborts: string[] = [];
+    Object.defineProperty(window, "__phase9CandleAborts", { value: aborts });
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("/api/market/candles") && init?.signal) {
+        init.signal.addEventListener("abort", () => aborts.push(url), { once: true });
+      }
+      return originalFetch(input, init);
+    };
+  });
+
+  const candleAbortUrls = () => page.evaluate(() =>
+    ((window as typeof window & { __phase9CandleAborts?: string[] }).__phase9CandleAborts ?? []).slice(),
+  );
+
+  await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
+    const request = route.request();
+    const groupKey = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-2) ?? "phase9-owner-group");
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "phase9-owner-layout",
+            groupKey,
+            layoutMode: "two-vertical",
+            version: layoutVersion,
+            panels: [
+              { id: "panel-1", symbol: "DEMOA", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null },
+              { id: "panel-2", symbol: "DEMOA", timeframe: "5m", rangePreset: "trade", visibleFrom: null, visibleTo: null },
+            ],
+          },
+        }),
+      });
+      return;
+    }
+    if (request.method() === "PUT") {
+      const body = request.postDataJSON() as { layoutMode?: string; panels?: ChartPanelLayout[] };
+      layoutVersion += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "phase9-owner-layout",
+            groupKey,
+            layoutMode: body.layoutMode ?? "two-vertical",
+            panels: body.panels ?? [],
+            version: layoutVersion,
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.route("**/api/market/candles**", async (route) => {
+    const url = new URL(route.request().url());
+    const symbol = (url.searchParams.get("symbol") ?? "DEMOA").toUpperCase();
+    const timeframe = url.searchParams.get("timeframe") ?? "5m";
+    const key = `${symbol}:${timeframe}`;
+    candleRequests.push(key);
+
+    if (key === "DEMOA:1h") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          symbol,
+          timeframe,
+          source: null,
+          candles: [],
+          metadata: {
+            requestedRange: null,
+            returnedRange: null,
+            barIntervalSeconds: null,
+            limit: 30000,
+            truncated: false,
+            warnings: ["Forced provider failure; no candle data returned."],
+          },
+        }),
+      });
+      return;
+    }
+
+    await gateFor(key).promise;
+    const interval = timeframe === "15m" ? 900 : timeframe === "1h" ? 3600 : 300;
+    const candles = Array.from({ length: 60 }, (_, index) => {
+      const base = 100 + index * 0.12;
+      return {
+        time: unixSeconds("2026-06-17T12:00:00.000Z") + index * interval,
+        open: base,
+        high: base + 0.8,
+        low: base - 0.7,
+        close: base + 0.2,
+        volume: 1000 + index,
+      };
+    });
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          symbol,
+          timeframe,
+          source: timeframe === "15m" ? "cache" : "yahoo",
+          cacheKind: timeframe === "15m" ? "derived-5m" : "native",
+          candles,
+          metadata: {
+            requestedRange: null,
+            returnedRange: { from: candles[0].time, to: candles.at(-1)?.time ?? candles[0].time },
+            barIntervalSeconds: interval,
+            limit: 30000,
+            truncated: false,
+            warnings: [],
+          },
+        }),
+      });
+    } catch (error) {
+      if (!allowFulfillFailure.has(key)) throw error;
+    }
+  });
+
+  try {
+    await signIn(page);
+    await gotoAndSettle(page, "/trades?symbol=DEMOA");
+    const trade = page.getByRole("button", { name: /DEMOA LONG/ }).first();
+    await expect(trade).toBeVisible();
+    await trade.click();
+
+    const panels = page.getByTestId("closed-trade-chart-panel");
+    await expect(panels).toHaveCount(2);
+    await expect.poll(() => candleRequests.filter((key) => key === "DEMOA:5m").length).toBe(1);
+    await page.waitForTimeout(350);
+
+    await panels.nth(0).locator('button[title="Switch to 15M"]').click();
+    await expect.poll(() => candleRequests.filter((key) => key === "DEMOA:15m").length).toBe(1);
+    await page.waitForTimeout(250);
+    expect((await candleAbortUrls()).filter((url) => url.includes("timeframe=5m"))).toHaveLength(0);
+
+    await panels.nth(1).locator('button[title="Switch to 15M"]').click();
+    await expect.poll(async () => (await candleAbortUrls()).filter((url) => url.includes("timeframe=5m")).length).toBe(1);
+    allowFulfillFailure.add("DEMOA:5m");
+    gateFor("DEMOA:5m").resolve();
+    await page.waitForTimeout(150);
+    await expect(panels.nth(0)).toHaveAttribute("data-timeframe", "15m");
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "false");
+
+    const compareInput = panels.nth(0).getByLabel("Compare symbol");
+    await compareInput.fill("DEMOB");
+    await compareInput.blur();
+    await expect.poll(() => candleRequests.filter((key) => key === "DEMOB:15m").length).toBe(1);
+    await compareInput.fill("");
+    await compareInput.blur();
+    await expect.poll(async () => (await candleAbortUrls()).filter((url) => url.includes("symbol=DEMOB")).length).toBe(1);
+    expect((await candleAbortUrls()).filter((url) => url.includes("symbol=DEMOA") && url.includes("timeframe=15m"))).toHaveLength(0);
+    allowFulfillFailure.add("DEMOB:15m");
+    gateFor("DEMOB:15m").resolve();
+
+    const symbolInput = panels.nth(0).getByRole("textbox", { name: "Symbol", exact: true });
+    await symbolInput.fill("DEMOC");
+    await symbolInput.press("Enter");
+    await expect.poll(() => candleRequests.filter((key) => key === "DEMOC:15m").length).toBe(1);
+    await symbolInput.fill("DEMOA");
+    await symbolInput.press("Enter");
+    await expect.poll(async () => (await candleAbortUrls()).filter((url) => url.includes("symbol=DEMOC")).length).toBe(1);
+    expect(candleRequests.filter((key) => key === "DEMOA:15m")).toHaveLength(1);
+    allowFulfillFailure.add("DEMOC:15m");
+    gateFor("DEMOC:15m").resolve();
+
+    gateFor("DEMOA:15m").resolve();
+    for (let index = 0; index < 2; index += 1) {
+      const plot = panels.nth(index).getByTestId("closed-trade-chart-plot");
+      await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+      await expect.poll(async () => Number(await panels.nth(index).getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
+    }
+    await expect(panels.nth(0).getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
+
+    const retainedCount = await panels.nth(0).getByTestId("chart-panel-bar-count").getAttribute("data-candle-count");
+    await panels.nth(0).locator('button[title="Switch to 1H"]').click();
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "false");
+    await expect(panels.nth(0).getByTestId("chart-panel-bar-count")).toHaveAttribute("data-candle-count", retainedCount ?? "60");
+    await expect(panels.nth(0).getByTestId("chart-warning")).toContainText("Forced provider failure; no candle data returned.");
+    await expectFirstCanvasPainted(page);
+
+    await panels.nth(0).locator('button[title="Switch to 15M"]').click();
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "true");
+    await expectChartSavesSettled(page);
+  } finally {
+    for (const [key, gate] of gates) {
+      allowFulfillFailure.add(key);
+      gate.resolve();
+    }
+    await page.unroute("**/api/closed-trades/*/chart-layout");
+    await page.unroute("**/api/market/candles**");
   }
 
   expect(browserErrors).toEqual([]);

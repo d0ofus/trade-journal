@@ -45,6 +45,15 @@ const MAX_ALPACA_PAGES = 20;
 
 export const SAFE_SYMBOL_PATTERN = /^[A-Z0-9.^=_-]{1,20}$/;
 
+export function isCandleRequestAbort(error: unknown, signal?: AbortSignal) {
+  return Boolean(signal?.aborted) || (error instanceof DOMException && error.name === "AbortError");
+}
+
+function throwIfCandleRequestAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new DOMException("Candle request aborted.", "AbortError");
+}
+
 export function summarizeCandleResponse(input: {
   candles: Candle[];
   range: CandleRange;
@@ -172,7 +181,9 @@ async function readCachedCandles(input: {
   range: CandleRange;
   limit: number;
   preferLatest?: boolean;
+  signal?: AbortSignal;
 }) {
+  throwIfCandleRequestAborted(input.signal);
   const where = {
     symbol: input.symbol,
     timeframe: input.timeframe,
@@ -191,6 +202,7 @@ async function readCachedCandles(input: {
     orderBy: descending ? { time: "desc" } : { time: "asc" },
     take: Math.max(1, input.limit),
   });
+  throwIfCandleRequestAborted(input.signal);
 
   return (descending ? rows.reverse() : rows).map((row) => ({
     time: Math.floor(row.time.getTime() / 1000),
@@ -208,13 +220,16 @@ async function readCachedCandlesWithRetry(input: {
   range: CandleRange;
   limit: number;
   preferLatest?: boolean;
+  signal?: AbortSignal;
 }) {
   try {
     return await readCachedCandles(input);
   } catch (firstError) {
+    if (isCandleRequestAbort(firstError, input.signal)) throw firstError;
     try {
       return await readCachedCandles(input);
-    } catch {
+    } catch (retryError) {
+      if (isCandleRequestAbort(retryError, input.signal)) throw retryError;
       throw firstError;
     }
   }
@@ -231,6 +246,7 @@ async function readAggregatedCachedCandles(input: {
   timeframe: CandleTimeframe;
   range: CandleRange;
   limit: number;
+  signal?: AbortSignal;
 }) {
   const plan = aggregateCachePlan(input.timeframe);
   if (!plan) return [];
@@ -259,6 +275,7 @@ async function readAggregatedCachedCandles(input: {
       range: sourceRange,
       limit: sourceLimit,
       preferLatest: input.timeframe === "15m",
+      signal: input.signal,
     });
     const aggregated =
       input.timeframe === "15m"
@@ -371,7 +388,9 @@ async function loadAlpacaCandlesForSymbol(input: {
   timeframe: CandleTimeframe;
   range: { from: number; to: number };
   limit: number;
+  signal?: AbortSignal;
 }) {
+  throwIfCandleRequestAborted(input.signal);
   const credentials = alpacaCredentials();
   if (!credentials) return null;
 
@@ -381,6 +400,7 @@ async function loadAlpacaCandlesForSymbol(input: {
   const targetLimit = Math.max(1, input.limit);
 
   do {
+    throwIfCandleRequestAborted(input.signal);
     const url = new URL(`${credentials.baseUrl}/v2/stocks/bars`);
     url.searchParams.set("symbols", input.symbol);
     url.searchParams.set("timeframe", ALPACA_TIMEFRAME[input.timeframe]);
@@ -393,6 +413,7 @@ async function loadAlpacaCandlesForSymbol(input: {
 
     const res = await fetch(url.toString(), {
       cache: "no-store",
+      signal: input.signal,
       headers: {
         "APCA-API-KEY-ID": credentials.keyId,
         "APCA-API-SECRET-KEY": credentials.secretKey,
@@ -401,6 +422,7 @@ async function loadAlpacaCandlesForSymbol(input: {
     if (!res.ok) throw new Error("Alpaca candle provider unavailable.");
 
     const payload = await res.json();
+    throwIfCandleRequestAborted(input.signal);
     rows.push(...parseAlpacaRows(payload, input.symbol));
     pageToken = (payload as { next_page_token?: string | null }).next_page_token ?? null;
     page += 1;
@@ -409,12 +431,21 @@ async function loadAlpacaCandlesForSymbol(input: {
   const candles = dedupeCandles(rows).slice(-targetLimit);
   if (candles.length === 0) throw new Error("Alpaca candle provider returned no usable data.");
 
+  // Once usable provider data is accepted, finish its durable cache write even if the caller disconnects.
+  throwIfCandleRequestAborted(input.signal);
+  let cacheWriteWarning: string | null = null;
   try {
     await cacheAlpacaCandles(input.symbol, input.timeframe, candles);
   } catch {
-    return { symbol: input.symbol, candles, source: ALPACA_SOURCE, warnings: ["Candle cache update failed; showing live provider candles."] };
+    cacheWriteWarning = "Candle cache update failed; showing live provider candles.";
   }
-  return { symbol: input.symbol, candles, source: ALPACA_SOURCE };
+  throwIfCandleRequestAborted(input.signal);
+  return {
+    symbol: input.symbol,
+    candles,
+    source: ALPACA_SOURCE,
+    warnings: cacheWriteWarning ? [cacheWriteWarning] : undefined,
+  };
 }
 
 function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleTimeframe) {
@@ -558,8 +589,10 @@ export async function loadCandlesForSymbol(input: {
   timeframe: CandleTimeframe;
   range: CandleRange;
   limit: number;
+  signal?: AbortSignal;
 }): Promise<LoadedCandles> {
   const { timeframe, range, limit } = input;
+  throwIfCandleRequestAborted(input.signal);
   const symbol = input.symbol.trim().toUpperCase();
   const config = TIMEFRAME_CONFIG[timeframe];
   const boundedLimit = Math.max(1, limit);
@@ -574,8 +607,10 @@ export async function loadCandlesForSymbol(input: {
       range,
       limit: boundedLimit,
       preferLatest: timeframe === "15m",
+      signal: input.signal,
     });
-  } catch {
+  } catch (error) {
+    if (isCandleRequestAbort(error, input.signal)) throw error;
     cacheReadFailed = true;
   }
 
@@ -584,8 +619,9 @@ export async function loadCandlesForSymbol(input: {
     let derivedCached: Candle[] = [];
     let derivedCacheReadFailed = false;
     try {
-      derivedCached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
-    } catch {
+      derivedCached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit, signal: input.signal });
+    } catch (error) {
+      if (isCandleRequestAbort(error, input.signal)) throw error;
       derivedCacheReadFailed = true;
     }
     const selected = chooseBestCacheCandidate(nativeCached, derivedCached, range, boundedLimit);
@@ -606,9 +642,10 @@ export async function loadCandlesForSymbol(input: {
     }
     if (!cacheReadFailed && cached.length === 0 && aggregateCachePlan(timeframe)) {
       try {
-        cached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit });
+        cached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit, signal: input.signal });
         cacheKind = "derived-5m";
-      } catch {
+      } catch (error) {
+        if (isCandleRequestAbort(error, input.signal)) throw error;
         cacheReadFailed = true;
       }
       if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
@@ -625,8 +662,10 @@ export async function loadCandlesForSymbol(input: {
       timeframe,
       range: effectiveRange,
       limit: boundedLimit,
+      signal: input.signal,
     });
-  } catch {
+  } catch (error) {
+    if (isCandleRequestAbort(error, input.signal)) throw error;
     warnings.push(providerUnavailableWarning("Alpaca", cached.length > 0));
   }
   if (alpaca) {
@@ -666,9 +705,11 @@ export async function loadCandlesForSymbol(input: {
   yahooUrl.searchParams.set("events", "div,splits");
 
   try {
-    const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store" });
+    const yahooRes = await fetch(yahooUrl.toString(), { cache: "no-store", signal: input.signal });
+    throwIfCandleRequestAborted(input.signal);
     if (yahooRes.ok) {
       const payload = await yahooRes.json();
+      throwIfCandleRequestAborted(input.signal);
       const parsedRows = dedupeCandles(parseYahooRows(payload));
       const rows =
         timeframe === "1d" || timeframe === "1wk"
@@ -697,7 +738,8 @@ export async function loadCandlesForSymbol(input: {
     } else {
       warnings.push(providerUnavailableWarning("Yahoo", cached.length > 0));
     }
-  } catch {
+  } catch (error) {
+    if (isCandleRequestAbort(error, input.signal)) throw error;
     warnings.push(providerUnavailableWarning("Yahoo", cached.length > 0));
   }
 
@@ -707,15 +749,18 @@ export async function loadCandlesForSymbol(input: {
     for (const candidate of candidates) {
       const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(candidate)}&i=d`;
       try {
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store", signal: input.signal });
+        throwIfCandleRequestAborted(input.signal);
         if (!res.ok) {
           stooqFetchFailed = true;
           continue;
         }
         const csvText = await res.text();
+        throwIfCandleRequestAborted(input.signal);
         const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
         if (rows.length > 0) return { symbol: candidate.toUpperCase(), candles: rows.slice(-boundedLimit), source: "stooq", warnings };
-      } catch {
+      } catch (error) {
+        if (isCandleRequestAbort(error, input.signal)) throw error;
         stooqFetchFailed = true;
       }
     }
@@ -723,6 +768,7 @@ export async function loadCandlesForSymbol(input: {
   }
 
   if (cached.length > 0) {
+    throwIfCandleRequestAborted(input.signal);
     return {
       symbol,
       candles: cached.slice(-boundedLimit),
@@ -737,6 +783,7 @@ export async function loadCandlesForSymbol(input: {
     };
   }
 
+  throwIfCandleRequestAborted(input.signal);
   return { symbol, candles: [], source: null, warnings };
 }
 
