@@ -10,6 +10,7 @@ import {
   SAFE_SYMBOL_PATTERN,
   summarizeCandleResponse,
 } from "@/lib/server/market-candles";
+import type { CandleCoverage } from "@/lib/server/market-session-calendar";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ function buildCandlePayload(input: {
   candles: Candle[];
   limit: number;
   range: CandleRange;
+  coverage?: CandleCoverage;
   warnings?: string[];
 }) {
   const returnedCandles = input.candles.slice(-input.limit);
@@ -28,11 +30,27 @@ function buildCandlePayload(input: {
     limit: input.limit,
     loadedCount: input.candles.length,
   });
+  const coverageWarnings = input.coverage?.status === "unverified"
+    ? ["Calendar/session unknown; coverage not verified."]
+    : input.coverage?.status === "partial"
+      ? [
+          input.coverage.missingBars > 0
+            ? `Candle coverage is missing ${input.coverage.missingBars} expected in-session bar${input.coverage.missingBars === 1 ? "" : "s"}.`
+            : "Candle coverage could not be fully verified within the bounded cache scan.",
+          ...(input.coverage.scanExhausted
+            ? ["Candle cache scan limit reached before requested coverage was filled."]
+            : []),
+        ]
+      : [];
+  const summaryWarnings = input.coverage?.profile
+    ? metadata.warnings.filter((warning) => warning === "Candle response reached the bar limit.")
+    : metadata.warnings;
   return {
     candles: returnedCandles,
     metadata: {
       ...metadata,
-      warnings: [...metadata.warnings, ...(input.warnings ?? [])],
+      coverage: input.coverage ?? null,
+      warnings: [...new Set([...summaryWarnings, ...coverageWarnings, ...(input.warnings ?? [])])],
     },
   };
 }
@@ -60,7 +78,13 @@ async function loadCandlesForRoute(input: {
     };
   }
   if (!loaded) return null;
-  const payload = buildCandlePayload({ candles: loaded.candles, range: input.range, limit: input.limit, warnings: loaded.warnings });
+  const payload = buildCandlePayload({
+    candles: loaded.candles,
+    range: input.range,
+    limit: input.limit,
+    coverage: loaded.coverage,
+    warnings: loaded.warnings,
+  });
   return { ...loaded, ...payload };
 }
 

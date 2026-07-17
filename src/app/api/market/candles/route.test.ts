@@ -113,6 +113,44 @@ describe("market candles route", () => {
     });
   });
 
+  it("returns structured session coverage and deterministic gap warnings", async () => {
+    mocks.loadCandlesForSymbol.mockResolvedValue({
+      symbol: "DEMOA",
+      candles: [{ time: 1_783_000_000, open: 100, high: 101, low: 99, close: 100.5 }],
+      source: "cache",
+      coverage: {
+        status: "partial",
+        profile: "US_EQUITIES_CORE_V1",
+        timezone: "America/New_York",
+        sessionPolicy: "core-required-extended-preserved",
+        expectedBars: 3,
+        presentBars: 1,
+        missingBars: 2,
+        missingBarTimes: [1_783_000_300, 1_783_000_600],
+        latestExpectedTime: 1_783_000_600,
+        scanExhausted: true,
+      },
+      warnings: [],
+    });
+    const { GET } = await import("./route");
+
+    const response = await GET(candleRequest());
+    const body = await response.json();
+
+    expect(body.metadata).toMatchObject({
+      coverage: {
+        status: "partial",
+        profile: "US_EQUITIES_CORE_V1",
+        missingBars: 2,
+        scanExhausted: true,
+      },
+      warnings: [
+        "Candle coverage is missing 2 expected in-session bars.",
+        "Candle cache scan limit reached before requested coverage was filled.",
+      ],
+    });
+  });
+
   it("forwards the exact request abort signal to the candle loader", async () => {
     const controller = new AbortController();
     const request = new NextRequest(

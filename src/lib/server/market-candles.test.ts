@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadCandlesForSymbol, summarizeCandleResponse, type Candle } from "@/lib/server/market-candles";
+import { expectedUsEquitiesBarStarts } from "@/lib/server/market-session-calendar";
 
 const mocks = vi.hoisted(() => ({
   findMany: vi.fn(),
+  instrumentFindMany: vi.fn(),
   createMany: vi.fn(),
   upsert: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    instrument: {
+      findMany: mocks.instrumentFindMany,
+    },
     marketCandle: {
       findMany: mocks.findMany,
       createMany: mocks.createMany,
@@ -20,6 +25,7 @@ vi.mock("@/lib/prisma", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findMany.mockResolvedValue([]);
+  mocks.instrumentFindMany.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -48,6 +54,17 @@ function makeCandles(start: number, count: number, interval = 300): Candle[] {
   });
 }
 
+function makeCandlesAt(times: number[]): Candle[] {
+  return times.map((time, index) => ({
+    time,
+    open: 100 + index,
+    high: 101 + index,
+    low: 99 + index,
+    close: 100.5 + index,
+    volume: 1000 + index,
+  }));
+}
+
 function cachedRows(candles: Candle[]) {
   return candles.map((candle) => ({
     time: new Date(candle.time * 1000),
@@ -57,6 +74,12 @@ function cachedRows(candles: Candle[]) {
     close: candle.close,
     volume: candle.volume ?? null,
   }));
+}
+
+function resolveAsUsEquity(exchange = "NASDAQ") {
+  mocks.instrumentFindMany.mockResolvedValue([
+    { assetType: "STOCK", currency: "USD", exchange },
+  ]);
 }
 
 describe("summarizeCandleResponse", () => {
@@ -250,7 +273,10 @@ describe("loadCandlesForSymbol", () => {
           chart: {
             result: [
               {
-                timestamp: [1_783_000_000, 1_783_000_300],
+                timestamp: [
+                  Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+                  Math.floor(Date.parse("2026-06-17T13:35:00.000Z") / 1000),
+                ],
                 indicators: {
                   quote: [
                     {
@@ -272,7 +298,10 @@ describe("loadCandlesForSymbol", () => {
     const result = await loadCandlesForSymbol({
       symbol: "DEMOA",
       timeframe: "5m",
-      range: { from: 1_783_000_000, to: 1_783_001_000 },
+      range: {
+        from: Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+        to: Math.floor(Date.parse("2026-06-17T13:40:00.000Z") / 1000),
+      },
       limit: 120,
     });
 
@@ -740,7 +769,7 @@ describe("loadCandlesForSymbol", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("falls through to live providers when explicit range cache is only partially covered", async () => {
+  it("keeps a denser partial cache when a provider returns only sparse endpoint rows", async () => {
     withoutAlpacaCredentials();
     const range = { from: 1_783_000_000, to: 1_783_012_000 };
     mocks.findMany.mockResolvedValue(cachedRows(makeCandles(range.from + 6_000, 20)));
@@ -778,10 +807,10 @@ describe("loadCandlesForSymbol", () => {
 
     expect(result).toMatchObject({
       symbol: "DEMOA",
-      source: "yahoo",
-      warnings: [],
+      source: "cache",
+      warnings: ["Yahoo candle provider returned partial coverage; keeping the more complete candle cache."],
     });
-    expect(result.candles).toHaveLength(3);
+    expect(result.candles).toHaveLength(20);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -820,7 +849,10 @@ describe("loadCandlesForSymbol", () => {
     const result = await loadCandlesForSymbol({
       symbol: "DEMOA",
       timeframe: "5m",
-      range: { from: 1_783_000_000, to: 1_783_001_000 },
+      range: {
+        from: Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+        to: Math.floor(Date.parse("2026-06-17T13:40:00.000Z") / 1000),
+      },
       limit: 120,
     });
 
@@ -863,7 +895,10 @@ describe("loadCandlesForSymbol", () => {
     const result = await loadCandlesForSymbol({
       symbol: "DEMOA",
       timeframe: "5m",
-      range: { from: 1_783_000_000, to: 1_783_001_000 },
+      range: {
+        from: Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+        to: Math.floor(Date.parse("2026-06-17T13:40:00.000Z") / 1000),
+      },
       limit: 120,
     });
 
@@ -873,5 +908,302 @@ describe("loadCandlesForSymbol", () => {
       warnings: ["Candle cache update failed; showing live provider candles."],
     });
     expect(result.candles).toHaveLength(1);
+  });
+
+  it("uses validated Yahoo US-equity metadata to verify core-session coverage", async () => {
+    withoutAlpacaCredentials();
+    const range = {
+      from: Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+      to: Math.floor(Date.parse("2026-06-17T13:40:00.000Z") / 1000),
+    };
+    const timestamps = expectedUsEquitiesBarStarts({ timeframe: "5m", ...range });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        chart: {
+          result: [{
+            timestamp: timestamps,
+            meta: {
+              instrumentType: "EQUITY",
+              exchangeName: "NASDAQ",
+              exchangeTimezoneName: "America/New_York",
+            },
+            indicators: {
+              quote: [{
+                open: [100, 101, 102],
+                high: [101, 102, 103],
+                low: [99, 100, 101],
+                close: [100.5, 101.5, 102.5],
+                volume: [1000, 1100, 1200],
+              }],
+            },
+          }],
+        },
+      }),
+    }));
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "5m", range, limit: 120 });
+
+    expect(result).toMatchObject({
+      source: "yahoo",
+      coverage: {
+        status: "complete",
+        profile: "US_EQUITIES_CORE_V1",
+        sessionPolicy: "core-required-extended-preserved",
+        expectedBars: 3,
+        presentBars: 3,
+      },
+    });
+  });
+
+  it("clips Yahoo's widened exclusive request window back to the explicit range", async () => {
+    withoutAlpacaCredentials();
+    const from = Math.floor(Date.parse("2026-06-17T13:32:00.000Z") / 1000);
+    const to = Math.floor(Date.parse("2026-06-17T13:45:00.000Z") / 1000);
+    const timestamps = ["13:30", "13:35", "13:40", "13:45", "13:50"].map((time) =>
+      Math.floor(Date.parse(`2026-06-17T${time}:00.000Z`) / 1000),
+    );
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        chart: {
+          result: [{
+            timestamp: timestamps,
+            indicators: {
+              quote: [{
+                open: [100, 101, 102, 103, 104],
+                high: [101, 102, 103, 104, 105],
+                low: [99, 100, 101, 102, 103],
+                close: [100.5, 101.5, 102.5, 103.5, 104.5],
+                volume: [1000, 1100, 1200, 1300, 1400],
+              }],
+            },
+          }],
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "5m", range: { from, to }, limit: 120 });
+    const yahooUrl = new URL(String(fetch.mock.calls[0]?.[0]));
+
+    expect(yahooUrl.searchParams.get("period2")).toBe(String(Math.floor(Date.parse("2026-06-17T13:50:00.000Z") / 1000)));
+    expect(result.candles.map((candle) => candle.time)).toEqual(timestamps.slice(1, 4));
+  });
+
+  it("clips Stooq daily history to the requested dates", async () => {
+    withoutAlpacaCredentials();
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => [
+          "Date,Open,High,Low,Close,Volume",
+          "2026-06-15,100,102,99,101,1000",
+          "2026-06-16,101,103,100,102,1100",
+          "2026-06-17,102,104,101,103,1200",
+          "2026-06-18,103,105,102,104,1300",
+        ].join("\n"),
+      });
+    vi.stubGlobal("fetch", fetch);
+    const range = {
+      from: Math.floor(Date.parse("2026-06-16T00:00:00.000Z") / 1000),
+      to: Math.floor(Date.parse("2026-06-17T23:59:59.000Z") / 1000),
+    };
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "1d", range, limit: 120 });
+
+    expect(result).toMatchObject({ source: "stooq" });
+    expect(result.candles.map((candle) => candle.time)).toEqual([
+      Math.floor(Date.parse("2026-06-16T00:00:00.000Z") / 1000),
+      Math.floor(Date.parse("2026-06-17T00:00:00.000Z") / 1000),
+    ]);
+  });
+
+  it("treats a full US-equity market holiday as complete without provider fallback", async () => {
+    withoutAlpacaCredentials();
+    resolveAsUsEquity("NYSE");
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "15m",
+      range: {
+        from: Math.floor(Date.parse("2026-11-26T00:00:00.000Z") / 1000),
+        to: Math.floor(Date.parse("2026-11-26T23:59:59.000Z") / 1000),
+      },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({
+      source: "cache",
+      cacheKind: "native",
+      candles: [],
+      coverage: { status: "closed", expectedBars: 0, missingBars: 0 },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("accepts all 14 bars in a post-Thanksgiving early-close session", async () => {
+    withoutAlpacaCredentials();
+    resolveAsUsEquity("NYSE");
+    const range = {
+      from: Math.floor(Date.parse("2026-11-27T00:00:00.000Z") / 1000),
+      to: Math.floor(Date.parse("2026-11-27T23:59:59.000Z") / 1000),
+    };
+    const expected = expectedUsEquitiesBarStarts({ timeframe: "15m", ...range });
+    mocks.findMany.mockImplementation(({ where }: { where: { timeframe: string } }) =>
+      Promise.resolve(where.timeframe === "15m" ? cachedRows(makeCandlesAt(expected)) : []),
+    );
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "15m", range, limit: 120 });
+
+    expect(expected).toHaveLength(14);
+    expect(result).toMatchObject({
+      source: "cache",
+      cacheKind: "native",
+      coverage: { status: "complete", expectedBars: 14, missingBars: 0 },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not count a weekend or overnight closure as missing cache coverage", async () => {
+    withoutAlpacaCredentials();
+    resolveAsUsEquity();
+    const range = {
+      from: Math.floor(Date.parse("2026-03-06T20:55:00.000Z") / 1000),
+      to: Math.floor(Date.parse("2026-03-09T13:30:00.000Z") / 1000),
+    };
+    const expected = expectedUsEquitiesBarStarts({ timeframe: "5m", ...range });
+    mocks.findMany.mockResolvedValue(cachedRows(makeCandlesAt(expected)));
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "5m", range, limit: 120 });
+
+    expect(expected).toHaveLength(2);
+    expect(result).toMatchObject({ source: "cache", coverage: { status: "complete", missingBars: 0 } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("falls through to providers for a genuine in-session cache gap", async () => {
+    withoutAlpacaCredentials();
+    resolveAsUsEquity();
+    const range = {
+      from: Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+      to: Math.floor(Date.parse("2026-06-17T19:45:00.000Z") / 1000),
+    };
+    const expected = expectedUsEquitiesBarStarts({ timeframe: "15m", ...range });
+    const partial = makeCandlesAt(expected.filter((time) => time !== expected[10]));
+    mocks.findMany.mockImplementation(({ where }: { where: { timeframe: string } }) =>
+      Promise.resolve(where.timeframe === "15m" ? cachedRows(partial) : []),
+    );
+    const fetch = vi.fn().mockRejectedValue(new Error("provider offline"));
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "15m", range, limit: 120 });
+
+    expect(result).toMatchObject({
+      source: "cache",
+      coverage: { status: "partial", expectedBars: 26, presentBars: 25, missingBars: 1 },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps unsupported exchanges explicitly unverified", async () => {
+    withoutAlpacaCredentials();
+    resolveAsUsEquity("LSE");
+    const start = Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000);
+    const candles = makeCandles(start, 20);
+    mocks.findMany.mockResolvedValue(cachedRows(candles));
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "5m",
+      range: { from: start, to: candles.at(-1)!.time },
+      limit: 120,
+    });
+
+    expect(result).toMatchObject({
+      source: "cache",
+      coverage: { status: "unverified", profile: null, sessionPolicy: "unknown" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves available extended-hours candles while verifying core coverage", async () => {
+    withoutAlpacaCredentials();
+    resolveAsUsEquity();
+    const range = {
+      from: Math.floor(Date.parse("2026-06-17T12:00:00.000Z") / 1000),
+      to: Math.floor(Date.parse("2026-06-17T20:30:00.000Z") / 1000),
+    };
+    const expected = expectedUsEquitiesBarStarts({ timeframe: "5m", ...range });
+    const extended = [
+      Math.floor(Date.parse("2026-06-17T12:05:00.000Z") / 1000),
+      Math.floor(Date.parse("2026-06-17T20:15:00.000Z") / 1000),
+    ];
+    mocks.findMany.mockResolvedValue(cachedRows(makeCandlesAt([...extended, ...expected])));
+    vi.stubGlobal("fetch", vi.fn());
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "5m", range, limit: 120 });
+
+    expect(result.coverage).toMatchObject({ status: "complete", expectedBars: 78, missingBars: 0 });
+    expect(result.candles.map((candle) => candle.time)).toEqual(expect.arrayContaining(extended));
+  });
+
+  it("recovers complete older 15-minute buckets beyond the former two-times source cap", async () => {
+    withoutAlpacaCredentials();
+    const base = Math.floor(1_783_000_000 / 900) * 900;
+    const completeTimes = Array.from({ length: 21 }, (_, bucket) =>
+      [0, 300, 600].map((offset) => base + bucket * 900 + offset),
+    ).flat();
+    const sparseTimes = Array.from({ length: 160 }, (_, bucket) => base + (21 + bucket) * 900);
+    const rows = cachedRows(makeCandlesAt([...completeTimes, ...sparseTimes])).sort(
+      (left, right) => right.time.getTime() - left.time.getTime(),
+    );
+    const sourceTakes: number[] = [];
+    mocks.findMany.mockImplementation(({ where, take }: { where: { timeframe: string }; take: number }) => {
+      if (where.timeframe === "15m") return Promise.resolve([]);
+      sourceTakes.push(take);
+      return Promise.resolve(rows.slice(0, take));
+    });
+    vi.stubGlobal("fetch", vi.fn());
+
+    const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "15m", range: null, limit: 21 });
+
+    expect(result).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
+    expect(result.candles).toHaveLength(21);
+    expect(Math.max(...sourceTakes)).toBeGreaterThan(21 * 3 * 2 + 3);
+    expect(Math.max(...sourceTakes)).toBeLessThanOrEqual(21 * 3 * 8 + 3);
+  });
+
+  it("honors cancellation while resolving session-aware work", async () => {
+    withoutAlpacaCredentials();
+    const controller = new AbortController();
+    mocks.instrumentFindMany.mockImplementation(async () => {
+      controller.abort(new DOMException("request closed", "AbortError"));
+      return [{ assetType: "STOCK", currency: "USD", exchange: "NASDAQ" }];
+    });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadCandlesForSymbol({
+      symbol: "DEMOA",
+      timeframe: "5m",
+      range: {
+        from: Math.floor(Date.parse("2026-06-17T13:30:00.000Z") / 1000),
+        to: Math.floor(Date.parse("2026-06-17T14:00:00.000Z") / 1000),
+      },
+      limit: 120,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.findMany).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

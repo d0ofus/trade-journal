@@ -3021,7 +3021,11 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
     expect(response.status()).toBe(200);
     const payload = await response.json() as {
       candles?: Array<{ time?: number }>;
-      metadata?: { barIntervalSeconds?: number | null };
+      metadata?: {
+        barIntervalSeconds?: number | null;
+        coverage?: { status?: string; profile?: string | null; missingBars?: number; scanExhausted?: boolean } | null;
+        warnings?: string[];
+      };
       source?: string | null;
       cacheKind?: string | null;
       timeframe?: string;
@@ -3031,6 +3035,17 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
     expect(payload.cacheKind).toBe("derived-5m");
     expect(payload.candles?.length ?? 0).toBeGreaterThan(0);
     expect(payload.metadata?.barIntervalSeconds).toBe(15 * 60);
+    expect(payload.metadata?.coverage).toMatchObject({
+      status: "complete",
+      profile: "US_EQUITIES_CORE_V1",
+      missingBars: 0,
+      scanExhausted: false,
+    });
+    expect(payload.metadata?.warnings ?? []).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("missing"),
+      expect.stringContaining("provider"),
+      expect.stringContaining("requested range"),
+    ]));
     await expect(panel).toHaveAttribute("data-timeframe", "15m");
     await expect(plot).toHaveAttribute("data-candle-fresh", "true");
     await expect(panel.getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
@@ -3094,14 +3109,42 @@ test("chart workstation derives 15M candles from the seeded 5M cache", async ({ 
     );
     await demoCPanel.locator('button[title="Switch to 15M"]').click();
     const demoCResponse = await demoCResponsePromise;
-    const demoCPayload = await demoCResponse.json() as { cacheKind?: string | null; candles?: unknown[]; source?: string | null };
+    const demoCPayload = await demoCResponse.json() as {
+      cacheKind?: string | null;
+      candles?: unknown[];
+      source?: string | null;
+      metadata?: {
+        coverage?: { status?: string; profile?: string | null; missingBars?: number; scanExhausted?: boolean } | null;
+        warnings?: string[];
+      };
+    };
     expect(demoCPayload).toMatchObject({ source: "cache", cacheKind: "derived-5m" });
     expect(demoCPayload.candles?.length ?? 0).toBeGreaterThan(0);
+    expect(demoCPayload.metadata?.coverage).toMatchObject({
+      status: "complete",
+      profile: "US_EQUITIES_CORE_V1",
+      missingBars: 0,
+      scanExhausted: false,
+    });
+    expect(demoCPayload.metadata?.warnings ?? []).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("missing"),
+      expect.stringContaining("provider"),
+      expect.stringContaining("requested range"),
+    ]));
     await expect(demoCPanel).toHaveAttribute("data-timeframe", "15m");
     await expect(demoCPanel.getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "true");
     await expect(demoCPanel.getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
     await expect.poll(async () => Number(await demoCPanel.getByTestId("chart-panel-bar-count").getAttribute("data-candle-count"))).toBeGreaterThan(0);
-    await expect(page.locator('[data-testid="execution-overlay-label"][data-panel-id="panel-1"]')).not.toHaveCount(0);
+    const demoCOverlays = page.locator('[data-testid="execution-overlay-label"][data-panel-id="panel-1"]');
+    await expect(demoCOverlays).toHaveCount(3);
+    await demoCPanel.locator('button[title="Switch to 1H"]').click();
+    await expect(demoCPanel).toHaveAttribute("data-timeframe", "1h");
+    await expect(demoCPanel.getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "true");
+    await expect(demoCOverlays).toHaveCount(3);
+    await demoCPanel.locator('button[title="Switch to 5M"]').click();
+    await expect(demoCPanel).toHaveAttribute("data-timeframe", "5m");
+    await expect(demoCPanel.getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "true");
+    await expect(demoCOverlays).toHaveCount(3);
     await expectFirstCanvasPainted(page);
     await expectChartSavesSettled(page);
   } finally {
@@ -4747,7 +4790,7 @@ test("chart workstation retries failed layout loads, locks on layout conflicts, 
 
   const fixtureCandles = [
     {
-      time: unixSeconds("2026-06-19T14:00:00.000Z"),
+      time: unixSeconds("2026-06-18T12:00:00.000Z"),
       open: 45.2,
       high: 45.3,
       low: 44.5,
@@ -4755,7 +4798,7 @@ test("chart workstation retries failed layout loads, locks on layout conflicts, 
       volume: 2200,
     },
     {
-      time: unixSeconds("2026-06-19T16:00:00.000Z"),
+      time: unixSeconds("2026-06-18T16:00:00.000Z"),
       open: 43.3,
       high: 43.45,
       low: 42.7,

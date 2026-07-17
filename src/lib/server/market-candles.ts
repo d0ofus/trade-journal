@@ -1,5 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { inferBarIntervalSeconds } from "@/lib/charts/execution-marker-alignment";
+import {
+  evaluateUsEquitiesCandleCoverage,
+  isSessionAwareTimeframe,
+  type CandleCoverage,
+  type CandleSessionProfile,
+  unverifiedCandleCoverage,
+  US_EQUITIES_CORE_PROFILE,
+} from "@/lib/server/market-session-calendar";
 
 export type Candle = { time: number; open: number; high: number; low: number; close: number; volume?: number };
 export type CandleTimeframe = "5m" | "10m" | "15m" | "1h" | "1d" | "1wk";
@@ -18,6 +26,7 @@ export type LoadedCandles = {
   candles: Candle[];
   source: string | null;
   cacheKind?: CandleCacheKind;
+  coverage?: CandleCoverage;
   warnings?: string[];
 };
 
@@ -40,8 +49,31 @@ const ALPACA_TIMEFRAME: Record<CandleTimeframe, string> = {
 };
 
 const ALPACA_SOURCE = "alpaca";
+const DEMO_SOURCE = "demo";
+const READABLE_CACHE_SOURCES = [ALPACA_SOURCE, DEMO_SOURCE];
 const MAX_ALPACA_BARS_PER_PAGE = 10_000;
 const MAX_ALPACA_PAGES = 20;
+const MAX_AGGREGATE_READ_ATTEMPTS = 6;
+const MAX_AGGREGATE_SOURCE_ROWS = 100_000;
+const MAX_AGGREGATE_SOURCE_MULTIPLIER = 8;
+const US_EQUITY_EXCHANGES = new Set([
+  "AMEX",
+  "ARCA",
+  "BATS",
+  "CBOE",
+  "EDGEA",
+  "EDGX",
+  "IEX",
+  "ISLAND",
+  "NASDAQ",
+  "NASDAQCM",
+  "NASDAQGM",
+  "NASDAQGS",
+  "NYSE",
+  "NYSEARCA",
+  "NYSEMKT",
+  "SMART",
+]);
 
 export const SAFE_SYMBOL_PATTERN = /^[A-Z0-9.^=_-]{1,20}$/;
 
@@ -120,6 +152,13 @@ function defaultRangeForTimeframe(timeframe: CandleTimeframe) {
   return { from, to };
 }
 
+function clipCandlesToRange(rows: Candle[], range: CandleRange) {
+  const normalized = dedupeCandles(rows);
+  return range
+    ? normalized.filter((candle) => candle.time >= range.from && candle.time <= range.to)
+    : normalized;
+}
+
 function timeframeIntervalSeconds(timeframe: CandleTimeframe) {
   return timeframe === "5m"
     ? 5 * 60
@@ -148,6 +187,60 @@ function cachedCandlesAreUsable(candles: Candle[], timeframe: CandleTimeframe, l
   if (candles.length === 0) return false;
   const minimumBars = timeframe === "1d" || timeframe === "1wk" ? 5 : 20;
   return candles.length >= Math.min(minimumBars, Math.max(1, limit)) && cachedCandlesCoverRequestedRange(candles, timeframe, range);
+}
+
+function normalizedExchange(value: string | null | undefined) {
+  return (value ?? "").trim().toUpperCase().replace(/[ ._-]/g, "");
+}
+
+async function resolveCandleSessionProfile(symbol: string, signal?: AbortSignal): Promise<CandleSessionProfile | null> {
+  throwIfCandleRequestAborted(signal);
+  try {
+    const instruments = await prisma.instrument.findMany({
+      where: { symbol },
+      select: { assetType: true, currency: true, exchange: true },
+      take: 25,
+    });
+    throwIfCandleRequestAborted(signal);
+    if (instruments.length === 0) return null;
+    const supported = instruments.every((instrument) =>
+      (instrument.assetType === "STOCK" || instrument.assetType === "ETF") &&
+      instrument.currency.trim().toUpperCase() === "USD" &&
+      US_EQUITY_EXCHANGES.has(normalizedExchange(instrument.exchange)),
+    );
+    return supported ? US_EQUITIES_CORE_PROFILE : null;
+  } catch (error) {
+    if (isCandleRequestAbort(error, signal)) throw error;
+    return null;
+  }
+}
+
+function candleCoverage(input: {
+  candles: Candle[];
+  timeframe: CandleTimeframe;
+  range: CandleRange;
+  effectiveRange: { from: number; to: number };
+  limit: number;
+  profile: CandleSessionProfile | null;
+  scanExhausted?: boolean;
+}) {
+  if (!input.profile || !isSessionAwareTimeframe(input.timeframe)) {
+    return unverifiedCandleCoverage(input.scanExhausted);
+  }
+  const range = input.range ?? input.effectiveRange;
+  return evaluateUsEquitiesCandleCoverage({
+    candleTimes: input.candles.map((candle) => candle.time),
+    timeframe: input.timeframe,
+    from: range.from,
+    to: range.to,
+    limit: input.limit,
+    scanExhausted: input.scanExhausted,
+  });
+}
+
+function coverageIsUsable(coverage: CandleCoverage, legacyUsable: boolean) {
+  if (coverage.status === "unverified") return legacyUsable;
+  return coverage.status === "complete" || coverage.status === "closed" || coverage.status === "limited";
 }
 
 function providerUnavailableWarning(provider: string, hasFallbackCandles: boolean) {
@@ -187,7 +280,7 @@ async function readCachedCandles(input: {
   const where = {
     symbol: input.symbol,
     timeframe: input.timeframe,
-    source: ALPACA_SOURCE,
+    source: { in: READABLE_CACHE_SOURCES },
     time: input.range
       ? {
           gte: new Date(input.range.from * 1000),
@@ -249,7 +342,7 @@ async function readAggregatedCachedCandles(input: {
   signal?: AbortSignal;
 }) {
   const plan = aggregateCachePlan(input.timeframe);
-  if (!plan) return [];
+  if (!plan) return { candles: [] as Candle[], scanExhausted: false };
 
   const sourceIntervalSeconds = timeframeIntervalSeconds(plan.sourceTimeframe);
   const sourceBarsPerTargetBar = Math.ceil(plan.bucketSeconds / sourceIntervalSeconds);
@@ -265,10 +358,15 @@ async function readAggregatedCachedCandles(input: {
   let sourceLimit =
     input.limit * sourceBarsPerTargetBar +
     (input.timeframe === "15m" ? sourceBarsPerTargetBar - 1 : 0);
-  const maximumSourceLimit = input.limit * sourceBarsPerTargetBar * 2 + sourceBarsPerTargetBar;
+  const maximumSourceLimit = Math.min(
+    MAX_AGGREGATE_SOURCE_ROWS,
+    input.limit * sourceBarsPerTargetBar * MAX_AGGREGATE_SOURCE_MULTIPLIER + sourceBarsPerTargetBar,
+  );
   let clipped: Candle[] = [];
+  let scanExhausted = false;
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_AGGREGATE_READ_ATTEMPTS; attempt += 1) {
+    throwIfCandleRequestAborted(input.signal);
     const sourceCandles = await readCachedCandlesWithRetry({
       symbol: input.symbol,
       timeframe: plan.sourceTimeframe,
@@ -285,22 +383,22 @@ async function readAggregatedCachedCandles(input: {
       ? aggregated.filter((candle) => candle.time >= input.range!.from && candle.time <= input.range!.to)
       : aggregated;
 
-    if (
-      input.timeframe !== "15m" ||
-      clipped.length >= input.limit ||
-      sourceCandles.length < sourceLimit ||
-      sourceLimit >= maximumSourceLimit
-    ) {
+    const canReadFarther = sourceCandles.length >= sourceLimit;
+    if (input.timeframe !== "15m" || clipped.length >= input.limit || !canReadFarther) {
+      break;
+    }
+    if (sourceLimit >= maximumSourceLimit || attempt === MAX_AGGREGATE_READ_ATTEMPTS - 1) {
+      scanExhausted = true;
       break;
     }
     const missingTargetBars = input.limit - clipped.length;
     sourceLimit = Math.min(
       maximumSourceLimit,
-      sourceLimit + missingTargetBars * sourceBarsPerTargetBar + sourceBarsPerTargetBar,
+      Math.max(sourceLimit * 2, sourceLimit + missingTargetBars * sourceBarsPerTargetBar + sourceBarsPerTargetBar),
     );
   }
 
-  return clipped.slice(-input.limit);
+  return { candles: clipped.slice(-input.limit), scanExhausted };
 }
 
 function chunked<T>(rows: T[], size: number) {
@@ -462,10 +560,7 @@ function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleT
               ? 7 * 24 * 60 * 60
               : 24 * 60 * 60;
   const period1 = Math.floor(fromRaw / intervalSeconds) * intervalSeconds;
-  const period2 =
-    timeframe === "1d" || timeframe === "1wk"
-      ? (Math.floor(toRaw / intervalSeconds) + 1) * intervalSeconds
-      : Math.ceil(toRaw / intervalSeconds) * intervalSeconds;
+  const period2 = (Math.floor(toRaw / intervalSeconds) + 1) * intervalSeconds;
 
   return { period1, period2: Math.max(period1 + intervalSeconds, period2) };
 }
@@ -542,8 +637,42 @@ function parseCsvRows(csvText: string) {
   });
 }
 
+type YahooChartResult = {
+  timestamp?: number[];
+  meta?: {
+    instrumentType?: string;
+    exchangeName?: string;
+    fullExchangeName?: string;
+    exchangeTimezoneName?: string;
+  };
+  indicators?: {
+    quote?: Array<{
+      open?: Array<number | null>;
+      high?: Array<number | null>;
+      low?: Array<number | null>;
+      close?: Array<number | null>;
+      volume?: Array<number | null>;
+    }>;
+  };
+};
+
+function yahooChartResult(payload: unknown) {
+  return (payload as { chart?: { result?: YahooChartResult[] } })?.chart?.result?.[0] ?? null;
+}
+
+function yahooSessionProfile(payload: unknown): CandleSessionProfile | null {
+  const meta = yahooChartResult(payload)?.meta;
+  const instrumentType = (meta?.instrumentType ?? "").trim().toUpperCase();
+  const exchange = normalizedExchange(meta?.exchangeName ?? meta?.fullExchangeName);
+  return (instrumentType === "EQUITY" || instrumentType === "ETF") &&
+    meta?.exchangeTimezoneName === US_EQUITIES_CORE_PROFILE.timezone &&
+    US_EQUITY_EXCHANGES.has(exchange)
+    ? US_EQUITIES_CORE_PROFILE
+    : null;
+}
+
 function parseYahooRows(payload: unknown) {
-  const result = (payload as { chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ open?: Array<number | null>; high?: Array<number | null>; low?: Array<number | null>; close?: Array<number | null>; volume?: Array<number | null> }> } }> } })?.chart?.result?.[0];
+  const result = yahooChartResult(payload);
   const timestamps = result?.timestamp ?? [];
   const quote = result?.indicators?.quote?.[0];
   if (!quote || timestamps.length === 0) return [] as Candle[];
@@ -596,10 +725,15 @@ export async function loadCandlesForSymbol(input: {
   const symbol = input.symbol.trim().toUpperCase();
   const config = TIMEFRAME_CONFIG[timeframe];
   const boundedLimit = Math.max(1, limit);
+  const effectiveRange = range ?? defaultRangeForTimeframe(timeframe);
+  const sessionProfile = await resolveCandleSessionProfile(symbol, input.signal);
+  throwIfCandleRequestAborted(input.signal);
   const warnings: string[] = [];
   let cacheReadFailed = false;
   let cached: Candle[] = [];
   let cacheKind: CandleCacheKind | undefined = "native";
+  let cacheCoverage = unverifiedCandleCoverage();
+  let cacheScanExhausted = false;
   try {
     cached = await readCachedCandlesWithRetry({
       symbol,
@@ -617,16 +751,37 @@ export async function loadCandlesForSymbol(input: {
   if (timeframe === "15m") {
     const nativeCached = cached;
     let derivedCached: Candle[] = [];
+    let derivedScanExhausted = false;
     let derivedCacheReadFailed = false;
     try {
-      derivedCached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit, signal: input.signal });
+      const derived = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit, signal: input.signal });
+      derivedCached = derived.candles;
+      derivedScanExhausted = derived.scanExhausted;
     } catch (error) {
       if (isCandleRequestAbort(error, input.signal)) throw error;
       derivedCacheReadFailed = true;
     }
-    const selected = chooseBestCacheCandidate(nativeCached, derivedCached, range, boundedLimit);
+    const selected = chooseBestCacheCandidate(
+      nativeCached,
+      derivedCached,
+      range,
+      effectiveRange,
+      boundedLimit,
+      sessionProfile,
+      derivedScanExhausted,
+    );
     cached = selected?.candles ?? [];
     cacheKind = selected?.cacheKind;
+    cacheCoverage = selected?.coverage ?? candleCoverage({
+      candles: [],
+      timeframe,
+      range,
+      effectiveRange,
+      limit: boundedLimit,
+      profile: sessionProfile,
+      scanExhausted: derivedScanExhausted,
+    });
+    cacheScanExhausted = selected?.scanExhausted ?? derivedScanExhausted;
     cacheReadFailed = cacheReadFailed && derivedCacheReadFailed;
     if (selected?.usable) {
       return {
@@ -634,27 +789,46 @@ export async function loadCandlesForSymbol(input: {
         candles: selected.candles.slice(-boundedLimit),
         source: "cache",
         cacheKind: selected.cacheKind,
+        coverage: selected.coverage,
       };
     }
   } else {
-    if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
-      return { symbol, candles: cached.slice(-boundedLimit), source: "cache", cacheKind };
+    cacheCoverage = candleCoverage({
+      candles: cached,
+      timeframe,
+      range,
+      effectiveRange,
+      limit: boundedLimit,
+      profile: sessionProfile,
+    });
+    if (coverageIsUsable(cacheCoverage, cachedCandlesAreUsable(cached, timeframe, boundedLimit, range))) {
+      return { symbol, candles: cached.slice(-boundedLimit), source: "cache", cacheKind, coverage: cacheCoverage };
     }
     if (!cacheReadFailed && cached.length === 0 && aggregateCachePlan(timeframe)) {
       try {
-        cached = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit, signal: input.signal });
+        const derived = await readAggregatedCachedCandles({ symbol, timeframe, range, limit: boundedLimit, signal: input.signal });
+        cached = derived.candles;
+        cacheScanExhausted = derived.scanExhausted;
         cacheKind = "derived-5m";
       } catch (error) {
         if (isCandleRequestAbort(error, input.signal)) throw error;
         cacheReadFailed = true;
       }
-      if (cachedCandlesAreUsable(cached, timeframe, boundedLimit, range)) {
-        return { symbol, candles: cached, source: "cache", cacheKind };
+      cacheCoverage = candleCoverage({
+        candles: cached,
+        timeframe,
+        range,
+        effectiveRange,
+        limit: boundedLimit,
+        profile: sessionProfile,
+        scanExhausted: cacheScanExhausted,
+      });
+      if (coverageIsUsable(cacheCoverage, cachedCandlesAreUsable(cached, timeframe, boundedLimit, range))) {
+        return { symbol, candles: cached, source: "cache", cacheKind, coverage: cacheCoverage };
       }
     }
   }
 
-  const effectiveRange = range ?? defaultRangeForTimeframe(timeframe);
   let alpaca: LoadedCandles | null = null;
   try {
     alpaca = await loadAlpacaCandlesForSymbol({
@@ -669,9 +843,20 @@ export async function loadCandlesForSymbol(input: {
     warnings.push(providerUnavailableWarning("Alpaca", cached.length > 0));
   }
   if (alpaca) {
-    if (providerCandlesShouldReplaceCache(alpaca.candles, cached, timeframe, range, boundedLimit)) {
+    const providerCandles = clipCandlesToRange(alpaca.candles, range);
+    const providerCoverage = candleCoverage({
+      candles: providerCandles,
+      timeframe,
+      range,
+      effectiveRange,
+      limit: boundedLimit,
+      profile: US_EQUITIES_CORE_PROFILE,
+    });
+    if (providerCandlesShouldReplaceCache(providerCandles, cached, timeframe, range, boundedLimit, providerCoverage, cacheCoverage)) {
       return {
         ...alpaca,
+        candles: providerCandles,
+        coverage: providerCoverage,
         warnings: [
           ...(cacheReadFailed ? [cacheUnavailableWarning(true)] : []),
           ...(timeframe === "15m" && cached.length > 0
@@ -711,17 +896,28 @@ export async function loadCandlesForSymbol(input: {
       const payload = await yahooRes.json();
       throwIfCandleRequestAborted(input.signal);
       const parsedRows = dedupeCandles(parseYahooRows(payload));
-      const rows =
+      const rows = clipCandlesToRange(
         timeframe === "1d" || timeframe === "1wk"
           ? trimTrailingDuplicateDailyCandle(parsedRows)
           : timeframe === "10m"
             ? aggregateCandles(parsedRows, 10 * 60)
-            : parsedRows;
-      if (rows.length > 0 && providerCandlesShouldReplaceCache(rows, cached, timeframe, range, boundedLimit)) {
+            : parsedRows,
+        range,
+      );
+      const providerCoverage = candleCoverage({
+        candles: rows,
+        timeframe,
+        range,
+        effectiveRange,
+        limit: boundedLimit,
+        profile: yahooSessionProfile(payload) ?? sessionProfile,
+      });
+      if (rows.length > 0 && providerCandlesShouldReplaceCache(rows, cached, timeframe, range, boundedLimit, providerCoverage, cacheCoverage)) {
         return {
           symbol,
           candles: rows.slice(-boundedLimit),
           source: "yahoo",
+          coverage: providerCoverage,
           warnings: [
             ...warnings,
             ...(timeframe === "15m" && cached.length > 0
@@ -757,8 +953,17 @@ export async function loadCandlesForSymbol(input: {
         }
         const csvText = await res.text();
         throwIfCandleRequestAborted(input.signal);
-        const rows = trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText)));
-        if (rows.length > 0) return { symbol: candidate.toUpperCase(), candles: rows.slice(-boundedLimit), source: "stooq", warnings };
+        const rows = clipCandlesToRange(trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText))), range);
+        const providerCoverage = unverifiedCandleCoverage();
+        if (rows.length > 0 && providerCandlesShouldReplaceCache(rows, cached, timeframe, range, boundedLimit, providerCoverage, cacheCoverage)) {
+          return {
+            symbol: candidate.toUpperCase(),
+            candles: rows.slice(-boundedLimit),
+            source: "stooq",
+            coverage: providerCoverage,
+            warnings,
+          };
+        }
       } catch (error) {
         if (isCandleRequestAbort(error, input.signal)) throw error;
         stooqFetchFailed = true;
@@ -774,6 +979,15 @@ export async function loadCandlesForSymbol(input: {
       candles: cached.slice(-boundedLimit),
       source: "cache",
       cacheKind,
+      coverage: candleCoverage({
+        candles: cached,
+        timeframe,
+        range,
+        effectiveRange,
+        limit: boundedLimit,
+        profile: sessionProfile,
+        scanExhausted: cacheScanExhausted,
+      }),
       warnings: [
         ...(timeframe === "15m"
           ? ["15-minute candle cache coverage is incomplete; showing the best available cached candles."]
@@ -784,7 +998,21 @@ export async function loadCandlesForSymbol(input: {
   }
 
   throwIfCandleRequestAborted(input.signal);
-  return { symbol, candles: [], source: null, warnings };
+  return {
+    symbol,
+    candles: [],
+    source: null,
+    coverage: candleCoverage({
+      candles: [],
+      timeframe,
+      range,
+      effectiveRange,
+      limit: boundedLimit,
+      profile: sessionProfile,
+      scanExhausted: cacheScanExhausted,
+    }),
+    warnings,
+  };
 }
 
 function aggregateCompleteCandles(rows: Candle[], bucketSeconds: number, sourceIntervalSeconds: number) {
@@ -826,6 +1054,8 @@ type CacheCandidate = {
   candles: Candle[];
   cacheKind: CandleCacheKind;
   usable: boolean;
+  coverage: CandleCoverage;
+  scanExhausted: boolean;
 };
 
 function candidateCoverageSeconds(candles: Candle[], range: CandleRange, intervalSeconds: number) {
@@ -859,14 +1089,32 @@ function compareCandleQuality(left: Candle[], right: Candle[], range: CandleRang
   return 0;
 }
 
+function coverageStatusRank(status: CandleCoverage["status"]) {
+  return status === "complete" ? 5 : status === "limited" ? 4 : status === "closed" ? 4 : status === "partial" ? 2 : 1;
+}
+
+function compareCoverageQuality(left: CandleCoverage, right: CandleCoverage) {
+  const statusDifference = coverageStatusRank(right.status) - coverageStatusRank(left.status);
+  if (statusDifference !== 0) return statusDifference;
+  if (left.presentBars !== right.presentBars) return right.presentBars - left.presentBars;
+  if (left.missingBars !== right.missingBars) return left.missingBars - right.missingBars;
+  if (left.scanExhausted !== right.scanExhausted) return left.scanExhausted ? 1 : -1;
+  return 0;
+}
+
 function providerCandlesShouldReplaceCache(
   providerCandles: Candle[],
   cachedCandles: Candle[],
   timeframe: CandleTimeframe,
   range: CandleRange,
   limit: number,
+  providerCoverage: CandleCoverage,
+  cacheCoverage: CandleCoverage,
 ) {
-  if (timeframe !== "15m" || cachedCandles.length === 0) return providerCandles.length > 0;
+  if (providerCandles.length === 0) return false;
+  if (cachedCandles.length === 0) return true;
+  const coverageDifference = compareCoverageQuality(providerCoverage, cacheCoverage);
+  if (coverageDifference !== 0) return coverageDifference < 0;
   const providerUsable = cachedCandlesAreUsable(providerCandles, timeframe, limit, range);
   const cacheUsable = cachedCandlesAreUsable(cachedCandles, timeframe, limit, range);
   if (providerUsable !== cacheUsable) return providerUsable;
@@ -884,24 +1132,52 @@ function chooseBestCacheCandidate(
   nativeCandles: Candle[],
   derivedCandles: Candle[],
   range: CandleRange,
+  effectiveRange: { from: number; to: number },
   limit: number,
+  sessionProfile: CandleSessionProfile | null,
+  derivedScanExhausted: boolean,
 ): CacheCandidate | null {
   const candidates = ([
     {
       candles: dedupeCandles(nativeCandles),
-      cacheKind: "native",
-      usable: cachedCandlesAreUsable(nativeCandles, "15m", limit, range),
+      cacheKind: "native" as const,
+      coverage: candleCoverage({
+        candles: nativeCandles,
+        timeframe: "15m",
+        range,
+        effectiveRange,
+        limit,
+        profile: sessionProfile,
+      }),
+      scanExhausted: false,
     },
     {
       candles: dedupeCandles(derivedCandles),
-      cacheKind: "derived-5m",
-      usable: cachedCandlesAreUsable(derivedCandles, "15m", limit, range),
+      cacheKind: "derived-5m" as const,
+      coverage: candleCoverage({
+        candles: derivedCandles,
+        timeframe: "15m",
+        range,
+        effectiveRange,
+        limit,
+        profile: sessionProfile,
+        scanExhausted: derivedScanExhausted,
+      }),
+      scanExhausted: derivedScanExhausted,
     },
-  ] satisfies CacheCandidate[]).filter((candidate) => candidate.candles.length > 0);
+  ].map((candidate) => ({
+    ...candidate,
+    usable: coverageIsUsable(
+      candidate.coverage,
+      cachedCandlesAreUsable(candidate.candles, "15m", limit, range),
+    ),
+  })) satisfies CacheCandidate[]).filter((candidate) => candidate.candles.length > 0 || candidate.coverage.status === "closed");
   if (candidates.length === 0) return null;
 
   return candidates.sort((left, right) => {
     if (left.usable !== right.usable) return left.usable ? -1 : 1;
+    const coverageDifference = compareCoverageQuality(left.coverage, right.coverage);
+    if (coverageDifference !== 0) return coverageDifference;
     const qualityDifference = compareCandleQuality(left.candles, right.candles, range, 15 * 60);
     if (qualityDifference !== 0) return qualityDifference;
     if (!candleTimesMatch(left.candles, right.candles)) {

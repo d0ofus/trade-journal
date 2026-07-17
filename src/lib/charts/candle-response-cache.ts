@@ -8,7 +8,11 @@ type CandleRow = {
 
 type CandlePayload = {
   candles?: CandleRow[];
-  compare?: { candles?: CandleRow[] } | null;
+  metadata?: { coverage?: { status?: unknown } | null } | null;
+  compare?: {
+    candles?: CandleRow[];
+    metadata?: { coverage?: { status?: unknown } | null } | null;
+  } | null;
   error?: unknown;
   compareError?: unknown;
 };
@@ -22,8 +26,19 @@ function hasReusableCandles(candles: CandleRow[] | undefined) {
   );
 }
 
-export function isReusableCandleResponse(payload: CandlePayload, options: { requiresComparison?: boolean } = {}) {
+function coverageCanBeCached(metadata: CandlePayload["metadata"]) {
+  const status = metadata?.coverage?.status;
+  return status !== "partial" && status !== "unverified";
+}
+
+export function isDisplayableCandleResponse(payload: CandlePayload, options: { requiresComparison?: boolean } = {}) {
   if (payload.error || payload.compareError) return false;
   if (!hasReusableCandles(payload.candles)) return false;
   return !options.requiresComparison || hasReusableCandles(payload.compare?.candles);
+}
+
+export function isReusableCandleResponse(payload: CandlePayload, options: { requiresComparison?: boolean } = {}) {
+  if (!isDisplayableCandleResponse(payload, options)) return false;
+  if (!coverageCanBeCached(payload.metadata)) return false;
+  return !options.requiresComparison || coverageCanBeCached(payload.compare?.metadata);
 }

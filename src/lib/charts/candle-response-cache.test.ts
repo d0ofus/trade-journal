@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
+import { isDisplayableCandleResponse, isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
 
 const candle = {
   time: 1_718_000_000,
@@ -30,6 +30,31 @@ describe("isReusableCandleResponse", () => {
     { candles: [candle], compare: null },
     { candles: [candle], compare: { candles: [] } },
   ])("rejects a missing requested comparison %#", (payload) => {
+    expect(isReusableCandleResponse(payload, { requiresComparison: true })).toBe(false);
+  });
+
+  it.each(["partial", "unverified"])("displays but does not cache %s coverage", (status) => {
+    const payload = { candles: [candle], metadata: { coverage: { status } } };
+
+    expect(isDisplayableCandleResponse(payload)).toBe(true);
+    expect(isReusableCandleResponse(payload)).toBe(false);
+  });
+
+  it.each(["complete", "closed", "limited"])("caches %s coverage when candles are usable", (status) => {
+    const payload = { candles: [candle], metadata: { coverage: { status } } };
+
+    expect(isDisplayableCandleResponse(payload)).toBe(true);
+    expect(isReusableCandleResponse(payload)).toBe(true);
+  });
+
+  it("does not cache a comparison whose coverage is incomplete", () => {
+    const payload = {
+      candles: [candle],
+      metadata: { coverage: { status: "complete" } },
+      compare: { candles: [candle], metadata: { coverage: { status: "partial" } } },
+    };
+
+    expect(isDisplayableCandleResponse(payload, { requiresComparison: true })).toBe(true);
     expect(isReusableCandleResponse(payload, { requiresComparison: true })).toBe(false);
   });
 });

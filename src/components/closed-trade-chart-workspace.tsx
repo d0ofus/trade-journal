@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import { alignExecutionToBarTime, inferBarIntervalSeconds, inferExecutionOffsetSeconds } from "@/lib/charts/execution-marker-alignment";
 import { prepareChartSeriesData } from "@/lib/charts/chart-series-data";
-import { isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
+import { isDisplayableCandleResponse, isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
 import { createSharedRequestPool } from "@/lib/charts/shared-request-pool";
 import {
   formatExecutionCandleDiagnosticWarning,
@@ -155,6 +155,15 @@ type CandleResponse = {
     barIntervalSeconds?: number | null;
     limit?: number;
     truncated?: boolean;
+    coverage?: {
+      status?: "complete" | "partial" | "closed" | "limited" | "unverified";
+      profile?: string | null;
+      sessionPolicy?: string;
+      expectedBars?: number;
+      presentBars?: number;
+      missingBars?: number;
+      scanExhausted?: boolean;
+    } | null;
     warnings?: string[];
   } | null;
   compare?: {
@@ -163,6 +172,9 @@ type CandleResponse = {
     source?: string | null;
     cacheKind?: "native" | "derived-5m" | null;
     metadata?: {
+      coverage?: {
+        status?: "complete" | "partial" | "closed" | "limited" | "unverified";
+      } | null;
       warnings?: string[];
     } | null;
   } | null;
@@ -2375,11 +2387,11 @@ function ClosedTradeChartPanel({
           ...(nextCandles.length === 0 ? ["No candles returned for the requested range; keeping the previous chart."] : []),
           ...(Array.isArray(payload.metadata?.warnings) ? payload.metadata.warnings : []),
           ...(!isReusableCandleResponse(payload) && nextCandles.length > 0
-            ? ["Candle response was incomplete; keeping the previous chart."]
+            ? ["Candle response is displayable but was not retained in the short-lived response cache."]
             : []),
         ];
         setPrimaryCandleWarnings(warnings);
-        if (!isReusableCandleResponse(payload)) {
+        if (!isDisplayableCandleResponse(payload)) {
           setPrimaryStatus("");
           return;
         }
@@ -2449,11 +2461,11 @@ function ClosedTradeChartPanel({
             ? payload.metadata.warnings.map((warning) => `${compareSymbol}: ${warning}`)
             : []),
           ...(!isReusableCandleResponse(payload) && nextCandles.length > 0
-            ? [`${compareSymbol}: comparison response was incomplete; keeping the previous comparison.`]
+            ? [`${compareSymbol}: comparison response was not retained in the short-lived response cache.`]
             : []),
         ];
         setCompareCandleWarnings(warnings);
-        if (!isReusableCandleResponse(payload)) {
+        if (!isDisplayableCandleResponse(payload)) {
           setCompareStatus("");
           return;
         }
