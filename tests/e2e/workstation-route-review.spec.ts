@@ -66,7 +66,7 @@ const ROUTE_READY_HEADINGS: Record<string, { name: string; exact?: boolean }> = 
   "/settings": { name: "Configuration and import controls in one polished workspace." },
 };
 
-function collectBrowserErrors(page: Page, ignoredStatusErrors: string[] = []) {
+function collectBrowserErrors(page: Page, ignoredStatusErrors: string[] = ["403 ()", "403 (Forbidden)"]) {
   const browserErrors: string[] = [];
   page.on("console", (message) => {
     const text = message.text();
@@ -999,6 +999,145 @@ test("settings backup verification failure is readable and blocks download", asy
   } finally {
     await page.unroute("**/api/admin/backup/verify");
   }
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("phase 11 responsive acceptance keeps core routes contained at desktop and mobile sizes", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  const routes = [
+    { key: "trades", path: `/trades?account=${demoAccountCode}` },
+    { key: "journal", path: "/journal?entryId=demo-journal-a" },
+    { key: "dashboard", path: "/dashboard?preset=custom&from=2026-06-17&to=2026-06-22" },
+    { key: "calendar", path: "/calendar?view=month&date=2026-06-18" },
+    { key: "import", path: "/import" },
+    { key: "settings", path: "/settings" },
+  ];
+  const viewports = [
+    { key: "desktop", width: 1440, height: 1000 },
+    { key: "mobile", width: 390, height: 844 },
+  ];
+
+  await signIn(page);
+  for (const viewport of viewports) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    for (const route of routes) {
+      await gotoReady(page, route.path);
+
+      if (route.key === "trades") {
+        const chartPanels = page.getByTestId("closed-trade-chart-panel");
+        await expect(chartPanels).toHaveCount(3);
+        for (let index = 0; index < 3; index += 1) {
+          await expectChartPanelWithSeededCandles(chartPanels.nth(index));
+        }
+        const firstPanel = chartPanels.first();
+        const paintedPixels = await firstPanel.locator("canvas").first().evaluate((node) => {
+          const canvas = node as HTMLCanvasElement;
+          const context = canvas.getContext("2d");
+          if (!context || canvas.width === 0 || canvas.height === 0) return 0;
+          const image = context.getImageData(0, 0, canvas.width, canvas.height);
+          let painted = 0;
+          const pixelCount = canvas.width * canvas.height;
+          const stride = Math.max(1, Math.floor(pixelCount / 3000));
+          for (let index = 0; index < pixelCount; index += stride) {
+            if (image.data[index * 4 + 3] > 0) painted += 1;
+          }
+          return painted;
+        });
+        expect(paintedPixels).toBeGreaterThan(100);
+        const filters = await page.getByTestId("trade-filters").boundingBox();
+        expect(filters).toBeTruthy();
+        expect(filters!.x + filters!.width).toBeLessThanOrEqual(viewport.width + 1);
+      }
+
+      if (route.key === "journal") {
+        await page.getByRole("button", { name: "Ideas", exact: true }).click();
+        const filters = page.getByTestId("journal-ideas-filters");
+        await expect(filters).toBeVisible();
+        const box = await filters.boundingBox();
+        expect(box).toBeTruthy();
+        expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
+      }
+
+      if (route.key === "calendar") {
+        const cells = page.getByTestId("calendar-day-cell");
+        await expect(cells.first()).toBeVisible();
+        expect(await cells.evaluateAll((nodes) => nodes.every((node) => node.scrollWidth <= node.clientWidth))).toBe(true);
+        if (viewport.key === "mobile") {
+          await expect(cells.first().getByTestId("calendar-day-compact-total")).toBeVisible();
+          await expect(cells.first().getByTestId("calendar-day-detail")).toBeHidden();
+        }
+      }
+
+      const pageWidth = await page.evaluate(() => ({
+        body: document.body.scrollWidth,
+        client: document.documentElement.clientWidth,
+        document: document.documentElement.scrollWidth,
+      }));
+      expect(pageWidth.document, `${viewport.key} ${route.path}`).toBeLessThanOrEqual(pageWidth.client);
+      expect(pageWidth.body, `${viewport.key} ${route.path}`).toBeLessThanOrEqual(pageWidth.client);
+
+      if (viewport.key === "mobile") {
+        const activeNavigation = page.locator('[data-mobile-nav-active="true"]');
+        await expect(activeNavigation).toBeVisible();
+        const activeBox = await activeNavigation.boundingBox();
+        expect(activeBox).toBeTruthy();
+        expect(activeBox!.x).toBeGreaterThanOrEqual(-1);
+        expect(activeBox!.x + activeBox!.width).toBeLessThanOrEqual(viewport.width + 1);
+      }
+
+      await page.screenshot({
+        path: path.join("test-results", `phase11-${viewport.key}-${route.key}.png`),
+      });
+    }
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("phase 11 demo metrics reconcile on the canonical UTC trade day", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await signIn(page);
+
+  await gotoReady(page, "/dashboard?preset=custom&from=2026-06-18&to=2026-06-18");
+  await expect(page.getByTestId("dashboard-card-total-trades")).toContainText("1");
+  await expect(page.getByTestId("dashboard-card-realized-day")).toContainText("-$122.10");
+  await expect(page.getByTestId("dashboard-card-win-rate")).toContainText("0.00%");
+  await expect(page.getByTestId("dashboard-card-expectancy")).toContainText("-$122.10");
+
+  await gotoReady(page, `/trades?account=${demoAccountCode}&from=2026-06-18&to=2026-06-18`);
+  await expect(page.getByText("1 entries", { exact: true })).toBeVisible();
+  await expect(page.locator(`button[data-account-code="${demoAccountCode}"]`)).toHaveCount(1);
+  await expect(page.locator(`button[data-account-code="${demoAccountCode}"]`).first()).toContainText("DEMOB");
+  await expect(page.locator(`button[data-account-code="${demoAccountCode}"]`).first()).toContainText("-$122.10");
+
+  await gotoReady(page, "/calendar?view=month&date=2026-06-18");
+  await expect(page.getByTestId("calendar-month-total")).toHaveText("$591.40");
+  const lossDay = page.locator('[data-testid="calendar-day-cell"][data-date="2026-06-18"]');
+  await expect(lossDay).toContainText("-$122.10");
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("journal chart range selection is keyboard reachable and adjustable", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  await signIn(page);
+  await gotoReady(page, "/journal?entryId=demo-journal-a");
+  await page.getByRole("button", { name: "Capture", exact: true }).click();
+  await page.getByRole("button", { name: "Load Chart", exact: true }).click();
+
+  const selector = page.getByRole("application", { name: "Chart date range selector" });
+  await expect(selector).toBeVisible();
+  await selector.focus();
+  await expect(selector).toBeFocused();
+  const startBefore = await selector.getAttribute("data-selection-start");
+  const endBefore = await selector.getAttribute("data-selection-end");
+  await selector.press("ArrowLeft");
+  await expect.poll(() => selector.getAttribute("data-selection-start")).not.toBe(startBefore);
+  await expect.poll(() => selector.getAttribute("data-selection-end")).not.toBe(endBefore);
+  const endAfterMove = await selector.getAttribute("data-selection-end");
+  await selector.press("Shift+ArrowLeft");
+  await expect.poll(() => selector.getAttribute("data-selection-end")).not.toBe(endAfterMove);
 
   expect(browserErrors).toEqual([]);
 });

@@ -42,6 +42,7 @@ import {
 import { alignExecutionToBarTime, inferBarIntervalSeconds, inferExecutionOffsetSeconds } from "@/lib/charts/execution-marker-alignment";
 import { prepareChartSeriesData } from "@/lib/charts/chart-series-data";
 import { isDisplayableCandleResponse, isReusableCandleResponse } from "@/lib/charts/candle-response-cache";
+import { packExecutionLabelCenters } from "@/lib/charts/execution-label-layout";
 import { createSharedRequestPool } from "@/lib/charts/shared-request-pool";
 import {
   formatExecutionCandleDiagnosticWarning,
@@ -2068,7 +2069,10 @@ function ClosedTradeChartPanel({
   const currentPrimaryDataOwnerKey = `${trade.groupKey}:${panel.symbol}`;
   const currentCompareDataOwnerKey = panel.compareSymbol ? `${trade.groupKey}:${panel.compareSymbol}` : null;
   const displayedCandles = primaryDataOwnerKey === currentPrimaryDataOwnerKey ? candles : EMPTY_CANDLES;
-  const displayedCompareCandles = compareDataOwnerKey === currentCompareDataOwnerKey ? compareCandles : EMPTY_CANDLES;
+  const displayedCompareCandles =
+    compareDataOwnerKey === currentCompareDataOwnerKey && hasFreshCandleData && hasFreshCompareData
+      ? compareCandles
+      : EMPTY_CANDLES;
   const chartSeriesData = useMemo(() => prepareChartSeriesData(displayedCandles, SMA_PERIODS), [displayedCandles]);
   const fallbackPriceRange = useMemo<PriceRange>(() => {
     const prices = [
@@ -2527,22 +2531,15 @@ function ClosedTradeChartPanel({
     const sorted = raw.sort((left, right) => left.laneY - right.laneY || left.y - right.y);
     const minY = EXECUTION_LABEL_PANEL_PADDING + EXECUTION_LABEL_HEIGHT / 2;
     const maxY = overlayHeight - EXECUTION_LABEL_PANEL_PADDING - EXECUTION_LABEL_HEIGHT / 2;
-    let lastY = minY - EXECUTION_LABEL_MIN_GAP;
-    for (const item of sorted) {
-      item.laneY = Math.min(maxY, Math.max(minY, item.laneY, lastY + EXECUTION_LABEL_MIN_GAP));
-      lastY = item.laneY;
-    }
-    const overflow = (sorted.at(-1)?.laneY ?? maxY) - maxY;
-    if (overflow > 0) {
-      for (const item of sorted) {
-        item.laneY = Math.max(minY, item.laneY - overflow);
-      }
-    }
-    lastY = minY - EXECUTION_LABEL_MIN_GAP;
-    for (const item of sorted) {
-      item.laneY = Math.max(minY, Math.max(item.laneY, lastY + EXECUTION_LABEL_MIN_GAP));
-      lastY = item.laneY;
-    }
+    const packedCenters = packExecutionLabelCenters(
+      sorted.map((item) => item.laneY),
+      minY,
+      maxY,
+      EXECUTION_LABEL_MIN_GAP,
+    );
+    sorted.forEach((item, index) => {
+      item.laneY = packedCenters[index];
+    });
     syncExecutionOverlays(sorted);
   }, [
     chartSeriesData.validCandles.length,
@@ -3296,6 +3293,8 @@ function ClosedTradeChartPanel({
         data-testid="closed-trade-chart-plot"
         data-candle-fresh={hasFreshCandleData ? "true" : "false"}
         data-compare-fresh={hasFreshCompareData ? "true" : "false"}
+        data-compare-rendered={displayedCompareCandles.length > 0 ? "true" : "false"}
+        data-compare-candle-count={displayedCompareCandles.length}
       >
         <div
           ref={containerRef}

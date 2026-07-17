@@ -8,10 +8,10 @@ type CandleRow = {
 
 type CandlePayload = {
   candles?: CandleRow[];
-  metadata?: { coverage?: { status?: unknown } | null } | null;
+  metadata?: { coverage?: { status?: unknown; profile?: unknown } | null } | null;
   compare?: {
     candles?: CandleRow[];
-    metadata?: { coverage?: { status?: unknown } | null } | null;
+    metadata?: { coverage?: { status?: unknown; profile?: unknown } | null } | null;
   } | null;
   error?: unknown;
   compareError?: unknown;
@@ -28,7 +28,9 @@ function hasReusableCandles(candles: CandleRow[] | undefined) {
 
 function coverageCanBeCached(metadata: CandlePayload["metadata"]) {
   const status = metadata?.coverage?.status;
-  return status !== "partial" && status !== "unverified";
+  if (status === "partial") return false;
+  if (status === "unverified") return Boolean(metadata?.coverage?.profile);
+  return true;
 }
 
 export function isDisplayableCandleResponse(payload: CandlePayload, options: { requiresComparison?: boolean } = {}) {

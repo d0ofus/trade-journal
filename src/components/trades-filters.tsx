@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { requestWorkstationNavigation } from "@/lib/workstation-navigation-guard";
 
 type TradeFilters = {
   from?: string;
@@ -21,6 +22,7 @@ type TradeFilters = {
   tag?: string;
   strategy?: string;
   includeStale?: boolean;
+  groupKey?: string;
 };
 
 const QUICK_RANGES = [
@@ -110,9 +112,8 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
     params.delete("page");
     const query = params.toString();
     const href = query ? `${pathname}?${query}` : pathname;
-    startTransition(() => {
-      router.replace(href);
-    });
+    if (!requestWorkstationNavigation("apply trade filters", href)) return;
+    startTransition(() => router.replace(href));
   }
 
   function applyQuickRange(range: (typeof QUICK_RANGES)[number]) {
@@ -168,9 +169,8 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
       params.delete("page");
       const query = params.toString();
       const href = query ? `${pathname}?${query}` : pathname;
-      startTransition(() => {
-        router.replace(href);
-      });
+      if (!requestWorkstationNavigation("apply trade date filters", href)) return;
+      startTransition(() => router.replace(href));
     }, 350);
 
     return () => window.clearTimeout(timeoutId);
@@ -189,10 +189,12 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
       <form
         key={formKey}
         ref={formRef}
-        className="grid gap-3 md:grid-cols-2 xl:grid-cols-[10rem_10rem_10rem_10rem_10rem_10rem_10rem_9rem_auto]"
+        className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8"
+        data-testid="trade-filters"
         method="get"
         onSubmit={handleSubmit}
       >
+        {filters.groupKey ? <input name="groupKey" type="hidden" value={filters.groupKey} /> : null}
         <label className="space-y-1">
           <span className="text-[11px] font-semibold uppercase text-slate-500">From</span>
           <Input
@@ -255,7 +257,7 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
           </span>
         </label>
 
-        <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-1">
+        <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-4 2xl:col-span-8">
           <Button type="submit" size="sm" disabled={isPending} className="h-9 gap-2 rounded-lg">
             <SlidersHorizontal className="h-4 w-4" />
             Apply

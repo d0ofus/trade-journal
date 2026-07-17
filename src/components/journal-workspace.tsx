@@ -67,6 +67,7 @@ import {
   type JournalTrendStateValue,
 } from "@/lib/journal/schema";
 import { cn } from "@/lib/utils";
+import { useWorkstationNavigationGuard } from "@/lib/workstation-navigation-guard";
 
 type TagsByCategory = Record<JournalTagCategoryValue, string[]>;
 type NotionRelations = JournalNotionRelations;
@@ -889,6 +890,8 @@ export function JournalWorkspace({
     }
     return confirmed;
   }
+
+  useWorkstationNavigationGuard(confirmDiscardJournalChanges);
 
   function selectEntry(entry: JournalEntry, options?: { force?: boolean }) {
     if (!options?.force && !confirmDiscardJournalChanges("open another journal entry")) return false;
@@ -1860,7 +1863,11 @@ export function JournalWorkspace({
       </div>
 
       {message && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-sm text-slate-600">
+        <div
+          aria-live="polite"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 text-sm text-slate-600"
+          role={journalConflict ? "alert" : "status"}
+        >
           <span>
             {journalWorkspaceBusy && <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />}
             {message}
@@ -2066,7 +2073,7 @@ export function JournalWorkspace({
       {activeTab === "ideas" && (
         <div className="space-y-4">
           <div className="rounded-[28px] border border-slate-200/80 bg-white/85 p-4">
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_10rem_10rem_10rem_10rem_10rem_10rem_10rem_auto]">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" data-testid="journal-ideas-filters">
               <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 Search
                 <div className="relative mt-1">
@@ -2187,7 +2194,6 @@ export function JournalWorkspace({
               <div className="mt-4 flex flex-wrap gap-2">
                 {sourceClosedTradeLinks.map((link) => {
                   const params = new URLSearchParams({ groupKey: link.targetId ?? "" });
-                  if (selectedEntry?.symbol) params.set("symbol", selectedEntry.symbol);
                   return (
                     <Link
                       key={link.id}
@@ -2197,10 +2203,8 @@ export function JournalWorkspace({
                         entrySaveInFlight ? "pointer-events-none opacity-50" : "",
                       )}
                       data-testid="source-closed-trade-link"
+                      data-navigation-action="open the source closed trade"
                       href={`/trades?${params.toString()}`}
-                      onClick={(event) => {
-                        if (!confirmDiscardJournalChanges("open the source closed trade")) event.preventDefault();
-                      }}
                     >
                       <LinkIcon className="h-3.5 w-3.5" />
                       Source Closed Trade
@@ -2427,7 +2431,7 @@ export function JournalWorkspace({
                     <option value="required">Required</option>
                     <option value="optional">Optional</option>
                   </Select>
-                  <Button size="sm" variant="outline" onClick={() => setPlaybookForm((current) => ({ ...current, rules: current.rules.filter((_, candidateIndex) => candidateIndex !== index) }))}><Trash2 className="h-4 w-4" /></Button>
+                  <Button aria-label={`Remove rule ${index + 1}`} title="Remove rule" size="sm" variant="outline" onClick={() => setPlaybookForm((current) => ({ ...current, rules: current.rules.filter((_, candidateIndex) => candidateIndex !== index) }))}><Trash2 className="h-4 w-4" /></Button>
                 </div>
               ))}
             </div>
@@ -2606,7 +2610,7 @@ export function JournalWorkspace({
                     <option value="DONE">Done</option>
                     <option value="ARCHIVED">Archived</option>
                   </Select>
-                  <Button size="sm" variant="outline" onClick={() => setReviewForm((current) => ({ ...current, actions: current.actions.filter((_, candidateIndex) => candidateIndex !== index) }))}><Trash2 className="h-4 w-4" /></Button>
+                  <Button aria-label={`Remove action ${index + 1}`} title="Remove action" size="sm" variant="outline" onClick={() => setReviewForm((current) => ({ ...current, actions: current.actions.filter((_, candidateIndex) => candidateIndex !== index) }))}><Trash2 className="h-4 w-4" /></Button>
                 </div>
               ))}
             </div>

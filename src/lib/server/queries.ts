@@ -1,4 +1,4 @@
-import { endOfDay, endOfMonth, endOfYear, startOfDay, startOfMonth, startOfYear, subDays } from "date-fns";
+import { endOfMonth, endOfYear, startOfMonth, startOfYear, subDays } from "date-fns";
 import type { Prisma } from "@prisma/client";
 import { withDiagnostics } from "@/lib/server/diagnostics";
 import { prisma } from "@/lib/prisma";
@@ -17,6 +17,7 @@ import { buildBackupTableManifestFromRowCounts, type BackupTableKey } from "@/li
 import { aggregateCalendarPerformance } from "@/lib/stats/calendar-performance";
 import { aggregateDashboardData } from "@/lib/stats/dashboard-aggregation";
 import { computeTradeSummaryMetrics, latestPriorEquitySnapshot } from "@/lib/stats/trade-summary-metrics";
+import { utcDateBoundary } from "@/lib/server/utc-date-range";
 
 function analyticsOrZero(
   executionId: string,
@@ -46,9 +47,9 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
     await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
     await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
-    const dashboardTo = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
-    const rangeStart = filters?.from ? startOfDay(new Date(filters.from)) : undefined;
-    const rangeEnd = filters?.to ? endOfDay(new Date(filters.to)) : undefined;
+    const dashboardTo = filters?.to ? utcDateBoundary(filters.to, "end") : undefined;
+    const rangeStart = filters?.from ? utcDateBoundary(filters.from, "start") : undefined;
+    const rangeEnd = filters?.to ? utcDateBoundary(filters.to, "end") : undefined;
     const executions = await step("query executions", () =>
       prisma.execution.findMany({
         where: {
@@ -88,7 +89,7 @@ export async function getDashboardData(filters?: { from?: string; to?: string })
       prisma.closedTrade.findMany({
         where: {
           isStale: false,
-          closeTime: dashboardTo ? { lte: dashboardTo } : undefined,
+          tradeDate: dashboardTo ? { lte: dashboardTo } : undefined,
         },
         select: {
           groupKey: true,
@@ -208,8 +209,8 @@ export async function getTrades(filters: {
 
     if (filters.from || filters.to) {
       where.executedAt = {
-        gte: filters.from ? startOfDay(new Date(filters.from)) : undefined,
-        lte: filters.to ? endOfDay(new Date(filters.to)) : undefined,
+        gte: filters.from ? utcDateBoundary(filters.from, "start") : undefined,
+        lte: filters.to ? utcDateBoundary(filters.to, "end") : undefined,
       };
     }
 
@@ -290,11 +291,14 @@ export async function getTrades(filters: {
   });
 }
 
-export async function getClosedTrades(filters: TradeFilters) {
+export async function getClosedTrades(filters: TradeFilters, selectedGroupKey?: string | null) {
   return withDiagnostics("getClosedTrades", async (step) => {
     await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
-    const where = buildClosedTradeWhere(filters);
+    const filteredWhere = buildClosedTradeWhere(filters);
+    const where = selectedGroupKey
+      ? { OR: [{ groupKey: selectedGroupKey }, filteredWhere] }
+      : filteredWhere;
 
     const groups = await step("query materialized groups", () =>
       prisma.closedTrade.findMany({

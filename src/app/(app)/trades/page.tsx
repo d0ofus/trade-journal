@@ -55,7 +55,7 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
           Import
         </Link>
       </div>
-      <TradesFilters filters={filters} />
+      <TradesFilters filters={{ ...filters, groupKey: selectedGroupKey ?? undefined }} />
 
       <div id="closed-trades-section">
         <Suspense fallback={<ClosedTradesFallback />}>
@@ -64,7 +64,7 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
       </div>
 
       <Suspense fallback={<TradesTableFallback />}>
-        <TradesTableSection filters={filters} page={page} />
+        <TradesTableSection filters={filters} page={page} selectedGroupKey={selectedGroupKey} />
       </Suspense>
     </div>
   );
@@ -87,13 +87,14 @@ async function ClosedTradesSection({
   };
   selectedGroupKey: string | null;
 }) {
-  const closedTrades = await getClosedTrades(filters);
+  const closedTrades = await getClosedTrades(filters, selectedGroupKey);
   return <ClosedTradesPanel closedTrades={closedTrades} initialSelectedGroupKey={selectedGroupKey} />;
 }
 
 async function TradesTableSection({
   filters,
   page,
+  selectedGroupKey,
 }: {
   filters: {
     from?: string;
@@ -107,6 +108,7 @@ async function TradesTableSection({
     includeStale?: boolean;
   };
   page: number;
+  selectedGroupKey: string | null;
 }) {
   const trades = await getTrades({ ...filters, page, pageSize: 50 });
   const tradeRows = trades.rows as Array<
@@ -119,6 +121,7 @@ async function TradesTableSection({
   Object.entries(filters).forEach(([key, value]) => {
     if (value) baseParams.set(key, String(value));
   });
+  if (selectedGroupKey) baseParams.set("groupKey", selectedGroupKey);
 
   const pageHref = (target: number) => {
     const params = new URLSearchParams(baseParams.toString());
@@ -155,7 +158,7 @@ async function TradesTableSection({
               <TableHead>Commission</TableHead>
               <TableHead>Fees</TableHead>
               <TableHead>Total Cost</TableHead>
-              <TableHead>Realized</TableHead>
+              <TableHead title="This execution's contribution to realized P&amp;L, not the full closed-trade result.">Execution P&amp;L</TableHead>
               <TableHead>Detail</TableHead>
             </TableRow>
           </TableHeader>

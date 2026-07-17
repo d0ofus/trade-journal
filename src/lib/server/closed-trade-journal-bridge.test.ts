@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { ClosedTradeJournalBridgeError, createJournalEntryFromClosedTrade } from "@/lib/server/journal";
+import { lockClosedTradeForReview } from "@/lib/server/closed-trade-review-lock";
 
 function uniqueSuffix() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -183,6 +184,60 @@ describe("createJournalEntryFromClosedTrade", () => {
 
       expect(entryIds.size).toBe(1);
       expect(linkedEntries).toHaveLength(1);
+    } finally {
+      await cleanupClosedTradeFixture({
+        accountId: fixture.account.id,
+        groupKey: fixture.groupKey,
+        instrumentId: fixture.instrument.id,
+        tagName: fixture.tagName,
+      });
+    }
+  }, 20_000);
+
+  dbIt("serializes journal creation with a concurrent closed-trade review save", async () => {
+    const fixture = await createClosedTradeFixture();
+
+    try {
+      const expectedReviewUpdatedAt = await closedTradeReviewToken(fixture.groupKey);
+      const changedAt = new Date(new Date(expectedReviewUpdatedAt ?? "").getTime() + 1000);
+      let releaseReviewSave!: () => void;
+      let reportLockAcquired!: () => void;
+      const reviewSaveRelease = new Promise<void>((resolve) => {
+        releaseReviewSave = resolve;
+      });
+      const lockAcquired = new Promise<void>((resolve) => {
+        reportLockAcquired = resolve;
+      });
+
+      const reviewSave = prisma.$transaction(async (tx) => {
+        await lockClosedTradeForReview(tx, fixture.groupKey);
+        reportLockAcquired();
+        await reviewSaveRelease;
+        await tx.closedTradeNote.update({
+          where: { groupKey: fixture.groupKey },
+          data: { thesis: "Concurrent review save wins before bridge validation.", updatedAt: changedAt },
+        });
+      });
+
+      await lockAcquired;
+      const bridgeResult = createJournalEntryFromClosedTrade(fixture.groupKey, { expectedReviewUpdatedAt }).then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      releaseReviewSave();
+      await reviewSave;
+
+      const result = await bridgeResult;
+      expect(result.value).toBeNull();
+      expect(result.error).toMatchObject({
+        code: "CLOSED_TRADE_REVIEW_CHANGED",
+        status: 409,
+        currentReviewUpdatedAt: changedAt.toISOString(),
+      } satisfies Partial<ClosedTradeJournalBridgeError>);
+      await expect(prisma.journalLink.count({
+        where: { targetType: "CLOSED_TRADE", targetId: fixture.groupKey },
+      })).resolves.toBe(0);
     } finally {
       await cleanupClosedTradeFixture({
         accountId: fixture.account.id,

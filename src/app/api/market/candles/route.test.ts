@@ -151,6 +151,36 @@ describe("market candles route", () => {
     });
   });
 
+  it("distinguishes a resolved session profile from an unknown calendar", async () => {
+    mocks.loadCandlesForSymbol.mockResolvedValue({
+      symbol: "DEMOA",
+      candles: [{ time: 1_783_000_000, open: 100, high: 101, low: 99, close: 100.5 }],
+      source: "cache",
+      coverage: {
+        status: "unverified",
+        profile: "US_EQUITIES_CORE_V1",
+        timezone: "America/New_York",
+        sessionPolicy: "core-required-extended-preserved",
+        expectedBars: 0,
+        presentBars: 0,
+        missingBars: 0,
+        missingBarTimes: [],
+        latestExpectedTime: null,
+        scanExhausted: false,
+      },
+      warnings: [],
+    });
+    const { GET } = await import("./route");
+
+    const response = await GET(candleRequest("http://localhost/api/market/candles?symbol=DEMOA&timeframe=1d"));
+    const body = await response.json();
+
+    expect(body.metadata.warnings).toContain(
+      "Session profile resolved; gap verification is not available for this timeframe.",
+    );
+    expect(body.metadata.warnings).not.toContain("Calendar/session unknown; coverage not verified.");
+  });
+
   it("forwards the exact request abort signal to the candle loader", async () => {
     const controller = new AbortController();
     const request = new NextRequest(

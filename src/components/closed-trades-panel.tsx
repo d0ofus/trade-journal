@@ -1,15 +1,15 @@
 "use client";
 
-/* eslint-disable react-hooks/set-state-in-effect */
-
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type KeyboardEvent } from "react";
 import { ArrowDown, ArrowUp, BarChart3, BookOpen, Clock3, LayoutDashboard, Save, StickyNote, X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { ClosedTradeChartWorkspace, type ChartWorkspaceSaveActivity } from "@/components/closed-trade-chart-workspace";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn, formatCurrency } from "@/lib/utils";
+import { useWorkstationNavigationGuard } from "@/lib/workstation-navigation-guard";
 
 type ClosedTrade = {
   groupKey: string;
@@ -261,6 +261,18 @@ function reviewQueueMatches(item: ReviewQueueItem, kind: ReviewQueueKind) {
   return item[kind];
 }
 
+function selectedGroupKeyHref(groupKey: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("groupKey", groupKey);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function replaceSelectedGroupKeyInUrl(groupKey: string) {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("groupKey") === groupKey) return;
+  window.history.replaceState(window.history.state, "", selectedGroupKeyHref(groupKey));
+}
+
 function findNextReviewQueueGroupKey(items: ReviewQueueItem[], kind: ReviewQueueKind, selectedGroupKey: string | null) {
   if (items.length === 0) return null;
 
@@ -323,6 +335,7 @@ export function ClosedTradesPanel({
   closedTrades: ClosedTrade[];
   initialSelectedGroupKey?: string | null;
 }) {
+  const router = useRouter();
   const sortedTrades = useMemo(
     () =>
       [...closedTrades].sort((left, right) => {
@@ -332,8 +345,8 @@ export function ClosedTradesPanel({
     [closedTrades],
   );
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(() => {
-    if (initialSelectedGroupKey && sortedTrades.some((trade) => trade.groupKey === initialSelectedGroupKey)) {
-      return initialSelectedGroupKey;
+    if (initialSelectedGroupKey) {
+      return sortedTrades.some((trade) => trade.groupKey === initialSelectedGroupKey) ? initialSelectedGroupKey : null;
     }
     return sortedTrades[0]?.groupKey ?? null;
   });
@@ -350,10 +363,12 @@ export function ClosedTradesPanel({
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [pendingReviewSwitchGroupKey, setPendingReviewSwitchGroupKey] = useState<string | null>(null);
   const [pendingJournalOpenGroupKey, setPendingJournalOpenGroupKey] = useState<string | null>(null);
+  const journalOpenRequestGroupKeyRef = useRef<string | null>(null);
   const [reviewSaveActivity, setReviewSaveActivity] = useState<ReviewSaveActivity | null>(null);
   const reviewSaveActivityRef = useRef<ReviewSaveActivity | null>(null);
   const reviewSaveActivityIdRef = useRef(0);
   const pendingReviewFocusFieldRef = useRef<string | null>(null);
+  const routeSelectionAfterSaveRef = useRef<string | null>(null);
   const [pending, startTransition] = useTransition();
   const reviewSaveBlocking = Boolean(reviewSaveActivity);
   const chartSaveActionNeedsAttention = chartSaveNeedsAttention(chartSaveActivity);
@@ -374,10 +389,14 @@ export function ClosedTradesPanel({
       setSelectedGroupKey(null);
       return;
     }
+    if (initialSelectedGroupKey && !sortedTrades.some((trade) => trade.groupKey === initialSelectedGroupKey)) {
+      setSelectedGroupKey(null);
+      return;
+    }
     if (!sortedTrades.some((trade) => trade.groupKey === selectedGroupKey)) {
       setSelectedGroupKey(sortedTrades[0].groupKey);
     }
-  }, [selectedGroupKey, sortedTrades]);
+  }, [initialSelectedGroupKey, selectedGroupKey, sortedTrades]);
 
   useEffect(() => {
     if (initialSelectedGroupKey && sortedTrades.some((trade) => trade.groupKey === initialSelectedGroupKey)) {
@@ -387,13 +406,13 @@ export function ClosedTradesPanel({
 
   useEffect(() => {
     if (!selectedGroupKey) return;
-
-    const url = new URL(window.location.href);
-    if (url.searchParams.get("groupKey") === selectedGroupKey) return;
-
-    url.searchParams.set("groupKey", selectedGroupKey);
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-  }, [selectedGroupKey]);
+    if (routeSelectionAfterSaveRef.current === selectedGroupKey) {
+      routeSelectionAfterSaveRef.current = null;
+      router.replace(selectedGroupKeyHref(selectedGroupKey), { scroll: false });
+      return;
+    }
+    replaceSelectedGroupKeyInUrl(selectedGroupKey);
+  }, [router, selectedGroupKey]);
 
   useEffect(() => {
     const fieldKey = pendingReviewFocusFieldRef.current;
@@ -418,6 +437,35 @@ export function ClosedTradesPanel({
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [dirtyReviewGroupKeys.length]);
+
+  useWorkstationNavigationGuard((action) => {
+    const reviewSave = reviewSaveActivityRef.current;
+    if (reviewSave) {
+      setWorkspaceNotice(reviewSave.message);
+      return false;
+    }
+
+    const chartSave = chartSaveActivityRef.current;
+    if (chartSave.blocking || chartSaveNeedsAttention(chartSave)) {
+      setWorkspaceNotice(chartSave.message || CHART_SAVE_NEEDS_ATTENTION_NOTICE);
+      return false;
+    }
+
+    const journalGroupKey = journalOpenRequestGroupKeyRef.current ?? pendingJournalOpenGroupKey;
+    if (journalGroupKey) {
+      setWorkspaceNotice("Journal review is opening. Wait for the request to finish before leaving this page.");
+      return false;
+    }
+
+    if (dirtyReviewGroupKeys.length === 0) return true;
+    const confirmed = window.confirm(
+      `You have unsaved structured review changes for ${dirtyReviewGroupKeys.length} trade${dirtyReviewGroupKeys.length === 1 ? "" : "s"}. Save before you ${action}, or discard those drafts to continue.`,
+    );
+    if (!confirmed) {
+      setWorkspaceNotice("Unsaved review changes preserved. Save before leaving the trade workstation.");
+    }
+    return confirmed;
+  });
 
   const setActiveReviewSaveActivity = useCallback((activity: ReviewSaveActivity | null) => {
     reviewSaveActivityRef.current = activity;
@@ -450,6 +498,7 @@ export function ClosedTradesPanel({
     }
     if (chartSaveActivity.blocking) return;
     setWorkspaceNotice("");
+    routeSelectionAfterSaveRef.current = pendingReviewSwitchGroupKey;
     setSelectedGroupKey(pendingReviewSwitchGroupKey);
     setPendingReviewSwitchGroupKey(null);
     const activity = reviewSaveActivityRef.current;
@@ -458,10 +507,11 @@ export function ClosedTradesPanel({
     }
   }, [chartSaveActionNeedsAttention, chartSaveActivity.blocking, pendingReviewSwitchGroupKey, setActiveReviewSaveActivity]);
 
-  const selectedTrade = useMemo(
-    () => sortedTrades.find((trade) => trade.groupKey === selectedGroupKey) ?? sortedTrades[0] ?? null,
-    [selectedGroupKey, sortedTrades],
-  );
+  const selectedTrade = useMemo(() => {
+    const selected = sortedTrades.find((trade) => trade.groupKey === selectedGroupKey);
+    if (selected) return selected;
+    return initialSelectedGroupKey ? null : sortedTrades[0] ?? null;
+  }, [initialSelectedGroupKey, selectedGroupKey, sortedTrades]);
   const selectedIndex = selectedTrade ? sortedTrades.findIndex((trade) => trade.groupKey === selectedTrade.groupKey) : -1;
   const previousTrade = selectedIndex > 0 ? sortedTrades[selectedIndex - 1] : null;
   const nextTrade = selectedIndex >= 0 && selectedIndex < sortedTrades.length - 1 ? sortedTrades[selectedIndex + 1] : null;
@@ -520,6 +570,7 @@ export function ClosedTradesPanel({
     if (blockUnsafeChartSwitch()) return;
     if (!options?.skipReviewDirtyGuard && !confirmDirtyReviewSwitch("switch trades")) return;
     setWorkspaceNotice("");
+    replaceSelectedGroupKeyInUrl(groupKey);
     setSelectedGroupKey(groupKey);
   }, [blockReviewSaveSwitch, blockUnsafeChartSwitch, confirmDirtyReviewSwitch, selectedGroupKey]);
 
@@ -652,38 +703,48 @@ export function ClosedTradesPanel({
       return;
     }
 
+    journalOpenRequestGroupKeyRef.current = trade.groupKey;
     startTransition(async () => {
-      const expectedReviewUpdatedAt = reviewUpdatedAt[trade.groupKey] ?? trade.reviewUpdatedAt;
-      const res = await fetch(`/api/closed-trades/${encodeURIComponent(trade.groupKey)}/journal`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expectedReviewUpdatedAt }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setStatus((prev) => ({ ...prev, [trade.groupKey]: payload.created ? "Created journal review." : "Opening journal review." }));
-        const journalEntryId =
-          typeof payload.journalEntryId === "string"
-            ? payload.journalEntryId
-            : payload.entry && typeof payload.entry === "object" && "id" in payload.entry && typeof payload.entry.id === "string"
-              ? payload.entry.id
-              : null;
-        window.location.assign(journalEntryId ? `/journal?entryId=${encodeURIComponent(journalEntryId)}` : "/journal");
-        return;
-      }
+      try {
+        const expectedReviewUpdatedAt = reviewUpdatedAt[trade.groupKey] ?? trade.reviewUpdatedAt;
+        const res = await fetch(`/api/closed-trades/${encodeURIComponent(trade.groupKey)}/journal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedReviewUpdatedAt }),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (res.ok) {
+          setStatus((prev) => ({ ...prev, [trade.groupKey]: payload.created ? "Created journal review." : "Opening journal review." }));
+          const journalEntryId =
+            typeof payload.journalEntryId === "string"
+              ? payload.journalEntryId
+              : payload.entry && typeof payload.entry === "object" && "id" in payload.entry && typeof payload.entry.id === "string"
+                ? payload.entry.id
+                : null;
+          journalOpenRequestGroupKeyRef.current = null;
+          window.location.assign(journalEntryId ? `/journal?entryId=${encodeURIComponent(journalEntryId)}` : "/journal");
+          return;
+        }
 
-      const message = typeof payload.error === "string" ? payload.error : "Failed to create journal review.";
-      const code = typeof payload.code === "string" ? payload.code : "";
-      const isStaleConflict =
-        code === "STALE_CLOSED_TRADE" ||
-        payload.isStale === true ||
-        (typeof payload.code !== "string" && message.toLowerCase().includes("stale"));
-      const isReviewVersionConflict = code === "CLOSED_TRADE_REVIEW_CHANGED";
-      if (isStaleConflict || isReviewVersionConflict) {
-        setReviewConflicts((prev) => ({ ...prev, [trade.groupKey]: isReviewVersionConflict }));
-        setReviewLocks((prev) => ({ ...prev, [trade.groupKey]: message }));
+        const message = typeof payload.error === "string" ? payload.error : "Failed to create journal review.";
+        const code = typeof payload.code === "string" ? payload.code : "";
+        const isStaleConflict =
+          code === "STALE_CLOSED_TRADE" ||
+          payload.isStale === true ||
+          (typeof payload.code !== "string" && message.toLowerCase().includes("stale"));
+        const isReviewVersionConflict = code === "CLOSED_TRADE_REVIEW_CHANGED";
+        if (isStaleConflict || isReviewVersionConflict) {
+          setReviewConflicts((prev) => ({ ...prev, [trade.groupKey]: isReviewVersionConflict }));
+          setReviewLocks((prev) => ({ ...prev, [trade.groupKey]: message }));
+        }
+        setStatus((prev) => ({ ...prev, [trade.groupKey]: message }));
+      } catch {
+        setStatus((prev) => ({ ...prev, [trade.groupKey]: "Failed to open journal review." }));
+      } finally {
+        if (journalOpenRequestGroupKeyRef.current === trade.groupKey) {
+          journalOpenRequestGroupKeyRef.current = null;
+        }
       }
-      setStatus((prev) => ({ ...prev, [trade.groupKey]: message }));
     });
   }, [blockUnsafeJournalOpen, reviewConflicts, reviewDrafts, reviewLocks, reviewUpdatedAt, savedDraftFromTrade, startTransition]);
 
@@ -701,6 +762,7 @@ export function ClosedTradesPanel({
       return;
     }
     setWorkspaceNotice("");
+    routeSelectionAfterSaveRef.current = groupKey;
     setSelectedGroupKey(groupKey);
     const activity = reviewSaveActivityRef.current;
     if (activity?.targetGroupKey === groupKey) {
@@ -724,11 +786,20 @@ export function ClosedTradesPanel({
     openJournalReview(trade, { skipChartSaveGuard: true });
   }, [chartSaveActionNeedsAttention, chartSaveActivity.blocking, openJournalReview, pendingJournalOpenGroupKey, sortedTrades]);
 
-  if (sortedTrades.length === 0 || !selectedTrade) {
+  if (sortedTrades.length === 0) {
     return (
       <section className="rounded-lg border border-slate-200 bg-white p-8 text-center shadow-sm">
         <p className="text-sm font-semibold text-slate-900">No closed trades found.</p>
         <p className="mt-1 text-sm text-slate-500">Adjust the filters to review a different date range or symbol.</p>
+      </section>
+    );
+  }
+
+  if (!selectedTrade) {
+    return (
+      <section className="rounded-lg border border-amber-200 bg-amber-50 p-8 text-center shadow-sm">
+        <p className="text-sm font-semibold text-amber-950">The requested closed trade is unavailable.</p>
+        <p className="mt-1 text-sm text-amber-800">The deep link was preserved instead of opening a different trade.</p>
       </section>
     );
   }
@@ -812,7 +883,10 @@ export function ClosedTradesPanel({
           />
           {sortedTrades.map((trade) => {
             const selected = trade.groupKey === selectedTrade.groupKey;
-            const profitable = trade.realizedPnl >= 0;
+            const profitable = trade.realizedPnl > 0;
+            const losing = trade.realizedPnl < 0;
+            const resultLabel = profitable ? "Winner" : losing ? "Loser" : "Break-even";
+            const resultClassName = profitable ? "text-emerald-600" : losing ? "text-red-600" : "text-slate-600";
             const savedDraft = savedDraftFromTrade(trade);
             const draft = reviewDrafts[trade.groupKey] ?? savedDraft;
             const dirty = !draftsEqual(draft, savedDraft);
@@ -870,7 +944,7 @@ export function ClosedTradesPanel({
                       </Badge>
                     </div>
                   </div>
-                  <p className={cn("shrink-0 text-sm font-semibold", profitable ? "text-emerald-600" : "text-red-600")}>
+                  <p className={cn("shrink-0 text-sm font-semibold", resultClassName)}>
                     {formatCurrency(trade.realizedPnl)}
                   </p>
                 </div>
@@ -878,7 +952,7 @@ export function ClosedTradesPanel({
                   <Metric label="Entry / Exit" value={`${trade.avgEntryPrice.toFixed(2)} / ${trade.avgExitPrice.toFixed(2)}`} />
                   <Metric label="Executions" value={trade.executions.length.toString()} />
                   <Metric label="Return" value={formatPercent(trade.priceReturnPct)} valueClassName={metricTone(trade.priceReturnPct)} />
-                  <Metric label="Result" value={profitable ? "Winner" : "Loser"} valueClassName={profitable ? "text-emerald-600" : "text-red-600"} />
+                  <Metric label="Result" value={resultLabel} valueClassName={resultClassName} />
                 </div>
                 {tags.length > 0 ? (
                   <div className="mt-3 flex flex-wrap gap-1">

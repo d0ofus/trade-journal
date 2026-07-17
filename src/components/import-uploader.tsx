@@ -252,24 +252,24 @@ export function ImportUploader() {
             </Button>
           </div>
           {previews.length > 0 && (hasBlockingPreviewErrors || !hasImportablePreviews) ? (
-            <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
               Resolve preview errors or upload a trade, position, or snapshot file before importing.
             </div>
           ) : null}
           {hasBlockedFullSnapshot ? (
-            <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div className="rounded-[18px] border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
               {blockedFullSnapshotReasons.length > 0
                 ? blockedFullSnapshotReasons.join(" ")
                 : "A selected full snapshot is older than existing position history or lacks required report dates. Use partial update or upload a current complete export."}
             </div>
           ) : null}
           {hasUnconfirmedFullSnapshot ? (
-            <div className="rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <div className="rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">
               Confirm each full snapshot before importing so missing positions can be safely pruned.
             </div>
           ) : null}
           {message ? (
-            <p className="rounded-[18px] border border-slate-200/80 bg-white/80 px-4 py-3 text-sm text-slate-600">
+            <p aria-live="polite" className="rounded-[18px] border border-slate-200/80 bg-white/80 px-4 py-3 text-sm text-slate-600" role="status">
               {message}
             </p>
           ) : null}

@@ -402,8 +402,13 @@ export function JournalEntryChartPreview({
         <div
           ref={overlayRef}
           aria-label="Chart date range selector"
+          aria-keyshortcuts="ArrowLeft ArrowRight Control+ArrowLeft Control+ArrowRight Shift+ArrowLeft Shift+ArrowRight Home End"
           className={cn("absolute inset-0 z-50", rangeEditActive ? "cursor-crosshair" : "pointer-events-none")}
           role="application"
+          tabIndex={0}
+          data-selection-start={selection?.startKey ?? ""}
+          data-selection-end={selection?.endKey ?? ""}
+          data-selection-bars={selection?.barCount ?? 0}
           style={{ touchAction: rangeEditActive ? "none" : "auto" }}
           onPointerDown={(event) => {
             if (!event.ctrlKey && !event.metaKey) return;
@@ -458,6 +463,29 @@ export function JournalEntryChartPreview({
             dragRef.current = null;
             setRangeDragActive(false);
             setChartDragPanEnabled(true);
+          }}
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const startIndex = selection ? points.findIndex((point) => point.key === selection.startKey) : 0;
+            const endIndex = selection ? points.findIndex((point) => point.key === selection.endKey) : points.length - 1;
+            const length = Math.max(1, endIndex - startIndex + 1);
+            if (event.key === "Home") {
+              setSelection(selectionFromIndexes(points, 0, length - 1));
+              return;
+            }
+            if (event.key === "End") {
+              setSelection(selectionFromIndexes(points, points.length - length, points.length - 1));
+              return;
+            }
+            const delta = event.key === "ArrowLeft" ? -1 : 1;
+            if (event.ctrlKey || event.metaKey) {
+              setSelection(selectionFromIndexes(points, startIndex + delta, endIndex));
+            } else if (event.shiftKey) {
+              setSelection(selectionFromIndexes(points, startIndex, endIndex + delta));
+            } else {
+              setSelection(moveWindowByIndex(points, startIndex, endIndex, startIndex, startIndex + delta));
+            }
           }}
         >
           {rect ? (

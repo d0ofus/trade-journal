@@ -10,6 +10,16 @@ describe("buildClosedTradeWhere", () => {
     expect(buildClosedTradeWhere({ includeStale: true })).toEqual({});
   });
 
+  it("uses UTC trade-day boundaries for date-only filters", () => {
+    expect(buildClosedTradeWhere({ from: "2026-06-18", to: "2026-06-18" })).toEqual({
+      isStale: false,
+      tradeDate: {
+        gte: new Date("2026-06-18T00:00:00.000Z"),
+        lte: new Date("2026-06-18T23:59:59.999Z"),
+      },
+    });
+  });
+
   it("filters closed trades by trade direction and strategy in addition to a closed-trade tag", () => {
     const where = buildClosedTradeWhere({
       direction: "LONG",

@@ -224,8 +224,16 @@ function candleCoverage(input: {
   profile: CandleSessionProfile | null;
   scanExhausted?: boolean;
 }) {
-  if (!input.profile || !isSessionAwareTimeframe(input.timeframe)) {
+  if (!input.profile) {
     return unverifiedCandleCoverage(input.scanExhausted);
+  }
+  if (!isSessionAwareTimeframe(input.timeframe)) {
+    return {
+      ...unverifiedCandleCoverage(input.scanExhausted),
+      profile: input.profile.id,
+      timezone: input.profile.timezone,
+      sessionPolicy: input.profile.sessionPolicy,
+    };
   }
   const range = input.range ?? input.effectiveRange;
   return evaluateUsEquitiesCandleCoverage({
@@ -954,7 +962,14 @@ export async function loadCandlesForSymbol(input: {
         const csvText = await res.text();
         throwIfCandleRequestAborted(input.signal);
         const rows = clipCandlesToRange(trimTrailingDuplicateDailyCandle(dedupeCandles(parseCsvRows(csvText))), range);
-        const providerCoverage = unverifiedCandleCoverage();
+        const providerCoverage = candleCoverage({
+          candles: rows,
+          timeframe,
+          range,
+          effectiveRange,
+          limit: boundedLimit,
+          profile: sessionProfile,
+        });
         if (rows.length > 0 && providerCandlesShouldReplaceCache(rows, cached, timeframe, range, boundedLimit, providerCoverage, cacheCoverage)) {
           return {
             symbol: candidate.toUpperCase(),

@@ -31,7 +31,9 @@ function buildCandlePayload(input: {
     loadedCount: input.candles.length,
   });
   const coverageWarnings = input.coverage?.status === "unverified"
-    ? ["Calendar/session unknown; coverage not verified."]
+    ? [input.coverage.profile
+        ? "Session profile resolved; gap verification is not available for this timeframe."
+        : "Calendar/session unknown; coverage not verified."]
     : input.coverage?.status === "partial"
       ? [
           input.coverage.missingBars > 0

@@ -271,11 +271,20 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
                 </div>
               </div>
               {backupWarnings.length > 0 ? (
-                <ul className="mt-3 space-y-1 text-xs text-amber-800">
+                <ul className="mt-3 space-y-1 break-words text-xs text-amber-800 [overflow-wrap:anywhere]">
                   {backupWarnings.slice(0, 4).map((warning) => (
                     <li key={warning}>{warning}</li>
                   ))}
-                  {backupWarnings.length > 4 ? <li>{backupWarnings.length - 4} more warning(s)</li> : null}
+                  {backupWarnings.length > 4 ? (
+                    <li>
+                      <details>
+                        <summary className="cursor-pointer font-semibold">Show {backupWarnings.length - 4} more warning(s)</summary>
+                        <ul className="mt-1 space-y-1">
+                          {backupWarnings.slice(4).map((warning) => <li key={warning}>{warning}</li>)}
+                        </ul>
+                      </details>
+                    </li>
+                  ) : null}
                 </ul>
               ) : null}
             </div>

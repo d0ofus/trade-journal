@@ -40,6 +40,16 @@ describe("isReusableCandleResponse", () => {
     expect(isReusableCandleResponse(payload)).toBe(false);
   });
 
+  it("caches usable non-intraday candles when the session profile is known", () => {
+    const payload = {
+      candles: [candle],
+      metadata: { coverage: { status: "unverified", profile: "US_EQUITIES_CORE_V1" } },
+    };
+
+    expect(isDisplayableCandleResponse(payload)).toBe(true);
+    expect(isReusableCandleResponse(payload)).toBe(true);
+  });
+
   it.each(["complete", "closed", "limited"])("caches %s coverage when candles are usable", (status) => {
     const payload = { candles: [candle], metadata: { coverage: { status } } };
 

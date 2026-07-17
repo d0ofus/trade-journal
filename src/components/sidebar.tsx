@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { cn } from "@/lib/utils";
+import { requestWorkstationNavigation } from "@/lib/workstation-navigation-guard";
 
 const links = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -56,6 +57,19 @@ export function Sidebar() {
     window.dispatchEvent(new Event(SIDEBAR_COLLAPSE_EVENT));
   }
 
+  function signOutSafely() {
+    if (!requestWorkstationNavigation("sign out")) return;
+    void signOut({ callbackUrl: "/login" });
+  }
+
+  useEffect(() => {
+    document.querySelector<HTMLElement>('[data-mobile-nav-active="true"]')?.scrollIntoView({
+      behavior: "instant",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [pathname]);
+
   return (
     <>
       <div className="fixed inset-x-0 top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur lg:hidden">
@@ -72,7 +86,7 @@ export function Sidebar() {
           <button
             type="button"
             className="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700"
-            onClick={() => signOut({ callbackUrl: "/login" })}
+            onClick={signOutSafely}
           >
             Sign Out
           </button>
@@ -84,6 +98,8 @@ export function Sidebar() {
             return (
               <Link
                 key={link.href}
+                aria-current={active ? "page" : undefined}
+                data-mobile-nav-active={active ? "true" : undefined}
                 href={link.href}
                 className={cn(
                   "flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium",
@@ -124,6 +140,7 @@ export function Sidebar() {
             return (
               <Link
                 key={link.href}
+                aria-current={active ? "page" : undefined}
                 href={link.href}
                 title={collapsed ? link.label : undefined}
                 className={cn(
@@ -158,7 +175,7 @@ export function Sidebar() {
               "flex h-10 w-full items-center gap-3 rounded-lg px-3 text-sm font-medium text-slate-300 hover:bg-white/8 hover:text-white",
               collapsed && "justify-center px-0",
             )}
-            onClick={() => signOut({ callbackUrl: "/login" })}
+            onClick={signOutSafely}
             title={collapsed ? "Sign out" : undefined}
           >
             <LogOut className="h-4 w-4" />

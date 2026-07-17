@@ -993,6 +993,7 @@ describe("loadCandlesForSymbol", () => {
 
   it("clips Stooq daily history to the requested dates", async () => {
     withoutAlpacaCredentials();
+    resolveAsUsEquity("NYSE");
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: false })
       .mockResolvedValueOnce({
@@ -1013,7 +1014,14 @@ describe("loadCandlesForSymbol", () => {
 
     const result = await loadCandlesForSymbol({ symbol: "DEMOA", timeframe: "1d", range, limit: 120 });
 
-    expect(result).toMatchObject({ source: "stooq" });
+    expect(result).toMatchObject({
+      source: "stooq",
+      coverage: {
+        status: "unverified",
+        profile: "US_EQUITIES_CORE_V1",
+        sessionPolicy: "core-required-extended-preserved",
+      },
+    });
     expect(result.candles.map((candle) => candle.time)).toEqual([
       Math.floor(Date.parse("2026-06-16T00:00:00.000Z") / 1000),
       Math.floor(Date.parse("2026-06-17T00:00:00.000Z") / 1000),

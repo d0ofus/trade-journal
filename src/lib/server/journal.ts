@@ -19,6 +19,8 @@ import {
   type JournalTagCategoryValue,
 } from "@/lib/journal/schema";
 import { computeJournalAnalytics, computeRuleFitScore } from "@/lib/journal/analytics";
+import { lockClosedTradeForReview } from "@/lib/server/closed-trade-review-lock";
+import { utcDateBoundary } from "@/lib/server/utc-date-range";
 
 type JournalTagBuckets = Partial<Record<JournalTagCategoryValue, string[]>>;
 
@@ -556,6 +558,22 @@ export async function createJournalEntryFromClosedTrade(groupKey: string, option
         };
       }
 
+      const lockedClosedTrade = await lockClosedTradeForReview(tx, groupKey);
+      if (!lockedClosedTrade) {
+        throw new ClosedTradeJournalBridgeError("CLOSED_TRADE_NOT_FOUND", "Closed trade not found.", 404);
+      }
+
+      const entryCreatedWhileWaiting = await getClosedTradeJournalEntryByLink(tx, groupKey);
+      if (entryCreatedWhileWaiting) {
+        return {
+          created: false,
+          entry: entryCreatedWhileWaiting,
+        };
+      }
+      if (lockedClosedTrade.isStale) {
+        throw new ClosedTradeJournalBridgeError("STALE_CLOSED_TRADE", "Cannot create a journal review for a stale closed trade.", 409);
+      }
+
       const [closedTrade, review] = await Promise.all([
         tx.closedTrade.findUnique({
           where: { groupKey },
@@ -577,9 +595,6 @@ export async function createJournalEntryFromClosedTrade(groupKey: string, option
 
       if (!closedTrade) {
         throw new ClosedTradeJournalBridgeError("CLOSED_TRADE_NOT_FOUND", "Closed trade not found.", 404);
-      }
-      if (closedTrade.isStale) {
-        throw new ClosedTradeJournalBridgeError("STALE_CLOSED_TRADE", "Cannot create a journal review for a stale closed trade.", 409);
       }
       assertExpectedClosedTradeReview(review, options);
 
@@ -1328,8 +1343,8 @@ export async function listJournalVisual(filters: Record<string, string | null>) 
   const timeframe = filters.timeframe;
   const minFitScore = filters.minFitScore ? Number(filters.minFitScore) : null;
   const minBestExitR = filters.minBestExitR ? Number(filters.minBestExitR) : null;
-  const from = filters.from ? new Date(filters.from).getTime() : null;
-  const to = filters.to ? new Date(filters.to).getTime() : null;
+  const from = filters.from ? utcDateBoundary(filters.from, "start").getTime() : null;
+  const to = filters.to ? utcDateBoundary(filters.to, "end").getTime() : null;
 
   const rows = entries.flatMap((entry) => {
     const ideaTime = new Date(entry.ideaDate).getTime();

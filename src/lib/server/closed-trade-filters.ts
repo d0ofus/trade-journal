@@ -1,4 +1,4 @@
-import { endOfDay, startOfDay } from "date-fns";
+import { utcDateBoundary } from "@/lib/server/utc-date-range";
 
 export type TradeFilters = {
   from?: string;
@@ -57,8 +57,8 @@ export function buildClosedTradeWhere(filters: TradeFilters) {
 
   if (filters.from || filters.to) {
     where.tradeDate = {
-      gte: filters.from ? startOfDay(new Date(filters.from)) : undefined,
-      lte: filters.to ? endOfDay(new Date(filters.to)) : undefined,
+      gte: filters.from ? utcDateBoundary(filters.from, "start") : undefined,
+      lte: filters.to ? utcDateBoundary(filters.to, "end") : undefined,
     };
   }
 

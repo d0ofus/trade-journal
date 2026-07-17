@@ -95,8 +95,8 @@ export function aggregateDashboardData({
   }
 
   for (const trade of orderedClosedTrades) {
-    if (rangeStart && trade.closeTime < rangeStart) continue;
-    if (rangeEnd && trade.closeTime > rangeEnd) continue;
+    if (rangeStart && trade.tradeDate < rangeStart) continue;
+    if (rangeEnd && trade.tradeDate > rangeEnd) continue;
 
     filteredClosedTrades.push(trade);
     filteredCommissions += trade.totalCommission;

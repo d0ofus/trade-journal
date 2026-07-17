@@ -358,9 +358,12 @@ function localDayStart(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-function localDayEnd(value: string) {
-  const date = new Date(`${value}T00:00:00`);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+function utcDayStart(value: string) {
+  return new Date(`${value}T00:00:00.000Z`);
+}
+
+function utcDayEnd(value: string) {
+  return new Date(`${value}T23:59:59.999Z`);
 }
 
 function localWeekStartMonday(date: Date) {
@@ -404,8 +407,8 @@ function unixSeconds(iso: string) {
 }
 
 function expectedDashboardCardsFromBackup(payload: Record<string, unknown>, from: string, to: string) {
-  const rangeStart = localDayStart(new Date(`${from}T00:00:00`));
-  const rangeEnd = localDayEnd(to);
+  const rangeStart = utcDayStart(from);
+  const rangeEnd = utcDayEnd(to);
   const closedTrades = backupRows(payload, "closedTrades")
     .filter((row) => row.isStale !== true)
     .sort((a, b) => {
@@ -414,8 +417,8 @@ function expectedDashboardCardsFromBackup(payload: Record<string, unknown>, from
       return String(a.groupKey ?? "").localeCompare(String(b.groupKey ?? ""));
     });
   const filtered = closedTrades.filter((row) => {
-    const closeTime = backupDateValue(row, "closeTime");
-    return closeTime >= rangeStart && closeTime <= rangeEnd;
+    const tradeDate = backupDateValue(row, "tradeDate");
+    return tradeDate >= rangeStart && tradeDate <= rangeEnd;
   });
   const wins = filtered.filter((row) => numericBackupValue(row, "realizedPnl") > 0);
   const losses = filtered.filter((row) => numericBackupValue(row, "realizedPnl") < 0);
@@ -691,8 +694,11 @@ test("demo workstation flow loads, saves, filters, and protects mutation APIs", 
       row.links.some((link) => link.targetType === "CLOSED_TRADE" && link.targetId === demoGroupKey),
     ),
   ).toBe(true);
-  await expect(page.getByTestId("source-closed-trade-link").first()).toBeVisible();
-  await page.getByTestId("source-closed-trade-link").first().click();
+  const sourceClosedTradeLink = page.getByTestId("source-closed-trade-link").first();
+  await expect(sourceClosedTradeLink).toBeVisible();
+  const sourceHref = await sourceClosedTradeLink.getAttribute("href");
+  expect(new URL(sourceHref!, "http://localhost").searchParams.get("symbol")).toBeNull();
+  await sourceClosedTradeLink.click();
   await expect(page).toHaveURL(/\/trades\?/);
   await expect.poll(() => new URL(page.url()).searchParams.get("groupKey")).toBe(demoGroupKey);
   const linkedDemoClosedTrade = page.getByRole("button", { name: /DEMOA LONG/ }).first();
@@ -718,6 +724,10 @@ test("demo workstation flow loads, saves, filters, and protects mutation APIs", 
   });
 
   await page.locator('input[name="tag"]').fill("#Smoke-Reviewed");
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("unsaved structured review changes");
+    await dialog.accept();
+  });
   await page.getByRole("button", { name: "Apply" }).click();
   await expect(page).toHaveURL(/tag=%23Smoke-Reviewed|tag=%23smoke-reviewed/i);
   await expect(page.getByText("#smoke-reviewed").first()).toBeVisible();
@@ -1515,6 +1525,31 @@ test("closed-trade review navigation guards dirty drafts and resumes selected tr
     expect(dialog.message()).toContain("unsaved structured review changes");
     await dialog.dismiss();
   });
+  await page.locator("aside").getByRole("link", { name: "Dashboard", exact: true }).click();
+  await expect(page).toHaveURL(/\/trades/);
+  await expect(inspector.getByLabel("Lesson")).toHaveValue(dirtyLesson);
+
+  await page.locator('input[name="symbol"]').fill("DEMOA");
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("unsaved structured review changes");
+    await dialog.dismiss();
+  });
+  await page.getByTestId("trade-filters").getByRole("button", { name: "Apply", exact: true }).click();
+  expect(new URL(page.url()).searchParams.has("symbol")).toBe(false);
+  await expect(inspector.getByLabel("Lesson")).toHaveValue(dirtyLesson);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.type()).toBe("beforeunload");
+    await dialog.dismiss();
+  });
+  await page.goBack({ waitUntil: "commit", timeout: 2_000 }).catch(() => null);
+  await expect(page).toHaveURL(/\/trades/);
+  await expect(inspector.getByLabel("Lesson")).toHaveValue(dirtyLesson);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("unsaved structured review changes");
+    await dialog.dismiss();
+  });
   await inspector.getByRole("button", { name: "Next", exact: true }).focus();
   await page.keyboard.press("Alt+ArrowDown");
 
@@ -1553,6 +1588,40 @@ test("closed-trade review navigation guards dirty drafts and resumes selected tr
   await page.keyboard.press("Alt+ArrowUp");
   await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", firstGroupKey!);
   await expect.poll(() => new URL(page.url()).searchParams.get("groupKey")).toBe(firstGroupKey);
+
+  expect(browserErrors).toEqual([]);
+});
+
+test("closed-trade groupKey deep links remain authoritative across mismatched filters and reload", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+
+  await signIn(page);
+  await gotoAndSettle(page, `/trades?account=${demoAccountCode}`);
+  const target = page.locator(`button[data-account-code="${demoAccountCode}"]`).first();
+  await expect(target).toBeVisible();
+  const groupKey = await target.getAttribute("data-group-key");
+  const symbol = (await target.locator("p").first().textContent())?.trim();
+  expect(groupKey).toBeTruthy();
+  expect(symbol).toBeTruthy();
+
+  await gotoAndSettle(
+    page,
+    `/trades?account=NO-SUCH-ACCOUNT&symbol=WRONG&groupKey=${encodeURIComponent(groupKey!)}`,
+  );
+  await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", groupKey!);
+  await expect(page.locator('button[aria-current="true"]')).toContainText(symbol!);
+  await expect(page.locator('input[name="groupKey"]')).toHaveValue(groupKey!);
+
+  await page.getByTestId("trade-filters").getByRole("button", { name: "Apply", exact: true }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("groupKey")).toBe(groupKey);
+  await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", groupKey!);
+  await page.reload();
+  await expectNoFrameworkOverlay(page);
+  await expect(page.locator('button[aria-current="true"]')).toHaveAttribute("data-group-key", groupKey!);
+
+  await gotoAndSettle(page, `/trades?account=${demoAccountCode}&groupKey=deleted-closed-trade`);
+  await expect(page.getByText("The requested closed trade is unavailable.")).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get("groupKey")).toBe("deleted-closed-trade");
 
   expect(browserErrors).toEqual([]);
 });
@@ -2718,7 +2787,7 @@ test("chart workstation cancels shared candle work only after its final owner re
     const key = `${symbol}:${timeframe}`;
     candleRequests.push(key);
 
-    if (key === "DEMOA:1h") {
+    if (timeframe === "1h") {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -2833,9 +2902,18 @@ test("chart workstation cancels shared candle work only after its final owner re
     }
     await expect(panels.nth(0).getByTestId("chart-panel-source")).toHaveText("5M-DERIVED");
 
+    await compareInput.fill("DEMOB");
+    await compareInput.blur();
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-compare-fresh", "true");
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-compare-rendered", "true");
+
     const retainedCount = await panels.nth(0).getByTestId("chart-panel-bar-count").getAttribute("data-candle-count");
     await panels.nth(0).locator('button[title="Switch to 1H"]').click();
+    await expect.poll(() => candleRequests.filter((key) => key === "DEMOB:1h").length).toBe(1);
     await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-candle-fresh", "false");
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-compare-fresh", "false");
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-compare-rendered", "false");
+    await expect(panels.nth(0).getByTestId("closed-trade-chart-plot")).toHaveAttribute("data-compare-candle-count", "0");
     await expect(panels.nth(0).getByTestId("chart-panel-bar-count")).toHaveAttribute("data-candle-count", retainedCount ?? "60");
     await expect(panels.nth(0).getByTestId("chart-warning")).toContainText("Forced provider failure; no candle data returned.");
     await expectFirstCanvasPainted(page);

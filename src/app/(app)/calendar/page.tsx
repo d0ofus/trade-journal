@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { getCalendarPerformance } from "@/lib/server/queries";
-import { formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 type CalendarView = "year" | "month" | "day";
@@ -55,6 +55,17 @@ function dailyPnlClass(total: number) {
   if (total > 0) return "border-emerald-200 bg-emerald-50/80 text-emerald-900";
   if (total < 0) return "border-rose-200 bg-rose-50/80 text-rose-900";
   return "border-slate-200 bg-white text-slate-900";
+}
+
+function compactCurrency(value: number) {
+  if (!Number.isFinite(value) || value === 0) return "$0";
+  const sign = value > 0 ? "+" : "-";
+  const absolute = Math.abs(value);
+  if (absolute >= 1000) {
+    const digits = absolute >= 10_000 ? 0 : 1;
+    return `${sign}$${(absolute / 1000).toFixed(digits)}k`;
+  }
+  return `${sign}$${Math.round(absolute)}`;
 }
 
 function viewHref(view: CalendarView, date: Date) {
@@ -138,8 +149,8 @@ async function CalendarContent({
   const months = Array.from({ length: 12 }, (_, index) => new Date(selectedDate.getFullYear(), index, 1));
 
   return (
-    <CardContent className="space-y-4 pt-6">
-      <div className="flex flex-wrap items-center justify-between rounded-[24px] border border-slate-200/80 bg-white/80 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
+    <CardContent className="space-y-4 px-2 pt-4 sm:px-6 sm:pt-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200/80 bg-white/80 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] sm:rounded-[24px] sm:p-4">
         <div className="flex items-center gap-2">
           <Link href={viewHref(view, prevDate)} className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
             Prev
@@ -151,7 +162,10 @@ async function CalendarContent({
         <div className="text-sm font-semibold text-slate-700">{view === "year" ? yearLabel : monthName}</div>
         <div className="text-right text-sm">
           <p className="text-slate-500">Monthly Total</p>
-          <p className={selectedMonthTotals.total >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-red-700"}>
+          <p
+            className={selectedMonthTotals.total >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-red-700"}
+            data-testid="calendar-month-total"
+          >
             {formatCurrency(selectedMonthTotals.total)}
           </p>
           <p className="text-xs text-slate-500">
@@ -205,10 +219,11 @@ async function CalendarContent({
 
       {view !== "year" && (
         <div className="space-y-3">
-          <div className="grid grid-cols-7 gap-2">
+          <div className="grid grid-cols-7 gap-1 sm:gap-2" data-testid="calendar-day-grid">
             {weekDays.map((day) => (
               <p key={day} className="text-center text-xs font-medium text-slate-500">
-                {day}
+                <span className="sm:hidden">{day.slice(0, 1)}</span>
+                <span className="hidden sm:inline">{day}</span>
               </p>
             ))}
 
@@ -220,19 +235,32 @@ async function CalendarContent({
                 <Link
                   key={key}
                   href={viewHref("day", date)}
-                  className={`${dailyPnlClass(row?.total ?? 0)} ${isCurrent ? "" : "opacity-40"} min-h-24 rounded-[20px] border p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]`}
+                  className={`${dailyPnlClass(row?.total ?? 0)} ${isCurrent ? "" : "opacity-40"} min-h-16 min-w-0 overflow-hidden rounded-lg border p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] sm:min-h-24 sm:rounded-[20px] sm:p-3`}
+                  data-date={key}
+                  data-testid="calendar-day-cell"
                 >
                   <p className="text-xs font-semibold">{format(date, "d")}</p>
-                  <p className="mt-2 text-xs">
-                    Total:{" "}
-                    <span className={row && row.total < 0 ? "font-semibold text-red-700" : "font-semibold text-emerald-700"}>
-                      {formatCurrency(row?.total ?? 0)}
-                    </span>
+                  <p
+                    className={cn(
+                      "mt-1 truncate text-[9px] font-semibold sm:hidden",
+                      row && row.total < 0 ? "text-red-700" : row && row.total > 0 ? "text-emerald-700" : "text-slate-600",
+                    )}
+                    data-testid="calendar-day-compact-total"
+                  >
+                    {compactCurrency(row?.total ?? 0)}
                   </p>
-                  <p className="text-[11px] text-slate-600">Realized: {formatCurrency(row?.realized ?? 0)}</p>
-                  <p className="text-[11px] text-slate-600">MTM: {formatCurrency(row?.mtm ?? 0)}</p>
+                  <div className="hidden sm:block" data-testid="calendar-day-detail">
+                    <p className="mt-2 text-xs">
+                      Total:{" "}
+                      <span className={row && row.total < 0 ? "font-semibold text-red-700" : "font-semibold text-emerald-700"}>
+                        {formatCurrency(row?.total ?? 0)}
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-slate-600">Realized: {formatCurrency(row?.realized ?? 0)}</p>
+                    <p className="text-[11px] text-slate-600">MTM: {formatCurrency(row?.mtm ?? 0)}</p>
+                  </div>
                   {(row?.notes.length ?? 0) > 0 && (
-                    <p className="mt-1 text-[11px] text-slate-700">{row?.notes.length} note(s)</p>
+                    <p className="mt-1 truncate text-[9px] text-slate-700 sm:text-[11px]">{row?.notes.length}<span className="hidden sm:inline"> note(s)</span></p>
                   )}
                 </Link>
               );
