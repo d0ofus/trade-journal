@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
 import { parseCsvWithMapping, previewCsv, type ParsedImport } from "@/lib/import/ibkr-parser";
@@ -11,11 +12,13 @@ import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { prisma } from "@/lib/prisma";
 import {
   ImportRejectedError,
+  createImportCohortContext,
   importParsedFile,
   importParsedFilesAtomic,
   recordFailedImportAttempt,
   recordFailedImportCohort,
 } from "@/lib/server/import-service";
+import { positionImportLockKeys } from "@/lib/server/position-import-lock";
 
 describe("rawImportArchiveIdentity", () => {
   it("derives a content-addressed storage key from the raw payload", () => {
@@ -29,6 +32,40 @@ describe("rawImportArchiveIdentity", () => {
 
 describe("importParsedFile", () => {
   const dbIt = process.env.DATABASE_URL ? it : it.skip;
+
+  function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((nextResolve, nextReject) => {
+      resolve = nextResolve;
+      reject = nextReject;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function waitingPositionImportLockCount(accountCode: string) {
+    const lockKey = positionImportLockKeys([accountCode])[0];
+    const rows = await prisma.$queryRaw<Array<{ waiting: number }>>(
+      Prisma.sql`
+        SELECT count(*)::int AS waiting
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND granted = false
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND objsubid = 1
+          AND classid = (((hashtextextended(${lockKey}, 0) >> 32) & 4294967295)::oid)
+          AND objid = ((hashtextextended(${lockKey}, 0) & 4294967295)::oid)
+      `,
+    );
+    return rows[0]?.waiting ?? 0;
+  }
+
+  async function expectPositionImportWaiting(accountCode: string) {
+    await expect.poll(
+      () => waitingPositionImportLockCount(accountCode),
+      { timeout: 10_000, interval: 25 },
+    ).toBeGreaterThan(0);
+  }
 
   function positionImport(account: string, symbol: string, quantity: number, reportDate: Date | null = new Date("2026-01-02T00:00:00.000Z")): ParsedImport {
     return {
@@ -48,6 +85,28 @@ describe("importParsedFile", () => {
           currency: "USD",
         },
       ],
+      snapshots: [],
+      rowErrors: [],
+    };
+  }
+
+  function positionRowsImport(
+    account: string,
+    rows: Array<{ symbol: string; quantity: number; reportDate: Date }>,
+  ): ParsedImport {
+    return {
+      kind: "positions",
+      rawRowCount: rows.length,
+      executions: [],
+      positions: rows.map((row) => ({
+        account,
+        exchange: "NASDAQ",
+        assetType: "STOCK",
+        avgCost: 10,
+        unrealizedPnl: 0,
+        currency: "USD",
+        ...row,
+      })),
       snapshots: [],
       rowErrors: [],
     };
@@ -697,6 +756,51 @@ describe("importParsedFile", () => {
     }
   });
 
+  dbIt("keeps delimiter-bearing instrument identities distinct", async () => {
+    const marker = String(Date.now()).slice(-6);
+    const accountCode = `POS-TUPLE-${marker}`;
+    const symbolA = `A|B${marker}`;
+    const exchangeA = "C";
+    const symbolB = "A";
+    const exchangeB = `B${marker}|C`;
+    const filename = `tuple-position-${marker}.csv`;
+    const reportDate = new Date("2026-03-04T00:00:00.000Z");
+    const parsed = positionRowsImport(accountCode, [
+      { symbol: symbolA, quantity: 3, reportDate },
+      { symbol: symbolB, quantity: 7, reportDate },
+    ]);
+    parsed.positions[0].exchange = exchangeA;
+    parsed.positions[1].exchange = exchangeB;
+
+    try {
+      await importParsedFilesAtomic([{
+        filename,
+        fileType: "positions",
+        parsed,
+        positionSnapshotMode: "full",
+      }]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode } },
+        include: { instrument: true },
+      });
+      const quantities = Object.fromEntries(
+        positions.map((position) => [
+          `${position.instrument.symbol}:${position.instrument.exchange}`,
+          position.quantity,
+        ]),
+      );
+
+      expect(positions).toHaveLength(2);
+      expect(quantities).toEqual({
+        [`${symbolA}:${exchangeA}`]: 3,
+        [`${symbolB}:${exchangeB}`]: 7,
+      });
+    } finally {
+      await cleanupPositionScenario([accountCode], [symbolA, symbolB], [filename]);
+    }
+  });
+
   dbIt("rejects impossible full-snapshot dates before pruning positions", async () => {
     const marker = Date.now();
     const accountCode = `POS-DATE-${marker}`;
@@ -960,6 +1064,832 @@ describe("importParsedFile", () => {
       expect(protectedAfter?.quantity).toBe(5);
     } finally {
       await cleanupPositionScenario([accountCode], [keptSymbol, protectedSymbol], [filename]);
+    }
+  });
+
+  dbIt("serializes concurrent same-date full snapshots as complete replacements", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-SERIAL-FULL-${marker}`;
+    const firstSymbol = `PSF${String(marker).slice(-6)}A`;
+    const secondSymbol = `PSF${String(marker).slice(-6)}B`;
+    const filenames = [`serial-full-first-${marker}.csv`, `serial-full-second-${marker}.csv`];
+    const reportDate = new Date("2026-07-01T00:00:00.000Z");
+    const firstLocked = deferred<readonly string[]>();
+    const releaseFirst = deferred<void>();
+    const secondReady = deferred<readonly string[]>();
+
+    try {
+      const first = importParsedFilesAtomic(
+        [{
+          filename: filenames[0],
+          fileType: "positions",
+          parsed: positionImport(accountCode, firstSymbol, 10, reportDate),
+          positionSnapshotMode: "full",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            afterAcquire: async (accounts) => {
+              firstLocked.resolve(accounts);
+              await releaseFirst.promise;
+            },
+          },
+        },
+      );
+      await expect(firstLocked.promise).resolves.toEqual([accountCode]);
+
+      const second = importParsedFilesAtomic(
+        [{
+          filename: filenames[1],
+          fileType: "positions",
+          parsed: positionImport(accountCode, secondSymbol, 20, reportDate),
+          positionSnapshotMode: "full",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: (accounts) => secondReady.resolve(accounts),
+          },
+        },
+      );
+      await expect(secondReady.promise).resolves.toEqual([accountCode]);
+      await expectPositionImportWaiting(accountCode);
+
+      releaseFirst.resolve(undefined);
+      await Promise.all([first, second]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode } },
+        include: { instrument: true },
+      });
+      const snapshots = await prisma.positionSnapshot.findMany({
+        where: { account: { ibkrAccount: accountCode }, date: reportDate },
+        include: { instrument: true },
+      });
+
+      expect(positions.map((position) => position.instrument.symbol)).toEqual([secondSymbol]);
+      expect(snapshots.map((snapshot) => snapshot.instrument.symbol)).toEqual([secondSymbol]);
+      expect(positions[0].quantity).toBe(20);
+      expect(snapshots[0].quantity).toBe(20);
+    } finally {
+      releaseFirst.resolve(undefined);
+      await cleanupPositionScenario([accountCode], [firstSymbol, secondSymbol], filenames);
+    }
+  });
+
+  dbIt("serializes direct imports when an older full snapshot acquires first", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-SERIAL-DIRECT-${marker}`;
+    const olderSymbol = `PDR${String(marker).slice(-6)}O`;
+    const newerSymbol = `PDR${String(marker).slice(-6)}N`;
+    const filenames = [`direct-older-${marker}.csv`, `direct-newer-${marker}.csv`];
+    const olderLocked = deferred<void>();
+    const releaseOlder = deferred<void>();
+    const newerReady = deferred<void>();
+
+    try {
+      const older = importParsedFile(
+        {
+          filename: filenames[0],
+          fileType: "positions",
+          parsed: positionImport(
+            accountCode,
+            olderSymbol,
+            10,
+            new Date("2026-07-01T00:00:00.000Z"),
+          ),
+          positionSnapshotMode: "full",
+        },
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            afterAcquire: async () => {
+              olderLocked.resolve(undefined);
+              await releaseOlder.promise;
+            },
+          },
+        },
+      );
+      await olderLocked.promise;
+
+      const newer = importParsedFile(
+        {
+          filename: filenames[1],
+          fileType: "positions",
+          parsed: positionImport(
+            accountCode,
+            newerSymbol,
+            20,
+            new Date("2026-07-02T00:00:00.000Z"),
+          ),
+          positionSnapshotMode: "full",
+        },
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: () => newerReady.resolve(undefined),
+          },
+        },
+      );
+      await newerReady.promise;
+      await expectPositionImportWaiting(accountCode);
+
+      releaseOlder.resolve(undefined);
+      await Promise.all([older, newer]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode } },
+        include: { instrument: true },
+      });
+      const batches = await prisma.importBatch.findMany({
+        where: { filename: { in: filenames } },
+      });
+
+      expect(positions).toHaveLength(1);
+      expect(positions[0]).toMatchObject({ quantity: 20 });
+      expect(positions[0].instrument.symbol).toBe(newerSymbol);
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.status === "ROWS_APPLIED")).toBe(true);
+    } finally {
+      releaseOlder.resolve(undefined);
+      await cleanupPositionScenario([accountCode], [olderSymbol, newerSymbol], filenames);
+    }
+  });
+
+  dbIt("keeps the newer full snapshot when an older concurrent cohort loses the lock", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-SERIAL-NEWER-${marker}`;
+    const winnerSymbol = `PSN${String(marker).slice(-6)}W`;
+    const loserSymbol = `PSN${String(marker).slice(-6)}L`;
+    const executionSymbol = `PSN${String(marker).slice(-6)}X`;
+    const filenames = [
+      `serial-newer-winner-${marker}.csv`,
+      `serial-newer-sibling-${marker}.csv`,
+      `serial-newer-loser-${marker}.csv`,
+    ];
+    const rawContents = [`serial sibling raw ${marker}`, `serial loser raw ${marker}`];
+    const winnerLocked = deferred<void>();
+    const releaseWinner = deferred<void>();
+    const loserReady = deferred<void>();
+
+    try {
+      const winner = importParsedFilesAtomic(
+        [{
+          filename: filenames[0],
+          fileType: "positions",
+          parsed: positionImport(
+            accountCode,
+            winnerSymbol,
+            22,
+            new Date("2026-07-02T00:00:00.000Z"),
+          ),
+          positionSnapshotMode: "full",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            afterAcquire: async () => {
+              winnerLocked.resolve(undefined);
+              await releaseWinner.promise;
+            },
+          },
+        },
+      );
+      await winnerLocked.promise;
+
+      const loser = importParsedFilesAtomic(
+        [
+          {
+            filename: filenames[1],
+            fileType: "executions",
+            parsed: executionImport(accountCode, executionSymbol, 0.5),
+            rawContent: rawContents[0],
+          },
+          {
+            filename: filenames[2],
+            fileType: "positions",
+            parsed: positionImport(
+              accountCode,
+              loserSymbol,
+              11,
+              new Date("2026-07-01T00:00:00.000Z"),
+            ),
+            rawContent: rawContents[1],
+            positionSnapshotMode: "full",
+          },
+        ],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: () => loserReady.resolve(undefined),
+          },
+        },
+      );
+      await loserReady.promise;
+      await expectPositionImportWaiting(accountCode);
+
+      releaseWinner.resolve(undefined);
+      await winner;
+      await expect(loser).rejects.toThrow("stale");
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode } },
+        include: { instrument: true },
+      });
+      const landedExecution = await prisma.execution.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: executionSymbol } },
+      });
+      const loserSnapshot = await prisma.positionSnapshot.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: loserSymbol } },
+      });
+      const rolledBackInstruments = await prisma.instrument.count({
+        where: { symbol: { in: [executionSymbol, loserSymbol] } },
+      });
+      const batches = await prisma.importBatch.findMany({
+        where: { filename: { in: filenames } },
+        include: { rawArtifact: true },
+      });
+      const winnerBatch = batches.find((batch) => batch.filename === filenames[0]);
+      const siblingBatch = batches.find((batch) => batch.filename === filenames[1]);
+      const loserBatch = batches.find((batch) => batch.filename === filenames[2]);
+      const artifacts = await prisma.importArtifact.findMany({
+        where: {
+          storageKey: {
+            in: rawContents.map((content) => rawImportArchiveIdentity(content).rawStorageKey),
+          },
+        },
+      });
+
+      expect(positions).toHaveLength(1);
+      expect(positions[0]).toMatchObject({ quantity: 22 });
+      expect(positions[0].instrument.symbol).toBe(winnerSymbol);
+      expect(landedExecution).toBeNull();
+      expect(loserSnapshot).toBeNull();
+      expect(rolledBackInstruments).toBe(0);
+      expect(winnerBatch).toMatchObject({ status: "ROWS_APPLIED", cohortRole: "MEMBER" });
+      expect(siblingBatch).toMatchObject({
+        status: "FAILED",
+        cohortRole: "ROLLED_BACK",
+        rowsSeen: 1,
+        rowsImported: 0,
+        rowsSkipped: 1,
+        rawStorageKey: rawImportArchiveIdentity(rawContents[0]).rawStorageKey,
+      });
+      expect(siblingBatch?.notes).toContain(IMPORT_FAILURE_ROLLED_BACK_MARKER);
+      expect(siblingBatch?.rawArtifact?.content).toBe(rawContents[0]);
+      expect(loserBatch).toMatchObject({
+        status: "FAILED",
+        cohortRole: "DIRECT_FAILURE",
+        rowsSeen: 1,
+        rowsImported: 0,
+        rowsSkipped: 1,
+        rawStorageKey: rawImportArchiveIdentity(rawContents[1]).rawStorageKey,
+      });
+      expect(loserBatch?.notes).toContain(IMPORT_FAILURE_DIRECT_MARKER);
+      expect(loserBatch?.errorMessage).toContain("stale");
+      expect(loserBatch?.rawArtifact?.content).toBe(rawContents[1]);
+      expect(siblingBatch?.cohortId).toBe(loserBatch?.cohortId);
+      expect(winnerBatch?.cohortId).not.toBe(loserBatch?.cohortId);
+      expect(artifacts.map((artifact) => artifact.content).sort()).toEqual([...rawContents].sort());
+    } finally {
+      releaseWinner.resolve(undefined);
+      await prisma.importBatch.deleteMany({ where: { filename: { in: filenames } } });
+      await prisma.importArtifact.deleteMany({
+        where: {
+          storageKey: {
+            in: rawContents.map((content) => rawImportArchiveIdentity(content).rawStorageKey),
+          },
+        },
+      });
+      await cleanupPositionScenario(
+        [accountCode],
+        [winnerSymbol, loserSymbol, executionSymbol],
+        [],
+      );
+    }
+  });
+
+  dbIt("applies a waiting partial update only after a full snapshot commits", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-SERIAL-FP-${marker}`;
+    const fullSymbol = `PFP${String(marker).slice(-6)}F`;
+    const partialSymbol = `PFP${String(marker).slice(-6)}P`;
+    const filenames = [`serial-fp-full-${marker}.csv`, `serial-fp-partial-${marker}.csv`];
+    const reportDate = new Date("2026-07-03T00:00:00.000Z");
+    const fullLocked = deferred<void>();
+    const releaseFull = deferred<void>();
+    const partialReady = deferred<void>();
+
+    try {
+      const full = importParsedFilesAtomic(
+        [{
+          filename: filenames[0],
+          fileType: "positions",
+          parsed: positionImport(accountCode, fullSymbol, 10, reportDate),
+          positionSnapshotMode: "full",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            afterAcquire: async () => {
+              fullLocked.resolve(undefined);
+              await releaseFull.promise;
+            },
+          },
+        },
+      );
+      await fullLocked.promise;
+
+      const partial = importParsedFilesAtomic(
+        [{
+          filename: filenames[1],
+          fileType: "positions",
+          parsed: positionImport(accountCode, partialSymbol, 5, reportDate),
+          positionSnapshotMode: "partial",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: () => partialReady.resolve(undefined),
+          },
+        },
+      );
+      await partialReady.promise;
+      await expectPositionImportWaiting(accountCode);
+
+      releaseFull.resolve(undefined);
+      const [fullResults, partialResults] = await Promise.all([full, partial]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode } },
+        include: { instrument: true },
+        orderBy: { instrument: { symbol: "asc" } },
+      });
+      const snapshots = await prisma.positionSnapshot.findMany({
+        where: { account: { ibkrAccount: accountCode }, date: reportDate },
+        include: { instrument: true },
+        orderBy: { instrument: { symbol: "asc" } },
+      });
+
+      expect(positions.map((position) => position.instrument.symbol)).toEqual(
+        [fullSymbol, partialSymbol].sort(),
+      );
+      expect(
+        Object.fromEntries(
+          snapshots.map((snapshot) => [snapshot.instrument.symbol, snapshot.quantity]),
+        ),
+      ).toEqual({ [fullSymbol]: 10, [partialSymbol]: 5 });
+      expect(fullResults[0]).toMatchObject({ rowsImported: 1, rowsSkipped: 0 });
+      expect(partialResults[0]).toMatchObject({ rowsImported: 1, rowsSkipped: 0 });
+    } finally {
+      releaseFull.resolve(undefined);
+      await cleanupPositionScenario([accountCode], [fullSymbol, partialSymbol], filenames);
+    }
+  });
+
+  dbIt("lets a waiting full snapshot replace an earlier partial update", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-SERIAL-PF-${marker}`;
+    const partialSymbol = `PPF${String(marker).slice(-6)}P`;
+    const fullSymbol = `PPF${String(marker).slice(-6)}F`;
+    const filenames = [`serial-pf-partial-${marker}.csv`, `serial-pf-full-${marker}.csv`];
+    const reportDate = new Date("2026-07-04T00:00:00.000Z");
+    const partialLocked = deferred<void>();
+    const releasePartial = deferred<void>();
+    const fullReady = deferred<void>();
+
+    try {
+      const partial = importParsedFilesAtomic(
+        [{
+          filename: filenames[0],
+          fileType: "positions",
+          parsed: positionImport(accountCode, partialSymbol, 5, reportDate),
+          positionSnapshotMode: "partial",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            afterAcquire: async () => {
+              partialLocked.resolve(undefined);
+              await releasePartial.promise;
+            },
+          },
+        },
+      );
+      await partialLocked.promise;
+
+      const full = importParsedFilesAtomic(
+        [{
+          filename: filenames[1],
+          fileType: "positions",
+          parsed: positionImport(accountCode, fullSymbol, 10, reportDate),
+          positionSnapshotMode: "full",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: () => fullReady.resolve(undefined),
+          },
+        },
+      );
+      await fullReady.promise;
+      await expectPositionImportWaiting(accountCode);
+
+      releasePartial.resolve(undefined);
+      const [partialResults, fullResults] = await Promise.all([partial, full]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode } },
+        include: { instrument: true },
+      });
+      const snapshots = await prisma.positionSnapshot.findMany({
+        where: { account: { ibkrAccount: accountCode }, date: reportDate },
+        include: { instrument: true },
+      });
+
+      expect(positions.map((position) => position.instrument.symbol)).toEqual([fullSymbol]);
+      expect(snapshots.map((snapshot) => snapshot.instrument.symbol)).toEqual([fullSymbol]);
+      expect(snapshots[0].quantity).toBe(10);
+      expect(partialResults[0]).toMatchObject({ rowsImported: 1, rowsSkipped: 0 });
+      expect(fullResults[0]).toMatchObject({ rowsImported: 1, rowsSkipped: 0 });
+    } finally {
+      releasePartial.resolve(undefined);
+      await cleanupPositionScenario([accountCode], [partialSymbol, fullSymbol], filenames);
+    }
+  });
+
+  dbIt("prelocks reversed multi-account cohorts in one deterministic order", async () => {
+    const marker = Date.now();
+    const accountA = `POS-SERIAL-MA-${marker}`;
+    const accountB = `POS-SERIAL-MB-${marker}`;
+    const firstA = `PMA${String(marker).slice(-6)}1`;
+    const firstB = `PMB${String(marker).slice(-6)}1`;
+    const secondA = `PMA${String(marker).slice(-6)}2`;
+    const secondB = `PMB${String(marker).slice(-6)}2`;
+    const filenames = [
+      `multi-first-a-${marker}.csv`,
+      `multi-first-b-${marker}.csv`,
+      `multi-second-b-${marker}.csv`,
+      `multi-second-a-${marker}.csv`,
+    ];
+    const reportDate = new Date("2026-07-05T00:00:00.000Z");
+    const firstReady = deferred<readonly string[]>();
+    const releaseBoth = deferred<void>();
+    const secondReady = deferred<readonly string[]>();
+
+    try {
+      const first = importParsedFilesAtomic(
+        [
+          {
+            filename: filenames[0],
+            fileType: "positions",
+            parsed: positionImport(accountA, firstA, 1, reportDate),
+            positionSnapshotMode: "full",
+          },
+          {
+            filename: filenames[1],
+            fileType: "positions",
+            parsed: positionImport(accountB, firstB, 1, reportDate),
+            positionSnapshotMode: "full",
+          },
+        ],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: async (accounts) => {
+              firstReady.resolve(accounts);
+              await releaseBoth.promise;
+            },
+          },
+        },
+      );
+      const expectedOrder = [accountA, accountB].sort();
+
+      const second = importParsedFilesAtomic(
+        [
+          {
+            filename: filenames[2],
+            fileType: "positions",
+            parsed: positionImport(accountB, secondB, 2, reportDate),
+            positionSnapshotMode: "full",
+          },
+          {
+            filename: filenames[3],
+            fileType: "positions",
+            parsed: positionImport(accountA, secondA, 2, reportDate),
+            positionSnapshotMode: "full",
+          },
+        ],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: async (accounts) => {
+              secondReady.resolve(accounts);
+              await releaseBoth.promise;
+            },
+          },
+        },
+      );
+      await expect(firstReady.promise).resolves.toEqual(expectedOrder);
+      await expect(secondReady.promise).resolves.toEqual(expectedOrder);
+
+      releaseBoth.resolve(undefined);
+      await Promise.all([first, second]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: { in: [accountA, accountB] } } },
+        include: { account: true, instrument: true },
+      });
+      const currentByAccount = new Map(
+        positions.map((position) => [position.account.ibkrAccount, position.instrument.symbol]),
+      );
+      const finalSignature = `${currentByAccount.get(accountA)}|${currentByAccount.get(accountB)}`;
+
+      expect(positions).toHaveLength(2);
+      expect([`${firstA}|${firstB}`, `${secondA}|${secondB}`]).toContain(finalSignature);
+    } finally {
+      releaseBoth.resolve(undefined);
+      await cleanupPositionScenario(
+        [accountA, accountB],
+        [firstA, firstB, secondA, secondB],
+        filenames,
+      );
+    }
+  });
+
+  dbIt("does not block a different account while another position import holds its lock", async () => {
+    const marker = Date.now();
+    const blockedAccount = `POS-SERIAL-BLOCK-${marker}`;
+    const freeAccount = `POS-SERIAL-FREE-${marker}`;
+    const blockedSymbol = `PBL${String(marker).slice(-6)}`;
+    const freeSymbol = `PFR${String(marker).slice(-6)}`;
+    const filenames = [`independent-blocked-${marker}.csv`, `independent-free-${marker}.csv`];
+    const reportDate = new Date("2026-07-06T00:00:00.000Z");
+    const blockedLocked = deferred<void>();
+    const releaseBlocked = deferred<void>();
+
+    try {
+      const blocked = importParsedFilesAtomic(
+        [{
+          filename: filenames[0],
+          fileType: "positions",
+          parsed: positionImport(blockedAccount, blockedSymbol, 3, reportDate),
+          positionSnapshotMode: "full",
+        }],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            afterAcquire: async () => {
+              blockedLocked.resolve(undefined);
+              await releaseBlocked.promise;
+            },
+          },
+        },
+      );
+      await blockedLocked.promise;
+
+      await importParsedFilesAtomic([{
+        filename: filenames[1],
+        fileType: "positions",
+        parsed: positionImport(freeAccount, freeSymbol, 4, reportDate),
+        positionSnapshotMode: "full",
+      }]);
+
+      const freePosition = await prisma.position.findFirst({
+        where: { account: { ibkrAccount: freeAccount }, instrument: { symbol: freeSymbol } },
+      });
+      expect(freePosition?.quantity).toBe(4);
+
+      releaseBlocked.resolve(undefined);
+      await blocked;
+    } finally {
+      releaseBlocked.resolve(undefined);
+      await cleanupPositionScenario(
+        [blockedAccount, freeAccount],
+        [blockedSymbol, freeSymbol],
+        filenames,
+      );
+    }
+  });
+
+  dbIt("rejects an older partial snapshot before it can overwrite current state", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-PARTIAL-STALE-${marker}`;
+    const currentSymbol = `PPS${String(marker).slice(-6)}C`;
+    const staleSymbol = `PPS${String(marker).slice(-6)}S`;
+    const filename = `partial-stale-${marker}.csv`;
+
+    try {
+      const current = await seedOpenPosition(accountCode, currentSymbol, 10);
+      await seedPositionSnapshot(current.account.id, current.instrument.id, "2026-07-08", 10);
+
+      await expect(
+        importParsedFilesAtomic([{
+          filename,
+          fileType: "positions",
+          parsed: positionImport(
+            accountCode,
+            staleSymbol,
+            99,
+            new Date("2026-07-07T00:00:00.000Z"),
+          ),
+          positionSnapshotMode: "partial",
+        }]),
+      ).rejects.toThrow("Partial position snapshot");
+
+      const currentAfter = await prisma.position.findUnique({
+        where: {
+          accountId_instrumentId: {
+            accountId: current.account.id,
+            instrumentId: current.instrument.id,
+          },
+        },
+      });
+      const stalePosition = await prisma.position.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: staleSymbol } },
+      });
+
+      expect(currentAfter?.quantity).toBe(10);
+      expect(stalePosition).toBeNull();
+    } finally {
+      await cleanupPositionScenario([accountCode], [currentSymbol, staleSymbol], [filename]);
+    }
+  });
+
+  dbIt("rejects mixed-date partial rows before input order can regress current state", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-PARTIAL-MIXED-${marker}`;
+    const symbol = `PPM${String(marker).slice(-6)}`;
+    const filename = `partial-mixed-${marker}.csv`;
+    const parsed = positionRowsImport(accountCode, [
+      { symbol, quantity: 20, reportDate: new Date("2026-07-10T00:00:00.000Z") },
+      { symbol, quantity: 10, reportDate: new Date("2026-07-09T00:00:00.000Z") },
+    ]);
+
+    try {
+      await expect(
+        importParsedFilesAtomic([{
+          filename,
+          fileType: "positions",
+          parsed,
+          positionSnapshotMode: "partial",
+        }]),
+      ).rejects.toThrow("mixed effective dates");
+
+      const position = await prisma.position.findFirst({
+        where: { account: { ibkrAccount: accountCode } },
+      });
+      const snapshot = await prisma.positionSnapshot.findFirst({
+        where: { account: { ibkrAccount: accountCode } },
+      });
+      const batch = await prisma.importBatch.findFirstOrThrow({ where: { filename } });
+
+      expect(position).toBeNull();
+      expect(snapshot).toBeNull();
+      expect(batch).toMatchObject({
+        status: "FAILED",
+        cohortRole: "DIRECT_FAILURE",
+        rowsSeen: 2,
+        rowsImported: 0,
+        rowsSkipped: 2,
+      });
+    } finally {
+      await cleanupPositionScenario([accountCode], [symbol], [filename]);
+    }
+  });
+
+  dbIt("updates the same instrument on a same-date full correction", async () => {
+    const marker = Date.now();
+    const accountCode = `POS-SAME-DATE-${marker}`;
+    const symbol = `PSD${String(marker).slice(-6)}`;
+    const filenames = [`same-date-first-${marker}.csv`, `same-date-correction-${marker}.csv`];
+    const reportDate = new Date("2026-07-11T00:00:00.000Z");
+    const corrected = positionImport(accountCode, symbol, 17, reportDate);
+    corrected.positions[0].avgCost = 12.5;
+
+    try {
+      await importParsedFilesAtomic([{
+        filename: filenames[0],
+        fileType: "positions",
+        parsed: positionImport(accountCode, symbol, 10, reportDate),
+        positionSnapshotMode: "full",
+      }]);
+      await importParsedFilesAtomic([{
+        filename: filenames[1],
+        fileType: "positions",
+        parsed: corrected,
+        positionSnapshotMode: "full",
+      }]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol } },
+      });
+      const snapshots = await prisma.positionSnapshot.findMany({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol }, date: reportDate },
+      });
+
+      expect(positions).toHaveLength(1);
+      expect(positions[0]).toMatchObject({ quantity: 17, avgCost: 12.5 });
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({ quantity: 17, avgCost: 12.5 });
+    } finally {
+      await cleanupPositionScenario([accountCode], [symbol], filenames);
+    }
+  });
+
+  dbIt("orders shared instrument creation without blocking disjoint accounts", async () => {
+    const marker = Date.now();
+    const accountA = `POS-SHARED-A-${marker}`;
+    const accountB = `POS-SHARED-B-${marker}`;
+    const symbolX = `PSX${String(marker).slice(-6)}`;
+    const symbolY = `PSY${String(marker).slice(-6)}`;
+    const filenames = [
+      `shared-instruments-a-x-${marker}.csv`,
+      `shared-instruments-a-y-${marker}.csv`,
+      `shared-instruments-b-y-${marker}.csv`,
+      `shared-instruments-b-x-${marker}.csv`,
+    ];
+    const reportDate = new Date("2026-07-12T00:00:00.000Z");
+    const firstReady = deferred<void>();
+    const secondReady = deferred<void>();
+    const releaseBoth = deferred<void>();
+
+    try {
+      const first = importParsedFilesAtomic(
+        [
+          {
+            filename: filenames[0],
+            fileType: "positions",
+            parsed: positionImport(accountA, symbolX, 1, reportDate),
+            positionSnapshotMode: "partial",
+          },
+          {
+            filename: filenames[1],
+            fileType: "positions",
+            parsed: positionImport(accountA, symbolY, 2, reportDate),
+            positionSnapshotMode: "partial",
+          },
+        ],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: async () => {
+              firstReady.resolve(undefined);
+              await releaseBoth.promise;
+            },
+          },
+        },
+      );
+      const second = importParsedFilesAtomic(
+        [
+          {
+            filename: filenames[2],
+            fileType: "positions",
+            parsed: positionImport(accountB, symbolY, 3, reportDate),
+            positionSnapshotMode: "partial",
+          },
+          {
+            filename: filenames[3],
+            fileType: "positions",
+            parsed: positionImport(accountB, symbolX, 4, reportDate),
+            positionSnapshotMode: "partial",
+          },
+        ],
+        createImportCohortContext(),
+        {
+          positionLockHooks: {
+            beforeAcquire: async () => {
+              secondReady.resolve(undefined);
+              await releaseBoth.promise;
+            },
+          },
+        },
+      );
+      await Promise.all([firstReady.promise, secondReady.promise]);
+
+      releaseBoth.resolve(undefined);
+      await Promise.all([first, second]);
+
+      const positions = await prisma.position.findMany({
+        where: { account: { ibkrAccount: { in: [accountA, accountB] } } },
+        include: { account: true, instrument: true },
+      });
+      const quantities = new Map(
+        positions.map((position) => [
+          `${position.account.ibkrAccount}:${position.instrument.symbol}`,
+          position.quantity,
+        ]),
+      );
+
+      expect(quantities).toEqual(new Map([
+        [`${accountA}:${symbolX}`, 1],
+        [`${accountA}:${symbolY}`, 2],
+        [`${accountB}:${symbolX}`, 4],
+        [`${accountB}:${symbolY}`, 3],
+      ]));
+    } finally {
+      releaseBoth.resolve(undefined);
+      await cleanupPositionScenario([accountA, accountB], [symbolX, symbolY], filenames);
     }
   });
 

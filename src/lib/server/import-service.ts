@@ -16,8 +16,12 @@ import {
 import type { ParsedImport, ParsedRowError } from "@/lib/import/ibkr-parser";
 import { isIntentionalExecutionExclusionOnly } from "@/lib/import/import-preflight";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
-import type { ExecutionImport } from "@/lib/import/schemas";
+import type { ExecutionImport, PositionImport } from "@/lib/import/schemas";
 import { prisma } from "@/lib/prisma";
+import {
+  lockPositionImportAccounts,
+  type PositionImportLockHooks,
+} from "@/lib/server/position-import-lock";
 
 const EXECUTION_CHUNK_SIZE = 500;
 const PARSER_VERSION = "2026-06-25-workstation-uplift";
@@ -35,6 +39,9 @@ export type PositionSnapshotImportMode = "partial" | "full";
 export type ImportCohortContext = {
   cohortId: string;
   importedAt: Date;
+};
+export type ImportPositionLockOptions = {
+  positionLockHooks?: PositionImportLockHooks;
 };
 export type ImportParsedFileInput = {
   filename: string;
@@ -102,30 +109,49 @@ function snapshotDateKey(date: Date) {
   return normalizeSnapshotDate(date).toISOString().slice(0, 10);
 }
 
-async function assertFreshFullPositionSnapshot(
+function defaultPositionSnapshotDate() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function resolvedPositionSnapshotDate(row: PositionImport, defaultDate: Date) {
+  return row.reportDate ? normalizeSnapshotDate(row.reportDate) : defaultDate;
+}
+
+type ResolvedPositionImportRow = {
+  row: PositionImport;
+  accountId: string;
+  instrumentId: string;
+};
+
+async function assertFreshPositionSnapshot(
   db: ImportDb,
-  rows: Array<{ row: { account: string; reportDate?: Date }; accountId: string }>,
+  rows: ResolvedPositionImportRow[],
+  mode: PositionSnapshotImportMode,
+  defaultDate: Date,
 ) {
   if (rows.length === 0) return;
 
   const datesByAccount = new Map<string, { account: string; dates: Map<string, Date> }>();
   for (const item of rows) {
-    if (!item.row.reportDate) {
+    if (mode === "full" && !item.row.reportDate) {
       throw new ImportRejectedError(
         `Full position snapshot for ${item.row.account} requires ReportDate on every row before current positions can be pruned.`,
       );
     }
 
-    const key = snapshotDateKey(item.row.reportDate);
+    const snapshotDate = resolvedPositionSnapshotDate(item.row, defaultDate);
+    const key = snapshotDateKey(snapshotDate);
     const existing = datesByAccount.get(item.accountId) ?? { account: item.row.account, dates: new Map<string, Date>() };
-    existing.dates.set(key, normalizeSnapshotDate(item.row.reportDate));
+    existing.dates.set(key, snapshotDate);
     datesByAccount.set(item.accountId, existing);
   }
 
   for (const { account, dates } of datesByAccount.values()) {
     if (dates.size > 1) {
+      const label = mode === "full" ? "Full" : "Partial";
       throw new ImportRejectedError(
-        `Full position snapshot for ${account} has mixed ReportDate values (${[...dates.keys()].sort().join(", ")}). Use one complete account snapshot date.`,
+        `${label} position snapshot for ${account} has mixed effective dates (${[...dates.keys()].sort().join(", ")}). Use one account snapshot date per file.`,
       );
     }
   }
@@ -139,14 +165,16 @@ async function assertFreshFullPositionSnapshot(
   const latestByAccount = new Map(latestSnapshots.map((row) => [row.accountId, row._max.date]));
 
   for (const [accountId, { account, dates }] of datesByAccount.entries()) {
-    const incoming = [...dates.values()][0];
     const latest = latestByAccount.get(accountId);
     if (!latest) continue;
     const latestDate = normalizeSnapshotDate(latest);
-    if (incoming.getTime() < latestDate.getTime()) {
-      throw new ImportRejectedError(
-        `Full position snapshot for ${account} is stale: snapshot date ${snapshotDateKey(incoming)} is older than latest known position date ${snapshotDateKey(latestDate)}.`,
-      );
+    for (const incoming of dates.values()) {
+      if (incoming.getTime() < latestDate.getTime()) {
+        const label = mode === "full" ? "Full" : "Partial";
+        throw new ImportRejectedError(
+          `${label} position snapshot for ${account} is stale: snapshot date ${snapshotDateKey(incoming)} is older than latest known position date ${snapshotDateKey(latestDate)}.`,
+        );
+      }
     }
   }
 }
@@ -525,7 +553,7 @@ async function ensureAccounts(db: ImportDb, rows: Array<{ account: string; curre
       byCode.set(row.account, row.currency ?? "USD");
     }
   }
-  const codes = [...byCode.keys()];
+  const codes = [...byCode.keys()].sort();
   if (codes.length === 0) return new Map<string, { id: string; baseCurrency: string }>();
 
   await db.account.createMany({
@@ -557,7 +585,7 @@ type InstrumentSeed = {
 };
 
 function instrumentKey(input: InstrumentSeed) {
-  return `${input.symbol}|${input.exchange ?? ""}|${input.assetType}`;
+  return JSON.stringify([input.symbol, input.exchange ?? "", input.assetType]);
 }
 
 async function ensureInstruments(db: ImportDb, rows: InstrumentSeed[]) {
@@ -568,7 +596,9 @@ async function ensureInstruments(db: ImportDb, rows: InstrumentSeed[]) {
       byKey.set(key, row);
     }
   }
-  const uniqueRows = [...byKey.values()];
+  const uniqueRows = [...byKey.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([, row]) => row);
   if (uniqueRows.length === 0) return new Map<string, { id: string; currency: string }>();
 
   await db.instrument.createMany({
@@ -607,9 +637,159 @@ async function ensureInstruments(db: ImportDb, rows: InstrumentSeed[]) {
   return map;
 }
 
+async function applyPositionImportRows(
+  db: ImportDb,
+  rows: PositionImport[],
+  mode: PositionSnapshotImportMode,
+  accounting: ImportAccounting,
+) {
+  const accountMap = await ensureAccounts(db, rows);
+  const instrumentMap = await ensureInstruments(
+    db,
+    rows.map((row) => ({
+      symbol: row.symbol,
+      exchange: row.exchange,
+      assetType: row.assetType as AssetType,
+      currency: row.currency,
+    })),
+  );
+
+  const resolvedRows = rows
+    .map((row): ResolvedPositionImportRow | null => {
+      const account = accountMap.get(row.account);
+      const instrument = instrumentMap.get(
+        instrumentKey({
+          symbol: row.symbol,
+          exchange: row.exchange,
+          assetType: row.assetType as AssetType,
+        }),
+      );
+      if (!account || !instrument) return null;
+      return { row, accountId: account.id, instrumentId: instrument.id };
+    })
+    .filter((row): row is ResolvedPositionImportRow => row !== null);
+
+  accounting.primary.unresolvedReference += rows.length - resolvedRows.length;
+  const defaultDate = defaultPositionSnapshotDate();
+  await assertFreshPositionSnapshot(db, resolvedRows, mode, defaultDate);
+
+  let accountId: string | undefined;
+  const openInstrumentsByAccount = new Map<string, Set<string>>();
+  const seenAccounts = new Set<string>();
+  const snapshotMembership = new Map<
+    string,
+    { accountId: string; date: Date; instrumentIds: Set<string> }
+  >();
+
+  for (const item of resolvedRows) {
+    const { row, accountId: resolvedAccountId, instrumentId } = item;
+    accountId = resolvedAccountId;
+    seenAccounts.add(resolvedAccountId);
+
+    if (row.quantity === 0) {
+      await db.position.deleteMany({
+        where: { accountId: resolvedAccountId, instrumentId },
+      });
+    } else {
+      await db.position.upsert({
+        where: { accountId_instrumentId: { accountId: resolvedAccountId, instrumentId } },
+        update: {
+          quantity: row.quantity,
+          avgCost: row.avgCost,
+          unrealizedPnl: row.unrealizedPnl,
+          currency: row.currency,
+        },
+        create: {
+          accountId: resolvedAccountId,
+          instrumentId,
+          quantity: row.quantity,
+          avgCost: row.avgCost,
+          unrealizedPnl: row.unrealizedPnl,
+          currency: row.currency,
+        },
+      });
+
+      const openInstruments = openInstrumentsByAccount.get(resolvedAccountId) ?? new Set<string>();
+      openInstruments.add(instrumentId);
+      openInstrumentsByAccount.set(resolvedAccountId, openInstruments);
+    }
+
+    const snapshotDate = resolvedPositionSnapshotDate(row, defaultDate);
+    await db.positionSnapshot.upsert({
+      where: {
+        accountId_instrumentId_date: {
+          accountId: resolvedAccountId,
+          instrumentId,
+          date: snapshotDate,
+        },
+      },
+      update: {
+        quantity: row.quantity,
+        avgCost: row.avgCost,
+        unrealizedPnl: row.unrealizedPnl,
+        currency: row.currency,
+      },
+      create: {
+        accountId: resolvedAccountId,
+        instrumentId,
+        date: snapshotDate,
+        quantity: row.quantity,
+        avgCost: row.avgCost,
+        unrealizedPnl: row.unrealizedPnl,
+        currency: row.currency,
+      },
+    });
+
+    const membershipKey = `${resolvedAccountId}|${snapshotDate.toISOString()}`;
+    const membership = snapshotMembership.get(membershipKey) ?? {
+      accountId: resolvedAccountId,
+      date: snapshotDate,
+      instrumentIds: new Set<string>(),
+    };
+    membership.instrumentIds.add(instrumentId);
+    snapshotMembership.set(membershipKey, membership);
+    accounting.primary.positionApplied += 1;
+  }
+
+  if (mode === "full") {
+    for (const seenAccountId of seenAccounts) {
+      const openInstrumentIds = [...(openInstrumentsByAccount.get(seenAccountId) ?? new Set<string>())];
+      if (openInstrumentIds.length === 0) {
+        await db.position.deleteMany({ where: { accountId: seenAccountId } });
+      } else {
+        await db.position.deleteMany({
+          where: {
+            accountId: seenAccountId,
+            instrumentId: { notIn: openInstrumentIds },
+          },
+        });
+      }
+    }
+
+    for (const membership of snapshotMembership.values()) {
+      await db.positionSnapshot.deleteMany({
+        where: {
+          accountId: membership.accountId,
+          date: membership.date,
+          instrumentId: { notIn: [...membership.instrumentIds] },
+        },
+      });
+    }
+  }
+
+  return {
+    accountId,
+    note:
+      mode === "full"
+        ? "Positions were treated as a full account snapshot; unmentioned open positions and same-date historical members for accounts in this file were removed."
+        : "Positions were treated as a partial snapshot; unmentioned open positions were preserved.",
+  };
+}
+
 export async function importParsedFile(
   params: ImportParsedFileInput,
   cohort = createImportCohortContext(),
+  options: ImportPositionLockOptions = {},
 ) {
   const startedAtMs = Date.now();
   const rawArchive = await archiveRawImportContent(params.rawContent);
@@ -688,123 +868,19 @@ export async function importParsedFile(
       }
 
       if (params.parsed.kind === "positions") {
-        const accountMap = await ensureAccounts(tx, params.parsed.positions);
-        const instrumentMap = await ensureInstruments(
+        await lockPositionImportAccounts(
           tx,
-          params.parsed.positions.map((row) => ({
-            symbol: row.symbol,
-            exchange: row.exchange,
-            assetType: row.assetType as AssetType,
-            currency: row.currency,
-          })),
+          params.parsed.positions.map((row) => row.account),
+          options.positionLockHooks,
         );
-
-        const resolvedRows = params.parsed.positions
-          .map((row) => {
-            const account = accountMap.get(row.account);
-            const instrument = instrumentMap.get(
-              instrumentKey({
-                symbol: row.symbol,
-                exchange: row.exchange,
-                assetType: row.assetType as AssetType,
-              }),
-            );
-            if (!account || !instrument) return null;
-            return { row, accountId: account.id, instrumentId: instrument.id };
-          })
-          .filter((item): item is NonNullable<typeof item> => item !== null);
-
-        accounting.primary.unresolvedReference += params.parsed.positions.length - resolvedRows.length;
-        const seenInstrumentsByAccount = new Map<string, Set<string>>();
-        const seenAccounts = new Set<string>();
-
-        if (positionSnapshotMode === "full") {
-          await assertFreshFullPositionSnapshot(tx, resolvedRows);
-        }
-
-        for (const item of resolvedRows) {
-          const { row, accountId: resolvedAccountId, instrumentId: resolvedInstrumentId } = item;
-          accountId = resolvedAccountId;
-          seenAccounts.add(resolvedAccountId);
-
-          if (row.quantity === 0) {
-            await tx.position.deleteMany({
-              where: { accountId: resolvedAccountId, instrumentId: resolvedInstrumentId },
-            });
-          } else {
-            await tx.position.upsert({
-              where: { accountId_instrumentId: { accountId: resolvedAccountId, instrumentId: resolvedInstrumentId } },
-              update: {
-                quantity: row.quantity,
-                avgCost: row.avgCost,
-                unrealizedPnl: row.unrealizedPnl,
-                currency: row.currency,
-              },
-              create: {
-                accountId: resolvedAccountId,
-                instrumentId: resolvedInstrumentId,
-                quantity: row.quantity,
-                avgCost: row.avgCost,
-                unrealizedPnl: row.unrealizedPnl,
-                currency: row.currency,
-              },
-            });
-
-            const seen = seenInstrumentsByAccount.get(resolvedAccountId) ?? new Set<string>();
-            seen.add(resolvedInstrumentId);
-            seenInstrumentsByAccount.set(resolvedAccountId, seen);
-          }
-
-          const snapshotDate = row.reportDate
-            ? normalizeSnapshotDate(row.reportDate)
-            : new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
-
-          await tx.positionSnapshot.upsert({
-            where: {
-              accountId_instrumentId_date: {
-                accountId: resolvedAccountId,
-                instrumentId: resolvedInstrumentId,
-                date: snapshotDate,
-              },
-            },
-            update: {
-              quantity: row.quantity,
-              avgCost: row.avgCost,
-              unrealizedPnl: row.unrealizedPnl,
-              currency: row.currency,
-            },
-            create: {
-              accountId: resolvedAccountId,
-              instrumentId: resolvedInstrumentId,
-              date: snapshotDate,
-              quantity: row.quantity,
-              avgCost: row.avgCost,
-              unrealizedPnl: row.unrealizedPnl,
-              currency: row.currency,
-            },
-          });
-
-          accounting.primary.positionApplied += 1;
-        }
-
-        if (positionSnapshotMode === "full") {
-          for (const seenAccountId of seenAccounts) {
-            const seenInstruments = [...(seenInstrumentsByAccount.get(seenAccountId) ?? new Set<string>())];
-            if (seenInstruments.length === 0) {
-              await tx.position.deleteMany({ where: { accountId: seenAccountId } });
-              continue;
-            }
-            await tx.position.deleteMany({
-              where: {
-                accountId: seenAccountId,
-                instrumentId: { notIn: seenInstruments },
-              },
-            });
-          }
-          notes.push("Positions were treated as a full account snapshot; unmentioned open positions for accounts in this file were removed.");
-        } else {
-          notes.push("Positions were treated as a partial snapshot; unmentioned open positions were preserved.");
-        }
+        const positionResult = await applyPositionImportRows(
+          tx,
+          params.parsed.positions,
+          positionSnapshotMode,
+          accounting,
+        );
+        accountId = positionResult.accountId;
+        notes.push(positionResult.note);
       }
 
       if (params.parsed.kind === "snapshots") {
@@ -877,7 +953,7 @@ export async function importParsedFile(
         positionSnapshotMode: params.parsed.kind === "positions" ? positionSnapshotMode : null,
         accounting,
       };
-    });
+    }, { timeout: 120_000 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Import failed.";
     await prisma.importBatch.update({
@@ -998,123 +1074,14 @@ async function applyAtomicImportRows(
   }
 
   if (item.parsed.kind === "positions") {
-    const accountMap = await ensureAccounts(tx, item.parsed.positions);
-    const instrumentMap = await ensureInstruments(
+    const positionResult = await applyPositionImportRows(
       tx,
-      item.parsed.positions.map((row) => ({
-        symbol: row.symbol,
-        exchange: row.exchange,
-        assetType: row.assetType as AssetType,
-        currency: row.currency,
-      })),
+      item.parsed.positions,
+      item.resolvedPositionSnapshotMode,
+      accounting,
     );
-
-    const resolvedRows = item.parsed.positions
-      .map((row) => {
-        const account = accountMap.get(row.account);
-        const instrument = instrumentMap.get(
-          instrumentKey({
-            symbol: row.symbol,
-            exchange: row.exchange,
-            assetType: row.assetType as AssetType,
-          }),
-        );
-        if (!account || !instrument) return null;
-        return { row, accountId: account.id, instrumentId: instrument.id };
-      })
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-
-    accounting.primary.unresolvedReference += item.parsed.positions.length - resolvedRows.length;
-    const seenInstrumentsByAccount = new Map<string, Set<string>>();
-    const seenAccounts = new Set<string>();
-
-    if (item.resolvedPositionSnapshotMode === "full") {
-      await assertFreshFullPositionSnapshot(tx, resolvedRows);
-    }
-
-    for (const resolved of resolvedRows) {
-      const { row, accountId: resolvedAccountId, instrumentId: resolvedInstrumentId } = resolved;
-      accountId = resolvedAccountId;
-      seenAccounts.add(resolvedAccountId);
-
-      if (row.quantity === 0) {
-        await tx.position.deleteMany({
-          where: { accountId: resolvedAccountId, instrumentId: resolvedInstrumentId },
-        });
-      } else {
-        await tx.position.upsert({
-          where: { accountId_instrumentId: { accountId: resolvedAccountId, instrumentId: resolvedInstrumentId } },
-          update: {
-            quantity: row.quantity,
-            avgCost: row.avgCost,
-            unrealizedPnl: row.unrealizedPnl,
-            currency: row.currency,
-          },
-          create: {
-            accountId: resolvedAccountId,
-            instrumentId: resolvedInstrumentId,
-            quantity: row.quantity,
-            avgCost: row.avgCost,
-            unrealizedPnl: row.unrealizedPnl,
-            currency: row.currency,
-          },
-        });
-
-        const seen = seenInstrumentsByAccount.get(resolvedAccountId) ?? new Set<string>();
-        seen.add(resolvedInstrumentId);
-        seenInstrumentsByAccount.set(resolvedAccountId, seen);
-      }
-
-      const snapshotDate = row.reportDate
-        ? normalizeSnapshotDate(row.reportDate)
-        : new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
-
-      await tx.positionSnapshot.upsert({
-        where: {
-          accountId_instrumentId_date: {
-            accountId: resolvedAccountId,
-            instrumentId: resolvedInstrumentId,
-            date: snapshotDate,
-          },
-        },
-        update: {
-          quantity: row.quantity,
-          avgCost: row.avgCost,
-          unrealizedPnl: row.unrealizedPnl,
-          currency: row.currency,
-        },
-        create: {
-          accountId: resolvedAccountId,
-          instrumentId: resolvedInstrumentId,
-          date: snapshotDate,
-          quantity: row.quantity,
-          avgCost: row.avgCost,
-          unrealizedPnl: row.unrealizedPnl,
-          currency: row.currency,
-        },
-      });
-
-      accounting.primary.positionApplied += 1;
-    }
-
-    if (item.resolvedPositionSnapshotMode === "full") {
-      for (const seenAccountId of seenAccounts) {
-        const seenInstruments = [...(seenInstrumentsByAccount.get(seenAccountId) ?? new Set<string>())];
-        if (seenInstruments.length === 0) {
-          await tx.position.deleteMany({ where: { accountId: seenAccountId } });
-          continue;
-        }
-        await tx.position.deleteMany({
-          where: {
-            accountId: seenAccountId,
-            instrumentId: { notIn: seenInstruments },
-          },
-        });
-      }
-      notes.push("Positions were treated as a full account snapshot; unmentioned open positions for accounts in this file were removed.");
-    } else {
-      notes.push("Positions were treated as a partial snapshot; unmentioned open positions were preserved.");
-    }
+    accountId = positionResult.accountId;
+    notes.push(positionResult.note);
   }
 
   if (item.parsed.kind === "snapshots") {
@@ -1192,6 +1159,7 @@ async function applyAtomicImportRows(
 export async function importParsedFilesAtomic(
   params: ImportParsedFileInput[],
   cohort = createImportCohortContext(),
+  options: ImportPositionLockOptions = {},
 ): Promise<ImportParsedFileResult[]> {
   if (params.length === 0) return [];
 
@@ -1202,6 +1170,34 @@ export async function importParsedFilesAtomic(
     return await prisma.$transaction(
       async (tx) => {
         const results: ImportParsedFileResult[] = [];
+        await lockPositionImportAccounts(
+          tx,
+          prepared.flatMap((item) =>
+            item.parsed.kind === "positions"
+              ? item.parsed.positions.map((row) => row.account)
+              : [],
+          ),
+          options.positionLockHooks,
+        );
+        await ensureAccounts(
+          tx,
+          prepared.flatMap((item) => [
+            ...item.parsed.executions,
+            ...item.parsed.positions,
+            ...item.parsed.snapshots,
+          ]),
+        );
+        await ensureInstruments(
+          tx,
+          prepared.flatMap((item) =>
+            [...item.parsed.executions, ...item.parsed.positions].map((row) => ({
+              symbol: row.symbol,
+              exchange: row.exchange,
+              assetType: row.assetType as AssetType,
+              currency: row.currency,
+            })),
+          ),
+        );
         for (const item of prepared) {
           if (item.rawContent != null && item.rawArchive) {
             await upsertRawImportArtifact(tx, item.rawContent, item.rawArchive);
