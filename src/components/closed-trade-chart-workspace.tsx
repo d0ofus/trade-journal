@@ -217,7 +217,14 @@ function candleRequestPath(
   return `/api/market/candles?${params.toString()}`;
 }
 
-type PendingTrend = { panelId: string; time: number; price: number } | null;
+type PendingTrend = {
+  panelId: string;
+  symbol: string;
+  timeframe: ChartTimeframe;
+  rangePreset: RangePreset;
+  time: number;
+  price: number;
+} | null;
 type ExecutionOverlay = {
   key: string;
   label: string;
@@ -2222,6 +2229,21 @@ function ClosedTradeChartPanel({
     return true;
   }, [setVisibleRangePending]);
 
+  const discardPendingVisibleRange = useCallback(() => {
+    pendingVisibleRangeRef.current = null;
+    visibleRangeDragStartRef.current = null;
+    visibleRangeInteractionUntilRef.current = 0;
+    if (visibleRangeSaveTimerRef.current != null) {
+      window.clearTimeout(visibleRangeSaveTimerRef.current);
+      visibleRangeSaveTimerRef.current = null;
+    }
+    if (visibleRangeInteractionTimerRef.current != null) {
+      window.clearTimeout(visibleRangeInteractionTimerRef.current);
+      visibleRangeInteractionTimerRef.current = null;
+    }
+    setVisibleRangePending(false);
+  }, [setVisibleRangePending]);
+
   const armVisibleRangeInteraction = useCallback(() => {
     if (readOnlyRef.current) return;
     visibleRangeInteractionUntilRef.current = Date.now() + 1500;
@@ -2807,8 +2829,21 @@ function ClosedTradeChartPanel({
       }
       if (activeTool === "trend") {
         const pending = pendingTrendRef.current;
-        if (!pending || pending.panelId !== activePanel.id) {
-          setPendingTrendRef.current({ panelId: activePanel.id, time, price });
+        if (
+          !pending
+          || pending.panelId !== activePanel.id
+          || pending.symbol !== activePanel.symbol
+          || pending.timeframe !== activePanel.timeframe
+          || pending.rangePreset !== activePanel.rangePreset
+        ) {
+          setPendingTrendRef.current({
+            panelId: activePanel.id,
+            symbol: activePanel.symbol,
+            timeframe: activePanel.timeframe,
+            rangePreset: activePanel.rangePreset,
+            time,
+            price,
+          });
           return;
         }
         commitRef.current([
@@ -3115,11 +3150,28 @@ function ClosedTradeChartPanel({
     );
   }, [displayedCandles, panelAnnotations, showsTradeExecutions, tradeExecutions]);
 
+  function discardChartContextDrafts() {
+    discardPendingVisibleRange();
+    if (pendingTrendRef.current?.panelId === panel.id) {
+      setPendingTrendRef.current(null);
+    }
+  }
+
   function commitSymbol() {
     if (readOnly) return;
     onActivate(panel.id);
     const next = symbolInput.trim().toUpperCase();
-    if (next) updatePanel(panel.id, { symbol: next, compareSymbol: panel.compareSymbol === next ? null : panel.compareSymbol, visibleFrom: null, visibleTo: null }, { userEdit: true });
+    if (!SYMBOL_PATTERN.test(next)) {
+      setSymbolInput(panel.symbol);
+      setPrimaryStatus("Invalid symbol.");
+      return;
+    }
+    if (next === panel.symbol) {
+      setPrimaryStatus("");
+      return;
+    }
+    discardChartContextDrafts();
+    updatePanel(panel.id, { symbol: next, compareSymbol: panel.compareSymbol === next ? null : panel.compareSymbol, visibleFrom: null, visibleTo: null }, { userEdit: true });
   }
 
   function commitCompareSymbol() {
@@ -3127,6 +3179,12 @@ function ClosedTradeChartPanel({
     onActivate(panel.id);
     const next = compareInput.trim().toUpperCase();
     if (!next || next === panel.symbol) {
+      if (!panel.compareSymbol) {
+        setCompareInput("");
+        setCompareStatus("");
+        return;
+      }
+      discardChartContextDrafts();
       updatePanel(panel.id, { compareSymbol: null, visibleFrom: null, visibleTo: null }, { userEdit: true });
       return;
     }
@@ -3135,24 +3193,36 @@ function ClosedTradeChartPanel({
       setCompareStatus("Invalid compare symbol.");
       return;
     }
+    if (next === panel.compareSymbol) {
+      setCompareStatus("");
+      return;
+    }
+    discardChartContextDrafts();
     updatePanel(panel.id, { compareSymbol: next, visibleFrom: null, visibleTo: null }, { userEdit: true });
   }
 
   function commitTimeframe() {
     if (readOnly) return;
     onActivate(panel.id);
-    updatePanel(panel.id, { timeframe: normalizeTimeframe(timeframeInput), visibleFrom: null, visibleTo: null }, { userEdit: true });
+    const timeframe = normalizeTimeframe(timeframeInput);
+    if (timeframe === panel.timeframe) return;
+    discardChartContextDrafts();
+    updatePanel(panel.id, { timeframe, visibleFrom: null, visibleTo: null }, { userEdit: true });
   }
 
   function selectTimeframe(timeframe: ChartTimeframe) {
     if (readOnly) return;
     onActivate(panel.id);
+    if (timeframe === panel.timeframe) return;
+    discardChartContextDrafts();
     updatePanel(panel.id, { timeframe, visibleFrom: null, visibleTo: null }, { userEdit: true });
   }
 
   function selectRangePreset(rangePreset: RangePreset) {
     if (readOnly) return;
     onActivate(panel.id);
+    if (rangePreset === panel.rangePreset) return;
+    discardChartContextDrafts();
     updatePanel(panel.id, { rangePreset, visibleFrom: null, visibleTo: null }, { userEdit: true });
   }
 

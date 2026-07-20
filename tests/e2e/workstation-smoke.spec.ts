@@ -2933,6 +2933,193 @@ test("chart workstation cancels shared candle work only after its final owner re
   expect(browserErrors).toEqual([]);
 });
 
+test("chart context switches discard pending ranges and unfinished trends", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  const candleRequests: string[] = [];
+  const layoutWrites: ChartPanelLayout[][] = [];
+  const annotationWrites: Array<{
+    annotations?: Array<{ type?: string; symbol?: string; timeframe?: string; points?: unknown[] }>;
+  }> = [];
+  let layoutVersion = 1;
+  let annotationVersion = 1;
+  let layoutPanels: ChartPanelLayout[] = [
+    {
+      id: "panel-1",
+      symbol: "DEMOA",
+      timeframe: "5m",
+      compareSymbol: null,
+      rangePreset: "trade",
+      visibleFrom: null,
+      visibleTo: null,
+    },
+  ];
+
+  await page.route("**/api/closed-trades/*/chart-layout", async (route) => {
+    const request = route.request();
+    const groupKey = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-2) ?? "phase12-context");
+    if (request.method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "phase12-context-layout",
+            groupKey,
+            layoutMode: "single",
+            panels: layoutPanels,
+            version: layoutVersion,
+          },
+        }),
+      });
+      return;
+    }
+    if (request.method() === "PUT") {
+      const body = request.postDataJSON() as { panels?: ChartPanelLayout[] };
+      layoutPanels = body.panels ?? layoutPanels;
+      layoutWrites.push(layoutPanels);
+      layoutVersion += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          layout: {
+            id: "phase12-context-layout",
+            groupKey,
+            layoutMode: "single",
+            panels: layoutPanels,
+            version: layoutVersion,
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.route("**/api/closed-trades/*/annotations", async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ annotations: [], version: annotationVersion, updatedAt: "2026-07-17T00:00:00.000Z" }),
+      });
+      return;
+    }
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as typeof annotationWrites[number];
+      annotationWrites.push(body);
+      annotationVersion += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          annotations: body.annotations ?? [],
+          version: annotationVersion,
+          updatedAt: "2026-07-17T00:01:00.000Z",
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.route("**/api/market/candles**", async (route) => {
+    const url = new URL(route.request().url());
+    const symbol = (url.searchParams.get("symbol") ?? "DEMOA").toUpperCase();
+    const timeframe = url.searchParams.get("timeframe") ?? "5m";
+    candleRequests.push(`${symbol}:${timeframe}`);
+    const interval = timeframe === "1h" ? 3600 : 300;
+    const candles = Array.from({ length: 120 }, (_, index) => {
+      const base = 100 + index * 0.08;
+      return {
+        time: unixSeconds("2026-06-15T00:00:00.000Z") + index * interval,
+        open: Number(base.toFixed(2)),
+        high: Number((base + 1).toFixed(2)),
+        low: Number((base - 0.9).toFixed(2)),
+        close: Number((base + 0.2).toFixed(2)),
+        volume: 1200 + index,
+      };
+    });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        symbol,
+        timeframe,
+        source: "cache",
+        candles,
+        metadata: {
+          requestedRange: null,
+          returnedRange: { from: candles[0].time, to: candles.at(-1)?.time ?? candles[0].time },
+          barIntervalSeconds: interval,
+          limit: 30000,
+          truncated: false,
+          warnings: [],
+        },
+      }),
+    });
+  });
+
+  try {
+    await signIn(page);
+    await gotoAndSettle(page, `/trades?account=${demoAccountCode}&symbol=DEMOA`);
+    const trade = page.getByRole("button", { name: /DEMOA LONG/ }).first();
+    await expect(trade).toBeVisible();
+    await trade.click();
+    await expectFirstCanvasPainted(page);
+
+    const panel = page.getByTestId("closed-trade-chart-panel").first();
+    const plot = panel.getByTestId("closed-trade-chart-plot");
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+
+    await panFirstChart(page);
+    await expect(page.getByText("Chart range save pending.")).toBeVisible();
+    await panel.locator('button[title="Switch to 1H"]').click();
+    await expect(panel).toHaveAttribute("data-timeframe", "1h");
+    await expect(page.getByText("Chart range save pending.")).toHaveCount(0);
+    await page.waitForTimeout(850);
+
+    expect(layoutWrites.length).toBeGreaterThan(0);
+    expect(
+      layoutWrites.some((panels) => {
+        const first = panels[0];
+        return typeof first?.visibleFrom === "number" || typeof first?.visibleTo === "number";
+      }),
+    ).toBe(false);
+    expect(layoutPanels[0]).toMatchObject({ timeframe: "1h", visibleFrom: null, visibleTo: null });
+
+    const symbolInput = panel.getByRole("textbox", { name: "Symbol", exact: true });
+    await symbolInput.fill("INVALID!");
+    await symbolInput.press("Enter");
+    await expect(symbolInput).toHaveValue("DEMOA");
+    await expect(page.getByText("Invalid symbol.")).toBeVisible();
+    expect(candleRequests.some((request) => request.startsWith("INVALID!:"))).toBe(false);
+    expect(layoutPanels[0]?.symbol).toBe("DEMOA");
+
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await plot.scrollIntoViewIfNeeded();
+    const plotBox = await plot.boundingBox();
+    expect(plotBox).toBeTruthy();
+    await page.getByTitle("Trend").click();
+    await plot.click({ position: { x: plotBox!.width * 0.3, y: plotBox!.height * 0.42 } });
+    await expect(page.getByText("Select second trend point")).toBeVisible();
+
+    await panel.locator('button[title="Switch to 5M"]').click();
+    await expect(panel).toHaveAttribute("data-timeframe", "5m");
+    await expect(page.getByText("Select second trend point")).toHaveCount(0);
+    await expect(plot).toHaveAttribute("data-candle-fresh", "true");
+    await page.waitForTimeout(700);
+    expect(annotationWrites).toHaveLength(0);
+    await expectChartSavesSettled(page);
+  } finally {
+    await page.unroute("**/api/closed-trades/*/chart-layout");
+    await page.unroute("**/api/closed-trades/*/annotations");
+    await page.unroute("**/api/market/candles**");
+  }
+
+  expect(browserErrors).toEqual([]);
+});
+
 test("chart workstation waits for saved layout before loading candles", async ({ page }) => {
   const browserErrors = collectBrowserErrors(page);
   const fixtureCandles = [
