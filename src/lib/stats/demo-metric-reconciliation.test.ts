@@ -5,7 +5,7 @@ import { aggregateDashboardData, type DashboardClosedTradeRow } from "@/lib/stat
 const demoTrades: DashboardClosedTradeRow[] = [
   {
     groupKey: "demo-a",
-    openTime: new Date("2026-06-17T13:30:00.000Z"),
+    openTime: new Date("2026-06-17T13:35:00.000Z"),
     closeTime: new Date("2026-06-17T16:45:00.000Z"),
     tradeDate: new Date("2026-06-17T00:00:00.000Z"),
     realizedPnl: 419.6,
@@ -15,7 +15,7 @@ const demoTrades: DashboardClosedTradeRow[] = [
   },
   {
     groupKey: "demo-b",
-    openTime: new Date("2026-06-18T13:35:00.000Z"),
+    openTime: new Date("2026-06-18T13:42:00.000Z"),
     closeTime: new Date("2026-06-18T15:10:00.000Z"),
     tradeDate: new Date("2026-06-18T00:00:00.000Z"),
     realizedPnl: -122.1,
@@ -25,8 +25,8 @@ const demoTrades: DashboardClosedTradeRow[] = [
   },
   {
     groupKey: "demo-c",
-    openTime: new Date("2026-06-18T20:15:00.000Z"),
-    closeTime: new Date("2026-06-22T14:30:00.000Z"),
+    openTime: new Date("2026-06-18T12:05:00.000Z"),
+    closeTime: new Date("2026-06-22T13:50:00.000Z"),
     tradeDate: new Date("2026-06-22T00:00:00.000Z"),
     realizedPnl: 293.9,
     grossRealizedPnl: 297,
@@ -52,6 +52,9 @@ describe("demo workstation metric reconciliation", () => {
 
     expect(dashboard.cards).toMatchObject({ totalTrades: 3, winCount: 2, lossCount: 1 });
     expect(dashboard.cards.realized).toBeCloseTo(591.4, 8);
+    expect(dashboard.cards.realizedDay).toBeCloseTo(293.9, 8);
+    expect(dashboard.cards.realizedWeek).toBeCloseTo(293.9, 8);
+    expect(dashboard.cards.realizedMonth).toBeCloseTo(591.4, 8);
     expect(dashboard.cards.largestGain).toBeCloseTo(419.6, 8);
     expect(dashboard.cards.largestLoss).toBeCloseTo(-122.1, 8);
     expect(dashboard.cards.expectancy).toBeCloseTo(591.4 / 3, 8);
@@ -83,7 +86,15 @@ describe("demo workstation metric reconciliation", () => {
       rangeEnd: new Date("2026-06-18T23:59:59.999Z"),
     });
 
-    expect(dashboard.cards).toMatchObject({ totalTrades: 1, realized: -122.1, winCount: 0, lossCount: 1 });
+    expect(dashboard.cards).toMatchObject({
+      totalTrades: 1,
+      realized: -122.1,
+      realizedDay: -122.1,
+      realizedWeek: -122.1,
+      realizedMonth: -122.1,
+      winCount: 0,
+      lossCount: 1,
+    });
     expect(dashboard.charts.dailyPnl).toEqual([{ date: "2026-06-18", pnl: -122.1 }]);
   });
 });

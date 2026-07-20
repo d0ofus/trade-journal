@@ -121,4 +121,30 @@ describe("aggregateCalendarPerformance", () => {
     ]);
     expect(result.monthlyTotals).toEqual([{ month: "2026-01", realized: 0, mtm: 0, total: 0 }]);
   });
+
+  it.each(["UTC", "Australia/Sydney", "America/New_York"])(
+    "reports the canonical UTC year and keeps January 1 data when the process timezone is %s",
+    (timezone) => {
+      const originalTimezone = process.env.TZ;
+      process.env.TZ = timezone;
+
+      try {
+        const result = aggregateCalendarPerformance({
+          from: at("2026-01-01"),
+          closedTrades: [trade("2026-01-01", 25), trade("2026-12-31", 75)],
+          snapshots: [],
+          notes: [],
+        });
+
+        expect(result.year).toBe(2026);
+        expect(result.days.map((day) => [day.date, day.realized])).toEqual([
+          ["2026-01-01", 25],
+          ["2026-12-31", 75],
+        ]);
+      } finally {
+        if (originalTimezone === undefined) delete process.env.TZ;
+        else process.env.TZ = originalTimezone;
+      }
+    },
+  );
 });

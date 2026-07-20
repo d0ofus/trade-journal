@@ -1,4 +1,9 @@
-import { format, startOfDay, startOfMonth, startOfWeek } from "date-fns";
+import {
+  utcDateKey,
+  utcStartOfDay,
+  utcStartOfMonth,
+  utcStartOfWeekMonday,
+} from "@/lib/server/utc-date-range";
 import { computeClosedTradeEquityCurve, computeClosedTradePerformanceMetrics } from "@/lib/stats/closed-trade-performance";
 import { bucketHistogram } from "@/lib/stats/pnl";
 
@@ -74,9 +79,10 @@ export function aggregateDashboardData({
   const orderedExecutions = [...executions].sort(compareExecutions);
   const orderedClosedTrades = [...closedTrades].sort(compareClosedTrades);
   const anchorDate = rangeEnd ?? now;
-  const dayStart = startOfDay(anchorDate);
-  const weekStart = startOfWeek(anchorDate, { weekStartsOn: 1 });
-  const monthStart = startOfMonth(anchorDate);
+  const anchorTradeDate = utcStartOfDay(anchorDate);
+  const dayStart = anchorTradeDate;
+  const weekStart = utcStartOfWeekMonday(anchorDate);
+  const monthStart = utcStartOfMonth(anchorDate);
 
   for (const exec of orderedExecutions) {
     const executedAt = exec.executedAt;
@@ -84,10 +90,10 @@ export function aggregateDashboardData({
     if (rangeStart && executedAt < rangeStart) continue;
     if (rangeEnd && executedAt > rangeEnd) continue;
 
-    const dayKey = format(executedAt, "yyyy-MM-dd");
+    const dayKey = utcDateKey(executedAt);
     dailyVolumeMap.set(dayKey, (dailyVolumeMap.get(dayKey) ?? 0) + Math.abs(exec.quantity));
     scatter.push({
-      time: format(executedAt, "HH:mm"),
+      time: executedAt.toISOString().slice(11, 16),
       symbol: exec.instrument.symbol,
       price: exec.price,
       side: exec.side,
@@ -102,11 +108,11 @@ export function aggregateDashboardData({
     filteredCommissions += trade.totalCommission;
     firstFilteredCloseAt ??= trade.closeTime;
 
-    if (trade.closeTime >= dayStart) realizedDay += trade.realizedPnl;
-    if (trade.closeTime >= weekStart) realizedWeek += trade.realizedPnl;
-    if (trade.closeTime >= monthStart) realizedMonth += trade.realizedPnl;
+    if (trade.tradeDate >= dayStart && trade.tradeDate <= anchorTradeDate) realizedDay += trade.realizedPnl;
+    if (trade.tradeDate >= weekStart && trade.tradeDate <= anchorTradeDate) realizedWeek += trade.realizedPnl;
+    if (trade.tradeDate >= monthStart && trade.tradeDate <= anchorTradeDate) realizedMonth += trade.realizedPnl;
 
-    const dayKey = format(trade.tradeDate, "yyyy-MM-dd");
+    const dayKey = utcDateKey(trade.tradeDate);
     daily.set(dayKey, (daily.get(dayKey) ?? 0) + trade.realizedPnl);
     grossDailyMap.set(dayKey, (grossDailyMap.get(dayKey) ?? 0) + trade.grossRealizedPnl);
     dailyTradeCountMap.set(dayKey, (dailyTradeCountMap.get(dayKey) ?? 0) + 1);
@@ -153,7 +159,7 @@ export function aggregateDashboardData({
   const equityMetrics = computeClosedTradeEquityCurve(filteredClosedTrades, equityBaseline);
   const equityCurve = equityMetrics.points.map(({ trade, equity }) => {
     return {
-      at: format(trade.closeTime, "yyyy-MM-dd HH:mm"),
+      at: trade.closeTime.toISOString(),
       equity,
     };
   });

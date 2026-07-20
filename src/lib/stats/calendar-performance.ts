@@ -130,7 +130,7 @@ export function aggregateCalendarPerformance({
     .sort((a, b) => compareDates(a.date, b.date));
 
   return {
-    year: from.getFullYear(),
+    year: from.getUTCFullYear(),
     days,
     monthlyTotals: [...monthlyTotals.entries()]
       .map(([month, totals]) => ({ month, ...totals }))

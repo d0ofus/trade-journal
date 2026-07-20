@@ -1,16 +1,15 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { format, startOfYear, subMonths } from "date-fns";
 import { DashboardCharts } from "@/components/dashboard-charts";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { formatCurrency, formatPercent } from "@/lib/utils";
+import { resolveDashboardRange } from "@/lib/server/dashboard-date-range";
 import { getDashboardData } from "@/lib/server/queries";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-type DashboardPreset = "all" | "ytd" | "3m" | "6m" | "custom";
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return "0m";
@@ -47,69 +46,9 @@ function formatAveragePair(avgWin: number, avgLoss: number, winCount: number, lo
   return `${winLabel} / ${lossLabel}`;
 }
 
-function parseDateParam(value: string | undefined) {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return Number.isNaN(parsed.getTime()) ? undefined : value;
-}
-
-function resolveRange(searchParams: Record<string, string | string[] | undefined>) {
-  const today = new Date();
-  const todayIso = format(today, "yyyy-MM-dd");
-  const fromInput = parseDateParam(typeof searchParams.from === "string" ? searchParams.from : undefined);
-  const toInput = parseDateParam(typeof searchParams.to === "string" ? searchParams.to : undefined);
-  const presetInput = typeof searchParams.preset === "string" ? searchParams.preset : undefined;
-
-  let preset: DashboardPreset = "all";
-  if (presetInput === "ytd" || presetInput === "3m" || presetInput === "6m" || presetInput === "custom" || presetInput === "all") {
-    preset = presetInput;
-  } else if (fromInput || toInput) {
-    preset = "custom";
-  }
-
-  if (preset === "ytd") {
-    return {
-      preset,
-      from: format(startOfYear(today), "yyyy-MM-dd"),
-      to: todayIso,
-      label: "Year-To-Date",
-    };
-  }
-  if (preset === "3m") {
-    return {
-      preset,
-      from: format(subMonths(today, 3), "yyyy-MM-dd"),
-      to: todayIso,
-      label: "Past 3 Months",
-    };
-  }
-  if (preset === "6m") {
-    return {
-      preset,
-      from: format(subMonths(today, 6), "yyyy-MM-dd"),
-      to: todayIso,
-      label: "Past 6 Months",
-    };
-  }
-  if (preset === "custom") {
-    return {
-      preset,
-      from: fromInput,
-      to: toInput,
-      label: "Custom Range",
-    };
-  }
-  return {
-    preset: "all" as const,
-    from: undefined,
-    to: undefined,
-    label: "All Time",
-  };
-}
-
 export default async function DashboardPage(props: { searchParams: SearchParams }) {
   const searchParams = await props.searchParams;
-  const range = resolveRange(searchParams);
+  const range = resolveDashboardRange(searchParams);
   const rangeKey = `${range.preset}:${range.from ?? "none"}:${range.to ?? "none"}`;
 
   return (

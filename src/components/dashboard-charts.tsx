@@ -1,6 +1,5 @@
 "use client";
 
-import { format } from "date-fns";
 import type { ReactNode } from "react";
 import {
   Bar,
@@ -16,6 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatDashboardAxisDate } from "@/lib/stats/dashboard-chart-format";
 
 type DashboardChartsProps = {
   dailyPnl: { date: string; pnl: number }[];
@@ -32,14 +32,6 @@ type ChartSummary = {
   lastValue?: number;
   pointCount: number;
 };
-
-function formatAxisDate(value: string) {
-  if (!value) return value;
-  const normalized = value.includes(" ") ? value.replace(" ", "T") : `${value}T00:00:00`;
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return format(parsed, "MMM d");
-}
 
 function formatTwoDecimals(value: number | string | undefined) {
   if (typeof value === "undefined") return "";
@@ -130,7 +122,7 @@ export function DashboardCharts({
               <ChartContainer>
                 <BarChart data={grossDailyPnl}>
                   <CartesianGrid stroke={chartGrid.stroke} vertical={chartGrid.vertical} />
-                  <XAxis dataKey="date" tickFormatter={formatAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="date" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip formatter={formatTwoDecimals} />
                   <Bar dataKey="pnl" fill="#0f766e" radius={[8, 8, 0, 0]} />
@@ -147,7 +139,7 @@ export function DashboardCharts({
               <ChartContainer>
                 <LineChart data={grossCumulativePnl}>
                   <CartesianGrid stroke={chartGrid.stroke} vertical={chartGrid.vertical} />
-                  <XAxis dataKey="date" tickFormatter={formatAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="date" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip formatter={formatTwoDecimals} />
                   <Line type="monotone" dataKey="pnl" stroke="#0891b2" strokeWidth={3} dot={false} />
@@ -160,7 +152,7 @@ export function DashboardCharts({
               <ChartContainer>
                 <BarChart data={dailyTradeCounts}>
                   <CartesianGrid stroke={chartGrid.stroke} vertical={chartGrid.vertical} />
-                  <XAxis dataKey="date" tickFormatter={formatAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="date" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis allowDecimals={false} tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip />
                   <Bar dataKey="trades" fill="#334155" radius={[8, 8, 0, 0]} />
@@ -180,7 +172,7 @@ export function DashboardCharts({
               <ChartContainer>
                 <LineChart data={equityCurve}>
                   <CartesianGrid stroke={chartGrid.stroke} vertical={chartGrid.vertical} />
-                  <XAxis dataKey="at" tickFormatter={formatAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="at" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip formatter={formatTwoDecimals} />
                   <Line type="monotone" dataKey="equity" stroke="#0f172a" strokeWidth={3} dot={false} />
@@ -192,7 +184,7 @@ export function DashboardCharts({
               <ChartContainer>
                 <BarChart data={dailyPnl}>
                   <CartesianGrid stroke={chartGrid.stroke} vertical={chartGrid.vertical} />
-                  <XAxis dataKey="date" tickFormatter={formatAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="date" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip formatter={formatTwoDecimals} />
                   <Bar dataKey="pnl" fill="#2563eb" radius={[8, 8, 0, 0]} />

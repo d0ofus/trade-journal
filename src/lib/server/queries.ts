@@ -1,4 +1,3 @@
-import { endOfMonth, endOfYear, startOfMonth, startOfYear, subDays } from "date-fns";
 import type { Prisma } from "@prisma/client";
 import { withDiagnostics } from "@/lib/server/diagnostics";
 import { prisma } from "@/lib/prisma";
@@ -17,7 +16,11 @@ import { buildBackupTableManifestFromRowCounts, type BackupTableKey } from "@/li
 import { aggregateCalendarPerformance } from "@/lib/stats/calendar-performance";
 import { aggregateDashboardData } from "@/lib/stats/dashboard-aggregation";
 import { computeTradeSummaryMetrics, latestPriorEquitySnapshot } from "@/lib/stats/trade-summary-metrics";
-import { utcDateBoundary } from "@/lib/server/utc-date-range";
+import {
+  utcDateBoundary,
+  utcMonthRange,
+  utcYearRange,
+} from "@/lib/server/utc-date-range";
 
 function analyticsOrZero(
   executionId: string,
@@ -628,8 +631,7 @@ export async function getPositions() {
 export async function getCalendarNotes(month?: Date) {
   await ensureMaterializedClosedTrades();
   const target = month ?? new Date();
-  const from = startOfMonth(target);
-  const to = endOfMonth(target);
+  const { from, to } = utcMonthRange(target);
   const [notes, closedTrades] = await Promise.all([
     prisma.dayNote.findMany({
       where: { date: { gte: from, lte: to } },
@@ -694,8 +696,7 @@ export async function getCalendarPerformance(target?: Date) {
     await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
     const focus = target ?? new Date();
-    const from = startOfYear(focus);
-    const to = endOfYear(focus);
+    const { from, snapshotFrom, to } = utcYearRange(focus);
 
     const [closedTrades, snapshots, notes] = await Promise.all([
       step("query closed trades", () =>
@@ -718,7 +719,7 @@ export async function getCalendarPerformance(target?: Date) {
         prisma.positionSnapshot.findMany({
           where: {
             date: {
-              gte: subDays(from, 1),
+              gte: snapshotFrom,
               lte: to,
             },
           },

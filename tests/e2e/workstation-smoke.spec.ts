@@ -354,8 +354,8 @@ function backupDateValue(row: Record<string, unknown>, key: string) {
   return new Date(value);
 }
 
-function localDayStart(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+function utcDayStartFromDate(date: Date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
 function utcDayStart(value: string) {
@@ -366,10 +366,10 @@ function utcDayEnd(value: string) {
   return new Date(`${value}T23:59:59.999Z`);
 }
 
-function localWeekStartMonday(date: Date) {
-  const day = localDayStart(date);
-  const mondayOffset = (day.getDay() + 6) % 7;
-  day.setDate(day.getDate() - mondayOffset);
+function utcWeekStartMonday(date: Date) {
+  const day = utcDayStartFromDate(date);
+  const mondayOffset = (day.getUTCDay() + 6) % 7;
+  day.setUTCDate(day.getUTCDate() - mondayOffset);
   return day;
 }
 
@@ -429,13 +429,13 @@ function expectedDashboardCardsFromBackup(payload: Record<string, unknown>, from
   const winRate = filtered.length > 0 ? (wins.length / filtered.length) * 100 : 0;
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
   const expectancy = filtered.length > 0 ? (wins.length / filtered.length) * avgWin + (losses.length / filtered.length) * avgLoss : 0;
-  const dayStart = localDayStart(rangeEnd);
-  const weekStart = localWeekStartMonday(rangeEnd);
-  const monthStart = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
+  const dayStart = utcDayStartFromDate(rangeEnd);
+  const weekStart = utcWeekStartMonday(rangeEnd);
+  const monthStart = new Date(Date.UTC(rangeEnd.getUTCFullYear(), rangeEnd.getUTCMonth(), 1));
   const sumRealizedSince = (start: Date) =>
     filtered.reduce((sum, row) => {
-      const closeTime = backupDateValue(row, "closeTime");
-      return closeTime >= start ? sum + numericBackupValue(row, "realizedPnl") : sum;
+      const tradeDate = backupDateValue(row, "tradeDate");
+      return tradeDate >= start ? sum + numericBackupValue(row, "realizedPnl") : sum;
     }, 0);
   const firstFilteredCloseTime = filtered.length > 0 ? backupDateValue(filtered[0], "closeTime") : undefined;
   let equity = firstFilteredCloseTime

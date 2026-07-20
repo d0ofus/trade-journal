@@ -1,17 +1,18 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import {
-  addDays,
-  addMonths,
-  addYears,
-  endOfMonth,
-  format,
-  isSameMonth,
-  startOfMonth,
-  startOfWeek,
-  subMonths,
-  subYears,
-} from "date-fns";
+  isSameUtcMonth,
+  resolveUtcDateOnly,
+  utcAddDays,
+  utcAddMonths,
+  utcAddYears,
+  utcDateKey,
+  utcEndOfMonth,
+  utcStartOfMonth,
+  utcStartOfWeekMonday,
+  utcStartOfYear,
+} from "@/lib/server/utc-date-range";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
@@ -21,34 +22,45 @@ import { cn, formatCurrency } from "@/lib/utils";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 type CalendarView = "year" | "month" | "day";
 
+const monthYearFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "long",
+  year: "numeric",
+  timeZone: "UTC",
+});
+const shortMonthFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  timeZone: "UTC",
+});
+
 function parseDate(value?: string) {
-  if (!value) return new Date();
-  const parsed = new Date(`${value}T00:00:00`);
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  try {
+    return resolveUtcDateOnly(value);
+  } catch {
+    notFound();
+  }
 }
 
 function monthGrid(monthDate: Date) {
-  const first = startOfWeek(startOfMonth(monthDate), { weekStartsOn: 1 });
-  const last = endOfMonth(monthDate);
+  const first = utcStartOfWeekMonday(utcStartOfMonth(monthDate));
+  const last = utcEndOfMonth(monthDate);
   const weeks: Date[][] = [];
   let cursor = first;
 
-  while (cursor <= last || weeks.length === 0 || weeks[weeks.length - 1].length < 7) {
+  while (cursor <= last) {
     const week: Date[] = [];
     for (let i = 0; i < 7; i += 1) {
       week.push(cursor);
-      cursor = addDays(cursor, 1);
+      cursor = utcAddDays(cursor, 1);
     }
     weeks.push(week);
-    if (cursor > last && cursor.getDay() === 1) break;
   }
 
   return weeks;
 }
 
 function weekGrid(day: Date) {
-  const first = startOfWeek(day, { weekStartsOn: 1 });
-  return [Array.from({ length: 7 }, (_, index) => addDays(first, index))];
+  const first = utcStartOfWeekMonday(day);
+  return [Array.from({ length: 7 }, (_, index) => utcAddDays(first, index))];
 }
 
 function dailyPnlClass(total: number) {
@@ -69,7 +81,7 @@ function compactCurrency(value: number) {
 }
 
 function viewHref(view: CalendarView, date: Date) {
-  return `/calendar?view=${view}&date=${format(date, "yyyy-MM-dd")}`;
+  return `/calendar?view=${view}&date=${utcDateKey(date)}`;
 }
 
 export default async function CalendarPage(props: { searchParams: SearchParams }) {
@@ -77,11 +89,11 @@ export default async function CalendarPage(props: { searchParams: SearchParams }
   const selectedDate = parseDate(typeof searchParams.date === "string" ? searchParams.date : undefined);
   const selectedView = (typeof searchParams.view === "string" ? searchParams.view : "month") as CalendarView;
   const view: CalendarView = selectedView === "year" || selectedView === "month" || selectedView === "day" ? selectedView : "month";
-  const selectedMonthKey = format(selectedDate, "yyyy-MM");
-  const prevDate = view === "year" ? subYears(selectedDate, 1) : subMonths(selectedDate, 1);
-  const nextDate = view === "year" ? addYears(selectedDate, 1) : addMonths(selectedDate, 1);
-  const monthName = format(selectedDate, "MMMM yyyy");
-  const yearLabel = format(selectedDate, "yyyy");
+  const selectedMonthKey = utcDateKey(selectedDate).slice(0, 7);
+  const prevDate = view === "year" ? utcAddYears(selectedDate, -1) : utcAddMonths(selectedDate, -1);
+  const nextDate = view === "year" ? utcAddYears(selectedDate, 1) : utcAddMonths(selectedDate, 1);
+  const monthName = monthYearFormatter.format(selectedDate);
+  const yearLabel = String(selectedDate.getUTCFullYear());
 
   return (
     <div className="space-y-6">
@@ -144,9 +156,10 @@ async function CalendarContent({
   const dayMap = new Map(data.days.map((row) => [row.date, row]));
   const monthlyTotals = new Map(data.monthlyTotals.map((row) => [row.month, row]));
   const selectedMonthTotals = monthlyTotals.get(selectedMonthKey) ?? { month: selectedMonthKey, realized: 0, mtm: 0, total: 0 };
-  const selectedDay = dayMap.get(format(selectedDate, "yyyy-MM-dd"));
+  const selectedDay = dayMap.get(utcDateKey(selectedDate));
   const weekDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const months = Array.from({ length: 12 }, (_, index) => new Date(selectedDate.getFullYear(), index, 1));
+  const yearStart = utcStartOfYear(selectedDate);
+  const months = Array.from({ length: 12 }, (_, index) => utcAddMonths(yearStart, index));
 
   return (
     <CardContent className="space-y-4 px-2 pt-4 sm:px-6 sm:pt-6">
@@ -178,13 +191,13 @@ async function CalendarContent({
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {months.map((month) => {
             const grid = monthGrid(month);
-            const monthKey = format(month, "yyyy-MM");
+            const monthKey = utcDateKey(month).slice(0, 7);
             const totals = monthlyTotals.get(monthKey) ?? { total: 0, realized: 0, mtm: 0 };
             return (
               <div key={monthKey} className="rounded-[24px] border border-slate-200/80 bg-white/85 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
                 <div className="mb-2 flex items-center justify-between">
                   <Link className="text-sm font-semibold text-blue-700 hover:underline" href={viewHref("month", month)}>
-                    {format(month, "MMM")}
+                    {shortMonthFormatter.format(month)}
                   </Link>
                   <span className={totals.total >= 0 ? "text-xs font-semibold text-emerald-700" : "text-xs font-semibold text-red-700"}>
                     {formatCurrency(totals.total)}
@@ -197,15 +210,15 @@ async function CalendarContent({
                     </p>
                   ))}
                   {grid.flat().map((date) => {
-                    const key = format(date, "yyyy-MM-dd");
+                    const key = utcDateKey(date);
                     const row = dayMap.get(key);
                     return (
                       <Link
                         key={`${monthKey}-${key}`}
                         href={viewHref("day", date)}
-                        className={`${dailyPnlClass(row?.total ?? 0)} ${isSameMonth(date, month) ? "" : "opacity-30"} rounded-xl border p-1.5 text-center text-[10px]`}
+                        className={`${dailyPnlClass(row?.total ?? 0)} ${isSameUtcMonth(date, month) ? "" : "opacity-30"} rounded-xl border p-1.5 text-center text-[10px]`}
                       >
-                        <p>{format(date, "d")}</p>
+                        <p>{date.getUTCDate()}</p>
                         <p>{row ? `${Math.round(row.total)}` : "-"}</p>
                       </Link>
                     );
@@ -228,9 +241,9 @@ async function CalendarContent({
             ))}
 
             {(view === "month" ? monthGrid(selectedDate) : weekGrid(selectedDate)).flat().map((date) => {
-              const key = format(date, "yyyy-MM-dd");
+              const key = utcDateKey(date);
               const row = dayMap.get(key);
-              const isCurrent = view === "day" ? true : isSameMonth(date, selectedDate);
+              const isCurrent = view === "day" ? true : isSameUtcMonth(date, selectedDate);
               return (
                 <Link
                   key={key}
@@ -239,7 +252,7 @@ async function CalendarContent({
                   data-date={key}
                   data-testid="calendar-day-cell"
                 >
-                  <p className="text-xs font-semibold">{format(date, "d")}</p>
+                  <p className="text-xs font-semibold">{date.getUTCDate()}</p>
                   <p
                     className={cn(
                       "mt-1 truncate text-[9px] font-semibold sm:hidden",
@@ -270,7 +283,7 @@ async function CalendarContent({
           {view === "day" && (
             <div className="rounded-[24px] border border-slate-200/80 bg-white/85 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
               <div className="mb-2 flex items-center justify-between">
-                <p className="font-semibold">{format(selectedDate, "yyyy-MM-dd")}</p>
+                <p className="font-semibold">{utcDateKey(selectedDate)}</p>
                 <p className={(selectedDay?.total ?? 0) >= 0 ? "font-semibold text-emerald-700" : "font-semibold text-red-700"}>
                   {formatCurrency(selectedDay?.total ?? 0)}
                 </p>

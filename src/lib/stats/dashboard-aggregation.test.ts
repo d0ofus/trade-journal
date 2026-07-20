@@ -1,7 +1,11 @@
 import { aggregateDashboardData, type DashboardClosedTradeRow, type DashboardExecutionRow } from "@/lib/stats/dashboard-aggregation";
 
 function at(year: number, monthIndex: number, day: number, hour = 12, minute = 0) {
-  return new Date(year, monthIndex, day, hour, minute, 0, 0);
+  return new Date(Date.UTC(year, monthIndex, day, hour, minute, 0, 0));
+}
+
+function tradeDay(year: number, monthIndex: number, day: number) {
+  return at(year, monthIndex, day, 0, 0);
 }
 
 function closedTrade(overrides: Partial<DashboardClosedTradeRow> & Pick<DashboardClosedTradeRow, "groupKey">): DashboardClosedTradeRow {
@@ -10,7 +14,7 @@ function closedTrade(overrides: Partial<DashboardClosedTradeRow> & Pick<Dashboar
     groupKey: overrides.groupKey,
     openTime: overrides.openTime ?? new Date(closeTime.getTime() - 60 * 60 * 1000),
     closeTime,
-    tradeDate: overrides.tradeDate ?? closeTime,
+    tradeDate: overrides.tradeDate ?? tradeDay(closeTime.getUTCFullYear(), closeTime.getUTCMonth(), closeTime.getUTCDate()),
     realizedPnl: overrides.realizedPnl ?? 0,
     grossRealizedPnl: overrides.grossRealizedPnl ?? overrides.realizedPnl ?? 0,
     totalCommission: overrides.totalCommission ?? 0,
@@ -42,7 +46,7 @@ describe("aggregateDashboardData", () => {
         closedTrade({
           groupKey: "win",
           closeTime: at(2026, 0, 3, 15),
-          tradeDate: at(2026, 0, 3),
+          tradeDate: tradeDay(2026, 0, 3),
           realizedPnl: 200,
           grossRealizedPnl: 205,
           totalCommission: 5,
@@ -50,7 +54,7 @@ describe("aggregateDashboardData", () => {
         closedTrade({
           groupKey: "prior",
           closeTime: at(2026, 0, 1, 15),
-          tradeDate: at(2026, 0, 1),
+          tradeDate: tradeDay(2026, 0, 1),
           realizedPnl: 100,
           grossRealizedPnl: 110,
           totalCommission: 3,
@@ -58,7 +62,7 @@ describe("aggregateDashboardData", () => {
         closedTrade({
           groupKey: "flat",
           closeTime: at(2026, 0, 3, 16),
-          tradeDate: at(2026, 0, 3),
+          tradeDate: tradeDay(2026, 0, 3),
           realizedPnl: 0,
           grossRealizedPnl: 0,
           totalCommission: 0,
@@ -66,7 +70,7 @@ describe("aggregateDashboardData", () => {
         closedTrade({
           groupKey: "loss",
           closeTime: at(2026, 0, 2, 15),
-          tradeDate: at(2026, 0, 2),
+          tradeDate: tradeDay(2026, 0, 2),
           realizedPnl: -50,
           grossRealizedPnl: -45,
           totalCommission: 4,
@@ -74,7 +78,7 @@ describe("aggregateDashboardData", () => {
         closedTrade({
           groupKey: "outside",
           closeTime: at(2026, 0, 4, 15),
-          tradeDate: at(2026, 0, 4),
+          tradeDate: tradeDay(2026, 0, 4),
           realizedPnl: 10_000,
           grossRealizedPnl: 10_000,
           totalCommission: 0,
@@ -122,4 +126,83 @@ describe("aggregateDashboardData", () => {
     expect(result.charts.scatter.map((point) => `${point.symbol}:${point.side}`)).toEqual(["ALPHA:BUY", "BETA:SELL"]);
     expect(result.charts.histogram.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(3);
   });
+
+  it.each(["UTC", "Australia/Sydney", "America/New_York"])(
+    "keeps UTC period cards and chart buckets stable when the process timezone is %s",
+    (timezone) => {
+      const originalTimezone = process.env.TZ;
+      process.env.TZ = timezone;
+
+      try {
+        const result = aggregateDashboardData({
+          now: new Date("2026-06-22T23:59:59.999Z"),
+          rangeStart: new Date("2026-05-31T00:00:00.000Z"),
+          rangeEnd: new Date("2026-06-22T23:59:59.999Z"),
+          executions: [
+            execution({
+              executedAt: new Date("2026-06-01T00:30:00.000Z"),
+              instrument: { symbol: "UTC" },
+            }),
+          ],
+          closedTrades: [
+            closedTrade({
+              groupKey: "may",
+              closeTime: new Date("2026-05-31T23:30:00.000Z"),
+              tradeDate: new Date("2026-05-31T00:00:00.000Z"),
+              realizedPnl: 1_000,
+            }),
+            closedTrade({
+              groupKey: "month",
+              closeTime: new Date("2026-06-01T00:30:00.000Z"),
+              tradeDate: new Date("2026-06-01T00:00:00.000Z"),
+              realizedPnl: 10_000,
+            }),
+            closedTrade({
+              groupKey: "sunday",
+              closeTime: new Date("2026-06-21T23:30:00.000Z"),
+              tradeDate: new Date("2026-06-21T00:00:00.000Z"),
+              realizedPnl: 1,
+            }),
+            closedTrade({
+              groupKey: "monday-a",
+              closeTime: new Date("2026-06-22T00:30:00.000Z"),
+              tradeDate: new Date("2026-06-22T00:00:00.000Z"),
+              realizedPnl: 10,
+            }),
+            closedTrade({
+              groupKey: "monday-b",
+              closeTime: new Date("2026-06-22T08:00:00.000Z"),
+              tradeDate: new Date("2026-06-22T00:00:00.000Z"),
+              realizedPnl: 20,
+            }),
+            closedTrade({
+              groupKey: "monday-c",
+              closeTime: new Date("2026-06-22T15:00:00.000Z"),
+              tradeDate: new Date("2026-06-22T00:00:00.000Z"),
+              realizedPnl: 40,
+            }),
+          ],
+        });
+
+        expect(result.cards).toMatchObject({
+          realizedDay: 70,
+          realizedWeek: 70,
+          realizedMonth: 10_071,
+        });
+        expect(result.charts.dailyPnl).toEqual([
+          { date: "2026-05-31", pnl: 1_000 },
+          { date: "2026-06-01", pnl: 10_000 },
+          { date: "2026-06-21", pnl: 1 },
+          { date: "2026-06-22", pnl: 70 },
+        ]);
+        expect(result.charts.scatter).toEqual([
+          { time: "00:30", symbol: "UTC", price: 100, side: "BUY" },
+        ]);
+        expect(result.charts.equityCurve.at(-1)?.at).toBe("2026-06-22T15:00:00.000Z");
+      } finally {
+        if (originalTimezone === undefined) delete process.env.TZ;
+        else process.env.TZ = originalTimezone;
+      }
+    },
+  );
 });
