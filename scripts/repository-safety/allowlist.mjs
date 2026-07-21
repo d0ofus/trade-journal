@@ -59,4 +59,10 @@ export const REPOSITORY_SAFETY_ALLOWLIST = Object.freeze([
     fileSha256: "b0ddacce0bb65a9a8d1c01d940feede1787db8282b83c79864fba2d1c6728e68",
     reason: "Reviewed database target validation fixtures.",
   },
+  {
+    ruleId: "opaque-binary-object",
+    path: "src/app/favicon.ico",
+    fileSha256: "2b8ad2d33455a8f736fc3a8ebf8f0bdea8848ad4c0db48a2833bd0f9cd775932",
+    reason: "Reviewed 32x32 application favicon.",
+  },
 ]);
