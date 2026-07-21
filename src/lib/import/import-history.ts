@@ -135,7 +135,7 @@ export function deriveImportHistoryPresentation(input: ImportHistoryInput): Impo
     case "SUCCEEDED":
       return { kind: "default", label: "Completed", tone: "success", visibleNotes: parsed.visibleNotes, outcomes };
     case "MATERIALIZATION_FAILED":
-      return { kind: "default", label: "Refresh failed", tone: "danger", visibleNotes: parsed.visibleNotes, outcomes };
+      return { kind: "default", label: "Processing failed", tone: "danger", visibleNotes: parsed.visibleNotes, outcomes };
     case "STARTED":
       return { kind: "default", label: "Started", tone: "warning", visibleNotes: parsed.visibleNotes, outcomes };
     default:

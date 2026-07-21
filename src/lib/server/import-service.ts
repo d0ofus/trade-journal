@@ -1372,57 +1372,78 @@ function uniqueBatchIds(batchIds: string[]) {
   return [...new Set(batchIds)].filter(Boolean);
 }
 
+async function requireCompleteRowsAppliedCohort(
+  tx: Prisma.TransactionClient,
+  uniqueIds: string[],
+  stage: "finalization" | "failure recovery",
+) {
+  const batches = await tx.importBatch.findMany({
+    where: { id: { in: uniqueIds } },
+    select: { id: true, cohortId: true, status: true, notes: true },
+  });
+  if (batches.length !== uniqueIds.length) {
+    throw new Error(`Expected ${uniqueIds.length} import batches but found ${batches.length} during ${stage}.`);
+  }
+
+  const cohortIds = new Set(batches.map((batch) => batch.cohortId));
+  if (cohortIds.size !== 1 || batches[0]?.cohortId == null) {
+    throw new Error(`Import batch ${stage} requires one non-null cohort ID.`);
+  }
+  const cohortId = batches[0].cohortId;
+  const cohortMemberCount = await tx.importBatch.count({ where: { cohortId } });
+  if (cohortMemberCount !== uniqueIds.length) {
+    throw new Error(
+      `Import batch ${stage} requires all ${cohortMemberCount} members of cohort ${cohortId}; received ${uniqueIds.length}.`,
+    );
+  }
+  const invalidStatus = batches.find((batch) => batch.status !== "ROWS_APPLIED");
+  if (invalidStatus) {
+    throw new Error(
+      `Import batch ${invalidStatus.id} must be ROWS_APPLIED before ${stage}; found ${invalidStatus.status}.`,
+    );
+  }
+  return batches;
+}
+
 export async function markImportBatchesMaterialized(batchIds: string[], note?: string) {
   const uniqueIds = uniqueBatchIds(batchIds);
   if (uniqueIds.length === 0) return;
 
-  const batches = note
-    ? await prisma.importBatch.findMany({ where: { id: { in: uniqueIds } }, select: { id: true, notes: true } })
-    : [];
-  if (!note) {
-    await prisma.importBatch.updateMany({
-      where: { id: { in: uniqueIds } },
-      data: { status: "MATERIALIZED", errorMessage: null },
-    });
-    return;
-  }
-  await prisma.$transaction(
-    batches.map((batch) =>
-      prisma.importBatch.update({
+  await prisma.$transaction(async (tx) => {
+    const batches = await requireCompleteRowsAppliedCohort(tx, uniqueIds, "finalization");
+    for (const batch of batches) {
+      await tx.importBatch.update({
         where: { id: batch.id },
         data: {
           status: "MATERIALIZED",
           errorMessage: null,
-          notes: appendVisibleImportNote(batch.notes, note).slice(0, 2000),
+          ...(note ? { notes: appendVisibleImportNote(batch.notes, note).slice(0, 2000) } : {}),
         },
-      }),
-    ),
-  );
+      });
+    }
+  });
 }
 
 export async function markImportBatchesMaterializationFailed(batchIds: string[], message: string) {
   const uniqueIds = uniqueBatchIds(batchIds);
   if (uniqueIds.length === 0) return;
 
-  const batches = await prisma.importBatch.findMany({
-    where: { id: { in: uniqueIds } },
-    select: { id: true, notes: true },
-  });
-  await prisma.$transaction(
-    batches.map((batch) =>
-      prisma.importBatch.update({
+  await prisma.$transaction(async (tx) => {
+    const batches = await requireCompleteRowsAppliedCohort(tx, uniqueIds, "failure recovery");
+    for (const batch of batches) {
+      await tx.importBatch.update({
         where: { id: batch.id },
         data: {
           status: "MATERIALIZATION_FAILED",
           errorMessage: message.slice(0, 2000),
           notes: appendVisibleImportNote(
             batch.notes,
-            `Import rows were written, but materialization did not complete: ${message}`,
+            `Import rows were written, but post-import processing did not complete: ${message}`,
           ).slice(0, 2000),
         },
-      }),
-    ),
-  );
+      });
+    }
+  });
 }
 
 export async function markImportBatchesFailed(batchIds: string[], message: string) {

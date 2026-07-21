@@ -40,6 +40,8 @@ const failedImportArtifact = rawImportArchiveIdentity(failedImportRawContent);
 const reconciliationBatchId = "e2e-phase5-reconciliation";
 const reconciliationRawContent = "phase5 deterministic mixed reconciliation\n";
 const reconciliationArtifact = rawImportArchiveIdentity(reconciliationRawContent);
+const rowsAppliedLifecycleBatchId = "e2e-phase15-rows-applied";
+const processingFailedLifecycleBatchId = "e2e-phase15-processing-failed";
 const reconciliationAccounting: ImportAccounting = {
   version: 1,
   kind: "executions",
@@ -158,6 +160,53 @@ async function cleanupFailedImportHistoryCohort() {
 async function cleanupReconciliationHistory() {
   await prisma.importBatch.deleteMany({ where: { id: reconciliationBatchId } });
   await prisma.importArtifact.deleteMany({ where: { storageKey: reconciliationArtifact.rawStorageKey } });
+}
+
+async function cleanupLifecycleHistory() {
+  await prisma.importBatch.deleteMany({
+    where: { id: { in: [rowsAppliedLifecycleBatchId, processingFailedLifecycleBatchId] } },
+  });
+}
+
+async function seedLifecycleHistory() {
+  await cleanupLifecycleHistory();
+  const importedAt = new Date();
+  await prisma.importBatch.createMany({
+    data: [
+      {
+        id: rowsAppliedLifecycleBatchId,
+        filename: "phase15-rows-applied-review.csv",
+        fileType: "executions",
+        status: "ROWS_APPLIED",
+        importedAt,
+        rowsSeen: 2,
+        rowsImported: 2,
+        rowsSkipped: 0,
+        cohortId: "e2e-phase15-rows-applied-cohort",
+        sourceId: "e2e-phase15-rows-applied-source",
+        sourceFilename: "phase15-rows-applied-review.csv",
+        cohortRole: "MEMBER",
+        notes: "Rows are durable and waiting for post-import processing.",
+      },
+      {
+        id: processingFailedLifecycleBatchId,
+        filename: "phase15-processing-failed-review.csv",
+        fileType: "flex-trades",
+        status: "MATERIALIZATION_FAILED",
+        importedAt,
+        rowsSeen: 3,
+        rowsImported: 3,
+        rowsSkipped: 0,
+        cohortId: "e2e-phase15-processing-failed-cohort",
+        sourceId: "e2e-phase15-processing-failed-source",
+        sourceFilename: "phase15-processing-failed-review.csv",
+        sourceSection: "trades",
+        cohortRole: "MEMBER",
+        errorMessage: "Final import status update failed: deterministic Phase 15 fixture.",
+        notes: "Import rows were written, but post-import processing did not complete.",
+      },
+    ],
+  });
 }
 
 async function seedReconciliationHistory() {
@@ -711,6 +760,42 @@ test("import route exposes upload controls and durable import history", async ({
   await expect(page.getByText("Showing Melbourne")).toBeVisible();
 
   expect(browserErrors).toEqual([]);
+});
+
+test("import lifecycle statuses remain truthful across import and mobile settings", async ({ page }) => {
+  const browserErrors = collectBrowserErrors(page);
+  const baselineFailures = await prisma.importBatch.count({ where: { status: "MATERIALIZATION_FAILED" } });
+
+  try {
+    await seedLifecycleHistory();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await signIn(page);
+    await gotoReady(page, "/import");
+
+    await expect(page.getByTestId(`import-history-status-${rowsAppliedLifecycleBatchId}`)).toHaveText("Rows applied");
+    await expect(page.getByTestId(`import-history-status-${processingFailedLifecycleBatchId}`)).toHaveText(
+      "Processing failed",
+    );
+    await expect(page.getByTestId(`import-history-batch-${processingFailedLifecycleBatchId}`)).toContainText(
+      "post-import processing did not complete",
+    );
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await gotoReady(page, "/settings");
+    await expect(page.getByTestId(`import-history-status-${rowsAppliedLifecycleBatchId}`)).toHaveText("Rows applied");
+    await expect(page.getByTestId(`import-history-status-${processingFailedLifecycleBatchId}`)).toHaveText(
+      "Processing failed",
+    );
+    await expect(page.getByText("Post-Import Processing Failures").locator("..")).toContainText(
+      String(baselineFailures + 1),
+    );
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    expect(browserErrors).toEqual([]);
+  } finally {
+    await cleanupLifecycleHistory();
+  }
 });
 
 test("import and settings show the same failed cohort with truthful rollback roles", async ({ page }) => {

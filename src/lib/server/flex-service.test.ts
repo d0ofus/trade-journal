@@ -7,6 +7,7 @@ import {
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { prisma } from "@/lib/prisma";
 import { runFlexImport } from "@/lib/server/flex-service";
+import { markImportBatchesMaterializationFailed } from "@/lib/server/import-service";
 
 function mockFlexStatement(csv: string) {
   const responses = [
@@ -200,7 +201,13 @@ describe("runFlexImport lifecycle guardrails", () => {
     try {
       const absent = await seedOpenPosition(accountCode, absentSymbol, 7);
 
-      const result = await runFlexImport({ token: "token", queryId: "query", baseUrl: "https://flex.example.test" });
+      const result = await runFlexImport(
+        { token: "token", queryId: "query", baseUrl: "https://flex.example.test" },
+        {
+          refreshExecutionAnalytics: async () => undefined,
+          refreshClosedTrades: async () => undefined,
+        },
+      );
 
       const positionBatch = await prisma.importBatch.findFirstOrThrow({
         where: { rawSha256: identity.rawSha256, fileType: "flex-positions" },
@@ -229,4 +236,107 @@ describe("runFlexImport lifecycle guardrails", () => {
       await cleanupRawImport(identity.rawSha256);
     }
   }, 20_000);
+
+  dbIt("retains committed Flex rows and marks the cohort failed when materialization fails", async () => {
+    const marker = Date.now();
+    const accountCode = `TEST-FLEX-MAT-${marker}`;
+    const symbol = `TFM${String(marker).slice(-6)}`;
+    const csv = [
+      "Trades",
+      "ClientAccountID,DateTime,Symbol,Exchange,AssetClass,Buy/Sell,Quantity,TradePrice,IBCommission,Currency,TradeID",
+      `${accountCode},2026-01-02 10:00:00,${symbol},NASDAQ,STK,BUY,1,10,0.5,USD,FLEX-MAT-${marker}`,
+    ].join("\n");
+    const identity = rawImportArchiveIdentity(csv);
+    mockFlexStatement(csv);
+
+    try {
+      await expect(
+        runFlexImport(
+          { token: "token", queryId: "query", baseUrl: "https://flex.example.test" },
+          {
+            refreshExecutionAnalytics: async () => {
+              throw new Error("phase15 analytics refresh unavailable");
+            },
+          },
+        ),
+      ).rejects.toThrow("phase15 analytics refresh unavailable");
+
+      const batch = await prisma.importBatch.findFirstOrThrow({ where: { rawSha256: identity.rawSha256 } });
+      const execution = await prisma.execution.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol } },
+      });
+      const artifact = await prisma.importArtifact.findUnique({ where: { storageKey: identity.rawStorageKey } });
+
+      expect(batch.status).toBe("MATERIALIZATION_FAILED");
+      expect(batch.errorMessage).toContain("Materialization refresh failed");
+      expect(batch.rowsImported).toBe(1);
+      expect(execution).not.toBeNull();
+      expect(artifact?.content).toBe(csv);
+    } finally {
+      const account = await prisma.account.findUnique({ where: { ibkrAccount: accountCode } });
+      if (account) await prisma.account.delete({ where: { id: account.id } });
+      await prisma.instrument.deleteMany({ where: { symbol } });
+      await cleanupRawImport(identity.rawSha256);
+    }
+  });
+
+  dbIt("recovers Flex final status failures instead of stranding rows applied", async () => {
+    const marker = Date.now();
+    const accountCode = `TEST-FLEX-FINAL-${marker}`;
+    const symbol = `TFF${String(marker).slice(-6)}`;
+    const csv = [
+      "Trades",
+      "ClientAccountID,DateTime,Symbol,Exchange,AssetClass,Buy/Sell,Quantity,TradePrice,IBCommission,Currency,TradeID",
+      `${accountCode},2026-01-02 10:00:00,${symbol},NASDAQ,STK,BUY,1,10,0.5,USD,FLEX-FINAL-${marker}`,
+      "Positions",
+      "ClientAccountID,Symbol,Exchange,AssetClass,ReportDate,Quantity,AvgCost,UnrealizedPnl,Currency",
+      `${accountCode},${symbol},NASDAQ,STK,2026-01-02,1,10,0,USD`,
+    ].join("\n");
+    const identity = rawImportArchiveIdentity(csv);
+    mockFlexStatement(csv);
+
+    try {
+      await expect(
+        runFlexImport(
+          { token: "token", queryId: "query", baseUrl: "https://flex.example.test" },
+          {
+            refreshExecutionAnalytics: async () => undefined,
+            refreshClosedTrades: async () => undefined,
+            importLifecycle: {
+              markMaterialized: async () => {
+                throw new Error("phase15 final status unavailable");
+              },
+              markMaterializationFailed: markImportBatchesMaterializationFailed,
+            },
+          },
+        ),
+      ).rejects.toThrow("phase15 final status unavailable");
+
+      const batches = await prisma.importBatch.findMany({
+        where: { rawSha256: identity.rawSha256 },
+        orderBy: { fileType: "asc" },
+      });
+      const execution = await prisma.execution.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol } },
+      });
+      const position = await prisma.position.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol } },
+      });
+      const artifact = await prisma.importArtifact.findUnique({ where: { storageKey: identity.rawStorageKey } });
+
+      expect(batches).toHaveLength(2);
+      expect(new Set(batches.map((batch) => batch.cohortId))).toEqual(new Set([batches[0].cohortId]));
+      expect(batches.every((batch) => batch.status === "MATERIALIZATION_FAILED")).toBe(true);
+      expect(batches.every((batch) => batch.errorMessage?.includes("Final import status update failed"))).toBe(true);
+      expect(batches.every((batch) => batch.notes?.includes("post-import processing did not complete"))).toBe(true);
+      expect(execution).not.toBeNull();
+      expect(position).not.toBeNull();
+      expect(artifact?.content).toBe(csv);
+    } finally {
+      const account = await prisma.account.findUnique({ where: { ibkrAccount: accountCode } });
+      if (account) await prisma.account.delete({ where: { id: account.id } });
+      await prisma.instrument.deleteMany({ where: { symbol } });
+      await cleanupRawImport(identity.rawSha256);
+    }
+  });
 });

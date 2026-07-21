@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildMaterializationSourceSignature, getExecutionAnalyticsSourceSnapshot } from "@/lib/server/materialization-watermarks";
+import {
+  buildInstrumentSourceSignature,
+  buildMaterializationSourceSignature,
+  getExecutionAnalyticsSourceSnapshot,
+} from "@/lib/server/materialization-watermarks";
 
 describe("buildMaterializationSourceSignature", () => {
   it("changes when position snapshots change even if executions do not", () => {
@@ -33,8 +37,21 @@ describe("buildMaterializationSourceSignature", () => {
         executionMaxUpdatedAt: "2026-06-25T01:00:00.000Z",
         positionSnapshotCount: 0,
         positionSnapshotMaxUpdatedAt: null,
+        instrumentCount: 0,
+        instrumentSignature: null,
       }),
     );
+  });
+
+  it("changes when canonical instrument fields change", () => {
+    const base = buildInstrumentSourceSignature([
+      { id: "inst-a", symbol: "AAPL", exchange: "NASDAQ", assetType: "STOCK", currency: "USD" },
+    ]);
+    const corrected = buildInstrumentSourceSignature([
+      { id: "inst-a", symbol: "AAPL", exchange: "NASDAQ", assetType: "STOCK", currency: "AUD" },
+    ]);
+
+    expect(corrected).not.toBe(base);
   });
 
   it("includes position snapshots in execution analytics source freshness", async () => {
@@ -51,6 +68,11 @@ describe("buildMaterializationSourceSignature", () => {
           _max: { updatedAt: new Date("2026-06-25T02:00:00.000Z") },
         }),
       },
+      instrument: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "inst-a", symbol: "AAPL", exchange: "NASDAQ", assetType: "STOCK", currency: "USD" },
+        ]),
+      },
     } as unknown as Parameters<typeof getExecutionAnalyticsSourceSnapshot>[0];
 
     await expect(getExecutionAnalyticsSourceSnapshot(db)).resolves.toEqual({
@@ -58,6 +80,10 @@ describe("buildMaterializationSourceSignature", () => {
       executionMaxUpdatedAt: new Date("2026-06-25T01:00:00.000Z"),
       positionSnapshotCount: 2,
       positionSnapshotMaxUpdatedAt: new Date("2026-06-25T02:00:00.000Z"),
+      instrumentCount: 1,
+      instrumentSignature: buildInstrumentSourceSignature([
+        { id: "inst-a", symbol: "AAPL", exchange: "NASDAQ", assetType: "STOCK", currency: "USD" },
+      ]),
     });
   });
 });

@@ -13,13 +13,12 @@ import {
   createImportSourceId,
   importParsedFilesAtomic,
   ImportRejectedError,
-  markImportBatchesMaterializationFailed,
-  markImportBatchesMaterialized,
   recordFailedImportCohort,
   type FailedImportCohortItem,
   type ImportParsedFileResult,
   type PositionSnapshotImportMode,
 } from "@/lib/server/import-service";
+import { finalizeAppliedImportBatches } from "@/lib/server/import-lifecycle";
 
 type ImportPreview = {
   filename: string;
@@ -544,23 +543,14 @@ export async function POST(req: NextRequest) {
         if (item.refreshClosedTrades) shouldRefreshClosedTrades = true;
       }
 
-      if (shouldRefreshClosedTrades) {
-        try {
+      await finalizeAppliedImportBatches({
+        batchIds: results.map((result) => result.batchId),
+        materialize: async () => {
+          if (!shouldRefreshClosedTrades) return;
           await refreshMaterializedExecutionAnalytics();
           await refreshMaterializedClosedTrades();
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Materialization refresh failed.";
-          await markImportBatchesMaterializationFailed(results.map((result) => result.batchId), message);
-          throw error;
-        }
-      }
-      try {
-        await markImportBatchesMaterialized(results.map((result) => result.batchId));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Import batches were written but could not be marked materialized.";
-        await markImportBatchesMaterializationFailed(results.map((result) => result.batchId), message);
-        throw error;
-      }
+        },
+      });
 
       const totalDurationMs = Math.max(1, Date.now() - commitStartedAtMs);
       const totalRowsImported = results.reduce((sum, result) => sum + result.rowsImported, 0);

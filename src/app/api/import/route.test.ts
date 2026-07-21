@@ -371,4 +371,54 @@ describe("/api/import route", () => {
       });
     }
   });
+
+  dbIt("retains committed multipart rows and artifacts when materialization fails", async () => {
+    const marker = Date.now();
+    const accountCode = `ROUTE-MAT-${marker}`;
+    const executionSymbol = `RMX${String(marker).slice(-6)}`;
+    const positionSymbol = `RMP${String(marker).slice(-6)}`;
+    const executionFilename = `route-materialization-executions-${marker}.csv`;
+    const positionFilename = `route-materialization-positions-${marker}.csv`;
+    const executionContent = executionCsv(accountCode, executionSymbol);
+    const positionContent = positionCsv(accountCode, positionSymbol, "2026-06-20");
+    const filenames = [executionFilename, positionFilename];
+    const rawContents = [executionContent, positionContent];
+    mocks.refreshMaterializedExecutionAnalytics.mockRejectedValueOnce(
+      new Error("phase15 multipart materialization unavailable"),
+    );
+
+    try {
+      const { POST } = await import("./route");
+      const response = await POST(
+        importRequest({ executionFilename, executionContent, positionFilename, positionContent }),
+      );
+      const batches = await prisma.importBatch.findMany({
+        where: { filename: { in: filenames } },
+        include: { rawArtifact: true },
+      });
+      const execution = await prisma.execution.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: executionSymbol } },
+      });
+      const position = await prisma.position.findFirst({
+        where: { account: { ibkrAccount: accountCode }, instrument: { symbol: positionSymbol } },
+      });
+
+      expect(response.status).toBe(500);
+      expect((await response.json()).error).toContain("phase15 multipart materialization unavailable");
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.status === "MATERIALIZATION_FAILED")).toBe(true);
+      expect(batches.every((batch) => batch.cohortId === batches[0].cohortId)).toBe(true);
+      expect(batches.every((batch) => batch.rawArtifact !== null)).toBe(true);
+      expect(batches.every((batch) => batch.errorMessage?.includes("Materialization refresh failed"))).toBe(true);
+      expect(execution).not.toBeNull();
+      expect(position).not.toBeNull();
+    } finally {
+      await cleanupRouteImportScenario({
+        accountCode,
+        symbols: [executionSymbol, positionSymbol],
+        filenames,
+        rawContents,
+      });
+    }
+  });
 });

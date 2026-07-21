@@ -170,7 +170,10 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
             <HealthItem label="Journal Charts" value={health.journalChartCount.toLocaleString()} />
             <HealthItem label="Candle Rows" value={health.marketCandleCount.toLocaleString()} testId="storage-health-candle-rows" />
             <HealthItem label="Failed / Rolled Back Imports" value={health.failedImportBatchCount.toLocaleString()} />
-            <HealthItem label="Materialization Failures" value={health.materializationFailedImportBatchCount.toLocaleString()} />
+            <HealthItem
+              label="Post-Import Processing Failures"
+              value={health.materializationFailedImportBatchCount.toLocaleString()}
+            />
             <HealthItem label="Imports With Unapplied Rows" value={health.skippedImportBatchCount.toLocaleString()} />
             <HealthItem label="Parser Row Errors" value={health.importRowErrorCount.toLocaleString()} />
             <HealthItem label="Inline Screenshots" value={health.inlineScreenshotCount.toLocaleString()} />

@@ -2,12 +2,14 @@ import {
   createImportCohortContext,
   createImportSourceId,
   importParsedFilesAtomic,
-  markImportBatchesMaterializationFailed,
-  markImportBatchesMaterialized,
   recordFailedImportAttempt,
   type ImportParsedFileInput,
   type ImportParsedFileResult,
 } from "@/lib/server/import-service";
+import {
+  finalizeAppliedImportBatches,
+  type ImportLifecycleDependencies,
+} from "@/lib/server/import-lifecycle";
 import { refreshMaterializedClosedTrades } from "@/lib/server/closed-trades-materialized";
 import { refreshMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
 import { parseFlexStatementCsv } from "@/lib/import/ibkr-flex";
@@ -21,6 +23,12 @@ interface FlexRunInput {
   queryId: string;
   baseUrl?: string;
 }
+
+export type FlexRunDependencies = {
+  importLifecycle?: ImportLifecycleDependencies;
+  refreshExecutionAnalytics?: typeof refreshMaterializedExecutionAnalytics;
+  refreshClosedTrades?: typeof refreshMaterializedClosedTrades;
+};
 
 interface FlexResponse {
   status?: string;
@@ -129,7 +137,7 @@ export async function pullFlexStatementCsv(input: FlexRunInput) {
   throw new Error("Timed out waiting for IBKR Flex statement generation.");
 }
 
-export async function runFlexImport(input?: Partial<FlexRunInput>) {
+export async function runFlexImport(input?: Partial<FlexRunInput>, dependencies: FlexRunDependencies = {}) {
   const token = input?.token ?? process.env.IBKR_FLEX_TOKEN;
   const queryId = input?.queryId ?? process.env.IBKR_FLEX_QUERY_ID;
 
@@ -232,16 +240,16 @@ export async function runFlexImport(input?: Partial<FlexRunInput>) {
     }
   }
 
-  try {
-    await refreshMaterializedExecutionAnalytics();
-    await refreshMaterializedClosedTrades();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Materialization refresh failed.";
-    await markImportBatchesMaterializationFailed(batchIds, message);
-    throw error;
-  }
-
-  await markImportBatchesMaterialized(batchIds);
+  await finalizeAppliedImportBatches(
+    {
+      batchIds,
+      materialize: async () => {
+        await (dependencies.refreshExecutionAnalytics ?? refreshMaterializedExecutionAnalytics)();
+        await (dependencies.refreshClosedTrades ?? refreshMaterializedClosedTrades)();
+      },
+    },
+    dependencies.importLifecycle,
+  );
 
   return {
     trades: tradesResult,

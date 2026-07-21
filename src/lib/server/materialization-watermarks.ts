@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 type DbClient = Prisma.TransactionClient | PrismaClient;
@@ -12,6 +13,8 @@ export type MaterializationSourceSnapshot = {
   executionMaxUpdatedAt: Date | null;
   positionSnapshotCount?: number;
   positionSnapshotMaxUpdatedAt?: Date | null;
+  instrumentCount?: number;
+  instrumentSignature?: string;
 };
 
 function isoOrNull(value?: Date | null) {
@@ -24,6 +27,8 @@ export function buildMaterializationSourceSignature(snapshot: MaterializationSou
     executionMaxUpdatedAt: isoOrNull(snapshot.executionMaxUpdatedAt),
     positionSnapshotCount: snapshot.positionSnapshotCount ?? 0,
     positionSnapshotMaxUpdatedAt: isoOrNull(snapshot.positionSnapshotMaxUpdatedAt),
+    instrumentCount: snapshot.instrumentCount ?? 0,
+    instrumentSignature: snapshot.instrumentSignature ?? null,
   });
 }
 
@@ -31,11 +36,33 @@ function sourceCountsJson(snapshot: MaterializationSourceSnapshot) {
   return JSON.stringify({
     executions: snapshot.executionCount,
     positionSnapshots: snapshot.positionSnapshotCount ?? 0,
+    instruments: snapshot.instrumentCount ?? 0,
   });
 }
 
+export function buildInstrumentSourceSignature(
+  instruments: Array<{
+    id: string;
+    symbol: string;
+    exchange: string | null;
+    assetType: string;
+    currency: string;
+  }>,
+) {
+  const canonical = instruments
+    .map((instrument) => [
+      instrument.id,
+      instrument.symbol,
+      instrument.exchange,
+      instrument.assetType,
+      instrument.currency,
+    ])
+    .sort(([left], [right]) => String(left).localeCompare(String(right)));
+  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
 export async function getExecutionAnalyticsSourceSnapshot(db: DbClient): Promise<MaterializationSourceSnapshot> {
-  const [executionSource, positionSnapshotSource] = await Promise.all([
+  const [executionSource, positionSnapshotSource, instruments] = await Promise.all([
     db.execution.aggregate({
       _count: { _all: true },
       _max: { updatedAt: true },
@@ -44,6 +71,10 @@ export async function getExecutionAnalyticsSourceSnapshot(db: DbClient): Promise
       _count: { _all: true },
       _max: { updatedAt: true },
     }),
+    db.instrument.findMany({
+      select: { id: true, symbol: true, exchange: true, assetType: true, currency: true },
+      orderBy: { id: "asc" },
+    }),
   ]);
 
   return {
@@ -51,11 +82,13 @@ export async function getExecutionAnalyticsSourceSnapshot(db: DbClient): Promise
     executionMaxUpdatedAt: executionSource._max.updatedAt,
     positionSnapshotCount: positionSnapshotSource._count._all,
     positionSnapshotMaxUpdatedAt: positionSnapshotSource._max.updatedAt,
+    instrumentCount: instruments.length,
+    instrumentSignature: buildInstrumentSourceSignature(instruments),
   };
 }
 
 export async function getClosedTradesSourceSnapshot(db: DbClient): Promise<MaterializationSourceSnapshot> {
-  const [executionSource, positionSnapshotSource] = await Promise.all([
+  const [executionSource, positionSnapshotSource, instruments] = await Promise.all([
     db.execution.aggregate({
       _count: { _all: true },
       _max: { updatedAt: true },
@@ -64,6 +97,10 @@ export async function getClosedTradesSourceSnapshot(db: DbClient): Promise<Mater
       _count: { _all: true },
       _max: { updatedAt: true },
     }),
+    db.instrument.findMany({
+      select: { id: true, symbol: true, exchange: true, assetType: true, currency: true },
+      orderBy: { id: "asc" },
+    }),
   ]);
 
   return {
@@ -71,6 +108,8 @@ export async function getClosedTradesSourceSnapshot(db: DbClient): Promise<Mater
     executionMaxUpdatedAt: executionSource._max.updatedAt,
     positionSnapshotCount: positionSnapshotSource._count._all,
     positionSnapshotMaxUpdatedAt: positionSnapshotSource._max.updatedAt,
+    instrumentCount: instruments.length,
+    instrumentSignature: buildInstrumentSourceSignature(instruments),
   };
 }
 
