@@ -26,18 +26,55 @@
 # misc
 .DS_Store
 *.pem
-/.vscode/settings.json
+*.key
+*.p12
+*.pfx
+/.vscode/
+/.idea/
 
 # local database/runtime files
-/prisma/*.db
-/prisma/*.db-*
-/prisma/*.sqlite
-/prisma/*.sqlite-*
-/prisma/*.sqlite3
-/prisma/*.sqlite3-*
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.sql
+*.sql.gz
+*.bak
+*.backup
+!/prisma/migrations/*/migration.sql
+*.zip
+*.7z
+*.rar
+*.tar
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.zst
 
 # sensitive application exports
 trade-journal-backup-*.json
+/backups/
+/exports/
+/screenshots/
+/artifacts/
+*.har
+*.trace.zip
+junit*.xml
+
+# brokerage exports; only reviewed synthetic fixtures are tracked
+*.csv
+*.tsv
+*.xls
+*.xlsx
+!/fixtures/sample-ibkr-executions.csv
+!/fixtures/sample-ibkr-flex.csv
+!/fixtures/sample-ibkr-full-statement.csv
+!/fixtures/sample-ibkr-positions.csv
+!/fixtures/sample-ibkr-snapshots.csv
 
 # debug
 npm-debug.log*
