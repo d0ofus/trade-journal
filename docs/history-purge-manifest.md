@@ -1,8 +1,8 @@
 # Git History Purge Manifest
 
-Status: **REAL REWRITE PLAN ONLY - PHASE 17 EXTERNAL REHEARSAL COMPLETE**
+Status: **REAL REWRITE PLAN ONLY - PHASE 18 READINESS VERIFIED, PHASE 19 HOLD**
 
-This document prepares a separately approved real rewrite. Phase 16 sanitizes the current tree, and Phase 17 proves the procedure in an external disposable mirror only. Neither phase rewrites source/remote refs, deletes source capture refs, expires source reflogs, prunes source objects, force-pushes, rotates credentials, invalidates old clones, or mutates any remote.
+This document prepares a separately approved real rewrite. Phase 16 sanitizes the current tree, and Phase 17 proves the procedure in an external disposable mirror before being packaged locally as unpushed commit `4b1fef7c3b260798262e24037859a1663e7b6ea0`. Phase 18 adds verified fail-closed readiness checks and a separate candidate-only rehearsal; its redacted results are in `docs/history-purge-readiness.md`. None of these phases rewrites source/remote refs, deletes source capture refs, expires source reflogs, prunes source objects, force-pushes, rotates credentials, invalidates old clones, or mutates any remote.
 
 ## Evidence Boundary
 
@@ -95,7 +95,7 @@ Materialize the exact approved ref list as repeated `--ref` arguments to the his
 
 Export these files directly from Git blob objects at the packaged checkpoint and verify the raw bytes after writing. Do not rely on `git archive` plus the Windows system `tar`: the Phase 17 probe converted LF blob bytes to CRLF during extraction. Canonical and raw SHA-256 values must both match, and every restored entry must retain mode `100644`.
 
-Before filtering, export these sanitized files from the approved Phase 16 tree into encrypted access-controlled storage outside contaminated Git history:
+Before filtering, export this 13-file verification set from packaged Phase 17 commit `4b1fef7c3b260798262e24037859a1663e7b6ea0` into access-controlled storage outside contaminated Git history:
 
 ```text
 .env.example
@@ -115,7 +115,7 @@ TODO.md
 
 `src/lib/server/sample-data.ts` remains in the rewrite path set because it exists in contaminated history, but it is intentionally absent from the clean restoration set.
 
-The canonical Phase 16 restoration digests are:
+The canonical packaged Phase 17 verification digests are:
 
 | Clean path | Canonical SHA-256 |
 | --- | --- |
@@ -130,10 +130,16 @@ The canonical Phase 16 restoration digests are:
 | `prisma/seed.js` | `36db340cae99ecafd5b0b0b4956e22f958c1e49e13e8b7213364bf4a14ec20e6` |
 | `src/lib/import/ibkr-flex.test.ts` | `639211ae7ee6e42b8ea20755bb3c753b5043b9e09bfe48fdaf33e2e37459d2c3` |
 | `src/lib/import/ibkr-parser.test.ts` | `50faaffd81080df1369d035c3c01fc2e7ea99721673ce375adc54b96b10ee666` |
-| `README.md` | `ff2b1cbc507f2f81199bfaeb9922c39d998ad5e6b20e0872fc76ca930b86d47b` |
-| `TODO.md` | `71a26ed441abca99bf09d987b8ffb6c4b6e79faf3716409ae7de45474be567da` |
+| `README.md` | `d3881a9232f0eac273dbbc2ba3efe82b85c60bb88845f128efc402908ec5be5a` |
+| `TODO.md` | `212ac9505243fc9da6c31eb0f3d050cc0949a63edafad42c3fbbeb346f0f04d9` |
 
-Export all 13 files from the packaged Git tree, not from newline-converted worktree files. Record each raw SHA-256 and mode in the private evidence log; all Phase 16 modes are `100644`, and each packaged raw digest currently equals its canonical digest above. Verify them again immediately before execution. The five financial-fixture hashes must also match `scripts/repository-safety/allowlist.mjs`. After filtering, restore the files only onto the explicitly approved restoration branch, verify every digest and mode, run both repository safety gates, and create one clearly labeled post-rewrite restoration commit. Never retain a contaminated backup branch or tag in the rewritten repository.
+Export all 13 files from the packaged Git tree, not from newline-converted worktree files. Record each raw SHA-256 and mode in the private evidence log; all modes are `100644`, and each packaged raw digest currently equals its canonical digest above. Verify them again immediately before execution. The five financial-fixture hashes must also match `scripts/repository-safety/allowlist.mjs`. Twelve paths are removed by the filter and re-added only on the explicitly approved product branch; `fixtures/sample-ibkr-full-statement.csv` is not in the removal set and is verification-only. Verify all 13 final digests and modes, run both repository safety gates, and create one clearly labeled post-rewrite restoration commit for the 12 re-added paths. Never retain a contaminated backup branch or tag in the rewritten repository.
+
+### Phase 18 Candidate Mapping
+
+The disposable Phase 18 candidate may explicitly map the rewritten and restored `workstation-uplift` tip to candidate `main`, retain `workstation-uplift` as a candidate-only verification alias, and keep the former rewritten `main` only in access-controlled evidence and rollback bundles. Candidate `HEAD` points to `main`; remote-tracking refs are not outbound branches; the current platform capture ref receives only its exact private candidate-mirror disposition. This is a rehearsal mapping, not approval to update the remote. Phase 19 remains on HOLD until the repository owner approves the exact production mapping and outbound refspec.
+
+The dependency-free cutover preflight accepts only a private approval-ledger path, its independently supplied SHA-256, and an optional JSON-output flag. It performs inspection-only Git operations, binds the source baseline and final clean candidate as separate attestations, validates exact refs/mapping/tool/restoration/bundle/scanner evidence, and requires time-bounded freeze and responsibility acknowledgements. A passing preflight never grants push authorization.
 
 ## Approval Checklist
 
@@ -149,6 +155,7 @@ Export all 13 files from the packaged Git tree, not from newline-converted workt
 ### Real Rewrite Preconditions
 
 - [ ] Identify the remote owner and enumerate branches, tags, pull-request refs, hidden/tool refs, forks, deployment mirrors, CI caches, artifact stores, and backups.
+- [ ] Approve whether rewritten `workstation-uplift` replaces remote `main`, whether a public workstation alias remains, and the exact non-mirror outbound refspec with old-object leases.
 - [ ] Freeze pushes, merges, imports, Flex/cron jobs, and deployments for the rewrite window.
 - [ ] Create the clean restoration set and private digest ledger outside contaminated history.
 - [ ] Privately determine whether the historical SQLite database or any database URL held live credentials or user data; decide notification and rotation requirements without adding values to logs or tickets.

@@ -1,9 +1,11 @@
 # Phase 17 History Purge Rehearsal Evidence
 
-Status: **REHEARSAL COMPLETE - PHASE 17 PACKAGING APPROVAL REQUIRED**
+Status: **REHEARSAL COMPLETE - PACKAGED LOCALLY AND UNPUSHED**
 
 Date: 2026-07-21
 Source checkpoint: packaged Phase 16 commit `346a62587c37def252c143de380edba6ed4580ec`
+
+Packaging note: the scanner, tests, and this redacted Phase 17 evidence were subsequently packaged in local commit `4b1fef7c3b260798262e24037859a1663e7b6ea0`. That later commit is intentionally not substituted for the historical source checkpoint above, and it has not been pushed.
 
 This report contains only aggregate counts, rule names, reachability classes, and evidence digests. It contains no matched values, old/new object IDs, private ref names, identity values, database URLs, credentials, or private evidence paths.
 
@@ -96,4 +98,4 @@ Only `trade_journal_phase17_test` was created, reset, migrated, seeded, and used
 
 ## Approval Boundary
 
-`Approve Phase 17 packaging` authorizes staging and committing only the reviewed Phase 17 tooling and redacted documentation. It does not authorize a real history rewrite, source ref/reflog deletion, source garbage collection, push, force-push, merge, deployment, credential rotation, or production/normal-database mutation.
+Phase 17 packaging approval was exercised only for the reviewed scanner, tests, and redacted documentation in local commit `4b1fef7`. It did not authorize and was not followed by a real history rewrite, source ref/reflog deletion, source garbage collection, push, force-push, merge, deployment, credential rotation, or production/normal-database mutation.
