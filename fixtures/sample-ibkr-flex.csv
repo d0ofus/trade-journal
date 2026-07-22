@@ -1,0 +1,13 @@
+Trades
+Account,Date/Time,Symbol,Exchange,Asset Type,Side,Quantity,Price,Currency,Order ID,Strategy
+DEMO-IMPORT,06/19/2026 09:35:00,DEMOA,NASDAQ,STOCK,BUY,5,100.00,USD,DEMO-FLEX-1,demo-opening-range
+DEMO-IMPORT,06/19/2026 10:05:00,DEMOA,NASDAQ,STOCK,SELL,5,104.00,USD,DEMO-FLEX-2,demo-opening-range
+
+Positions
+Account,Symbol,Exchange,Asset Type,Quantity,Avg Cost,Unrealized PnL,Currency
+DEMO-IMPORT,DEMOB,NASDAQ,STOCK,3,50.00,6.00,USD
+
+Commissions
+Order ID,Commission,Fees
+DEMO-FLEX-1,0.50,0.05
+DEMO-FLEX-2,0.50,0.05
