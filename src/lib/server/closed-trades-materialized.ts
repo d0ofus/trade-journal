@@ -8,7 +8,7 @@ import {
   writeMaterializationWatermark,
 } from "@/lib/server/materialization-watermarks";
 import { planClosedTradeRefresh } from "@/lib/stats/closed-trade-materialization-plan";
-import { computeClosedTradeGroups } from "@/lib/stats/closed-trades";
+import { computeClosedTradeGroups, type ClosedTradeGroup } from "@/lib/stats/closed-trades";
 import {
   buildOpeningPositionMap,
   openingPositionKey,
@@ -16,6 +16,7 @@ import {
 } from "@/lib/stats/opening-positions";
 
 const CLOSED_TRADES_REFRESH_LOCK_KEY = 76_384_211;
+const CLOSED_TRADE_UPSERT_CHUNK_SIZE = 500;
 
 function chunked<T>(rows: T[], size: number) {
   const chunks: T[][] = [];
@@ -23,6 +24,87 @@ function chunked<T>(rows: T[], size: number) {
     chunks.push(rows.slice(index, index + size));
   }
   return chunks;
+}
+
+export async function upsertMaterializedClosedTradeGroups(
+  tx: Prisma.TransactionClient,
+  groups: ClosedTradeGroup[],
+) {
+  for (const chunk of chunked(groups, CLOSED_TRADE_UPSERT_CHUNK_SIZE)) {
+    const now = new Date();
+    const rows = chunk.map(
+      (group) => Prisma.sql`(
+        ${group.groupKey},
+        ${group.accountId},
+        ${group.instrumentId},
+        ${group.symbol},
+        ${group.side},
+        ${new Date(group.openTime)},
+        ${new Date(group.closeTime)},
+        ${new Date(`${group.tradeDate}T00:00:00.000Z`)},
+        ${group.totalQuantity},
+        ${group.avgEntryPrice},
+        ${group.avgExitPrice},
+        ${group.grossRealizedPnl},
+        ${group.openingQuantity},
+        ${group.closingQuantity},
+        ${group.realizedPnl},
+        ${group.totalCommission},
+        false,
+        NULL,
+        NULL,
+        ${now},
+        ${now}
+      )`,
+    );
+
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "ClosedTrade" (
+        "groupKey",
+        "accountId",
+        "instrumentId",
+        "symbol",
+        "direction",
+        "openTime",
+        "closeTime",
+        "tradeDate",
+        "totalQuantity",
+        "avgEntryPrice",
+        "avgExitPrice",
+        "grossRealizedPnl",
+        "openingQuantity",
+        "closingQuantity",
+        "realizedPnl",
+        "totalCommission",
+        "isStale",
+        "staleAt",
+        "staleReason",
+        "createdAt",
+        "updatedAt"
+      )
+      VALUES ${Prisma.join(rows)}
+      ON CONFLICT ("groupKey") DO UPDATE SET
+        "accountId" = EXCLUDED."accountId",
+        "instrumentId" = EXCLUDED."instrumentId",
+        "symbol" = EXCLUDED."symbol",
+        "direction" = EXCLUDED."direction",
+        "openTime" = EXCLUDED."openTime",
+        "closeTime" = EXCLUDED."closeTime",
+        "tradeDate" = EXCLUDED."tradeDate",
+        "totalQuantity" = EXCLUDED."totalQuantity",
+        "avgEntryPrice" = EXCLUDED."avgEntryPrice",
+        "avgExitPrice" = EXCLUDED."avgExitPrice",
+        "grossRealizedPnl" = EXCLUDED."grossRealizedPnl",
+        "openingQuantity" = EXCLUDED."openingQuantity",
+        "closingQuantity" = EXCLUDED."closingQuantity",
+        "realizedPnl" = EXCLUDED."realizedPnl",
+        "totalCommission" = EXCLUDED."totalCommission",
+        "isStale" = false,
+        "staleAt" = NULL,
+        "staleReason" = NULL,
+        "updatedAt" = EXCLUDED."updatedAt"
+    `);
+  }
 }
 
 async function buildOpeningByAccountInstrument(
@@ -154,52 +236,7 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
         }
       }
 
-      for (const group of groups) {
-        await tx.closedTrade.upsert({
-          where: { groupKey: group.groupKey },
-          update: {
-            accountId: group.accountId,
-            instrumentId: group.instrumentId,
-            symbol: group.symbol,
-            direction: group.side,
-            openTime: new Date(group.openTime),
-            closeTime: new Date(group.closeTime),
-            tradeDate: new Date(`${group.tradeDate}T00:00:00.000Z`),
-            totalQuantity: group.totalQuantity,
-            avgEntryPrice: group.avgEntryPrice,
-            avgExitPrice: group.avgExitPrice,
-            grossRealizedPnl: group.grossRealizedPnl,
-            openingQuantity: group.openingQuantity,
-            closingQuantity: group.closingQuantity,
-            realizedPnl: group.realizedPnl,
-            totalCommission: group.totalCommission,
-            isStale: false,
-            staleAt: null,
-            staleReason: null,
-          },
-          create: {
-            groupKey: group.groupKey,
-            accountId: group.accountId,
-            instrumentId: group.instrumentId,
-            symbol: group.symbol,
-            direction: group.side,
-            openTime: new Date(group.openTime),
-            closeTime: new Date(group.closeTime),
-            tradeDate: new Date(`${group.tradeDate}T00:00:00.000Z`),
-            totalQuantity: group.totalQuantity,
-            avgEntryPrice: group.avgEntryPrice,
-            avgExitPrice: group.avgExitPrice,
-            grossRealizedPnl: group.grossRealizedPnl,
-            openingQuantity: group.openingQuantity,
-            closingQuantity: group.closingQuantity,
-            realizedPnl: group.realizedPnl,
-            totalCommission: group.totalCommission,
-            isStale: false,
-            staleAt: null,
-            staleReason: null,
-          },
-        });
-      }
+      await upsertMaterializedClosedTradeGroups(tx, groups);
 
       const executionRows = groups.flatMap((group) =>
         group.executions.map((execution, sortOrder) => ({
