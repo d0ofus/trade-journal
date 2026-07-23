@@ -139,19 +139,21 @@ function formatDateLabel(tradeDate: string) {
   }).format(new Date(`${tradeDate}T00:00:00.000Z`));
 }
 
-function formatTimeLabel(value: string) {
+export function formatTimeLabel(value: string) {
   return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: "UTC",
   }).format(new Date(value));
 }
 
-function formatDateTimeLabel(value: string) {
+export function formatDateTimeLabel(value: string) {
   return `${new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
   }).format(new Date(value))} ${formatTimeLabel(value)}`;
 }
 
