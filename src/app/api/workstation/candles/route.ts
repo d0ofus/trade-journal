@@ -3,6 +3,7 @@ import { requireApiSession } from "@/lib/server/api-auth";
 import { isCandleRequestAbort, SAFE_SYMBOL_PATTERN, summarizeCandleResponse } from "@/lib/server/market-candles";
 import { loadWorkstationCandles } from "@/lib/server/workstation-candles";
 import { intervals, Interval } from "@/lib/workstation/types";
+import { workstationCandleSession } from "@/lib/server/workstation-candle-session";
 
 export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
@@ -21,7 +22,8 @@ export async function GET(request: NextRequest) {
     const loaded = await loadWorkstationCandles({ symbol, timeframe: timeframe as Interval, range: { from, to }, limit: limit + 1, signal: request.signal, identity: params.get("identity") });
     const candles = loaded.candles.slice(-limit);
     const metadata = summarizeCandleResponse({ candles, range: { from, to }, limit, loadedCount: loaded.candles.length });
-    return NextResponse.json({ symbol, timeframe, candles, source: loaded.source, provider: loaded.provider, metadata: { ...metadata, coverage: loaded.coverage ?? null, warnings: [...new Set([...metadata.warnings, ...(loaded.warnings ?? [])])] } });
+    const session = await workstationCandleSession(loaded).catch(() => ({ timezone: null, calendar: "unknown", marketHours: "unknown" }));
+    return NextResponse.json({ symbol, timeframe, candles, source: loaded.source, provider: loaded.provider, metadata: { ...metadata, session, coverage: loaded.coverage ?? null, warnings: [...new Set([...metadata.warnings, ...(loaded.warnings ?? [])])] } });
   } catch (error) {
     if (isCandleRequestAbort(error, request.signal)) throw error;
     // Only controlled configuration/provider messages reach the client; never raw fetch errors or credentials.

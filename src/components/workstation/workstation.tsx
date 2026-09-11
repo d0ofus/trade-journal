@@ -106,6 +106,8 @@ import { WorkstationFilterControls } from "./trade-filter-controls";
 import { normalizeWorkstationFilters, tradeFilterError, type TradeFilterControls, type WorkstationTradeFilters } from "@/lib/workstation/trade-filters";
 import "dockview/dist/styles/dockview.css";
 import "./workstation.css";
+import { ResizableChartGrid } from "./resizable-chart-grid";
+import { defaultChartSizing, restoreChartSizing } from "@/lib/workstation/chart-sizing";
 
 const tools: { id: Tool; label: string; icon: typeof Crosshair }[] = [
   { id: "cursor", label: "Select / pan", icon: MousePointer2 },
@@ -417,6 +419,7 @@ export function TradesWorkstation({
           ...defaultPreferences(),
           ...parsed,
           dateLink: restoredDateLink(parsed.dateLink),
+          chartSizing: restoreChartSizing(parsed.chartSizing),
         });
         if (parsed.exportColumns?.length) setColumns(parsed.exportColumns);
       }
@@ -531,6 +534,7 @@ export function TradesWorkstation({
   };
   const focusExecution = (id: string) => {
     setSelectedExecution(id);
+    handles.current.get(activeChart)?.inspect(id);
     const fill = trade.executions.find((e) => e.id === id);
     if (fill) {
       setTargetDate(new Date(fill.time * 1000).toISOString().slice(0, 16));
@@ -759,29 +763,18 @@ export function TradesWorkstation({
         handles.current.get(activeChart) ??
         (handles.current.values().next().value as ChartHandle | undefined);
       if (!selected) throw new Error("Open a chart before exporting.");
-      const canvas =
-        kind === "layout"
-          ? compositeCharts(
-              await Promise.all(
-                preferences.panels.map((p) => {
-                  const handle = handles.current.get(p.id);
-                  if (!handle)
-                    throw new Error(
-                      "A chart is not ready. Open Charts, then retry.",
-                    );
-                  return handle.capture(
-                    exportLight || preferences.theme === "light",
-                    exportScale,
-                  );
-                }),
-              ),
-              exportLight || preferences.theme === "light",
-              preferences.chartArrangement,
-            )
-          : await selected.capture(
-              exportLight || preferences.theme === "light",
-              exportScale,
-            );
+      const layoutNodes = preferences.panels.map(p => root.current?.querySelector<HTMLElement>(`[data-chart-id="${p.id}"]`));
+      const bounds = layoutNodes.map(node => {
+        if (!node) throw new Error("A chart is not ready.");
+        return { x: Number.parseFloat(node.style.left), y: Number.parseFloat(node.style.top), width: Number.parseFloat(node.style.width), height: Number.parseFloat(node.style.height) };
+      });
+      if (kind === "layout" && fullscreenChart) throw new Error("Restore the chart to export the complete layout. Active chart export is available in fullscreen.");
+      const canvas = kind === "layout" ? compositeCharts(await Promise.all(preferences.panels.map((p, i) => {
+        const handle = handles.current.get(p.id);
+        if (!handle) throw new Error("A chart is not ready.");
+        return handle.capture(exportLight || preferences.theme === "light", exportScale, bounds[i]);
+      })), exportLight || preferences.theme === "light", bounds, exportScale)
+        : await selected.capture(exportLight || preferences.theme === "light", exportScale);
       const interval =
           preferences.panels.find((p) => p.id === activeChart)?.interval ??
           "5m",
@@ -908,6 +901,7 @@ export function TradesWorkstation({
     preferences.panels.find((p) => p.id === activeChart) ??
     preferences.panels[0];
   const dayPnl = filtered.reduce((sum, t) => sum + t.pnl, 0);
+  const toggleLabels = () => changePreferences({ labels: preferences.labels === "labels" ? "compact" : "labels" });
   const chartContent = (
     <div className="ws-chart-workspace">
       <div className="ws-chart-toolbar">
@@ -946,6 +940,7 @@ export function TradesWorkstation({
           <Maximize2 size={13} />
           <span>Fit trade</span>
         </button>
+        <button className={`ws-tool-button ${preferences.labels === "labels" ? "active" : ""}`} aria-label={preferences.labels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={preferences.labels === "labels"} title="Toggle labels across all charts; markers remain visible" onClick={toggleLabels}>{preferences.labels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
         <span className="ws-flex-spacer" />
         <details className="ws-date-control">
           <summary
@@ -1074,12 +1069,12 @@ export function TradesWorkstation({
             <Redo2 size={16} />
           </button>
         </div>
-        <div
-          className={`ws-chart-grid ws-charts-${preferences.panels.length} ws-arrangement-${preferences.chartArrangement}`}
-        >
-          {preferences.panels.map((panel) => (
+        <ResizableChartGrid count={preferences.panels.length} arrangement={preferences.chartArrangement} sizing={preferences.chartSizing} onChange={chartSizing => changePreferences({ chartSizing })}>
+          {styles => preferences.panels.map((panel, index) => (
             <TradeChart
               key={`${trade.id}:${panel.id}`}
+              style={styles[index]}
+              onToggleLabels={toggleLabels}
               panel={panel}
               trade={trade}
               adapter={adapter}
@@ -1113,7 +1108,7 @@ export function TradesWorkstation({
               }}
             />
           ))}
-        </div>
+        </ResizableChartGrid>
       </div>
       {chosenDrawing && (
         <div className="ws-drawing-properties">
@@ -1319,15 +1314,10 @@ export function TradesWorkstation({
             </span>
             <span className="ws-flex-spacer" />
             <span>UTC</span>
-            <a
-              href="https://www.tradingview.com/lightweight-charts/"
-              target="_blank"
-              rel="noreferrer"
-            >
-              TradingView
-            </a>
+
           </>
         )}
+        <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer" title="TradingView Lightweight Charts">TradingView</a>
       </div>
     </div>
   );
@@ -1368,7 +1358,7 @@ export function TradesWorkstation({
             trade.executions.filter((e) => replay === null || e.time <= replay)
               .length
           }{" "}
-          fills <b>·</b> Exact timestamps in UTC
+          fills <b>·</b> Stored timestamps in UTC
         </span>
         <div>
           <button
@@ -1438,7 +1428,7 @@ export function TradesWorkstation({
                       {i + 1}
                     </button>
                   </td>
-                  <td>{time(e.time)}</td>
+                  <td title={e.provenance?.timezoneStatus === "verified" ? "Verified source timezone" : "Source timezone unverified; stored time displayed as UTC"}>{new Date(e.time * 1000).toISOString().slice(0, 19).replace("T", " ")}{e.provenance?.timezoneStatus !== "verified" && <span className="ws-diagnostic-warning"> *</span>}</td>
                   <td>
                     <span className={`ws-side ${e.side.toLowerCase()}`}>
                       {e.side === "BUY" ? "↗ Buy" : "↘ Sell"}
@@ -2411,6 +2401,7 @@ export function TradesWorkstation({
               </div>
             ))}
           </div>
+          <button className="ws-tool-button" onClick={() => changePreferences({ chartSizing: defaultChartSizing() })}><RotateCcw size={14} /> Reset chart sizes</button>
           <div className="ws-inline-add">
             <input
               placeholder="Name this workspace"
@@ -2428,6 +2419,8 @@ export function TradesWorkstation({
                       dock: dock.current?.toJSON() ?? null,
                       panels: preferences.panels,
                       list: preferences.list,
+                      chartArrangement: preferences.chartArrangement,
+                      chartSizing: restoreChartSizing(preferences.chartSizing),
                     },
                   },
                 });
@@ -2444,9 +2437,9 @@ export function TradesWorkstation({
                 onClick={() => {
                   const value = preset as Pick<
                     WorkspacePreferences,
-                    "dock" | "panels" | "list"
+                    "dock" | "panels" | "list" | "chartSizing" | "chartArrangement"
                   >;
-                  changePreferences(value);
+                  changePreferences({ ...value, chartSizing: restoreChartSizing(value.chartSizing) });
                   if (value.dock && dock.current) {
                     try {
                       dock.current.fromJSON(value.dock as SerializedDockview);
@@ -2486,7 +2479,7 @@ export function TradesWorkstation({
           <ol className="ws-help-steps">
             <li>
               <b>Find your fills.</b> Select an execution to center it on every
-              chart. Exact timestamps are in the execution table.
+              chart. Stored timestamps and source-timezone status are in the execution details.
             </li>
             <li>
               <b>Add context.</b> Click a timeframe or choose up to four charts.

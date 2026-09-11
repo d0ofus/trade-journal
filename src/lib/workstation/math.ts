@@ -1,4 +1,5 @@
-import { Candle, Drawing, Execution, Interval, Point, seconds } from "./types";
+import { Candle, CandleSession, Drawing, Execution, Interval, Point, seconds } from "./types";
+import { containingExecutionCandle } from "./execution-diagnostics";
 
 export function percentageChange(start: number, end: number): number | null { return start > 0 ? ((end - start) / start) * 100 : null; }
 export function measureText(a: Point, b: Point, bars?: number) {
@@ -21,11 +22,17 @@ export function aggregateCandles(candles: Candle[], interval: Interval): Candle[
   }
   return [...map.values()].sort((a, b) => a.time - b.time);
 }
-export function executionBar(execution: Execution, candles: Candle[], interval: Interval): Candle | undefined {
-  let lo = 0, hi = candles.length - 1, index = -1;
-  while (lo <= hi) { const m = (lo + hi) >> 1; if (candles[m].time <= execution.time) { index = m; lo = m + 1; } else hi = m - 1; }
-  const bar = candles[index];
-  return bar && execution.time < bar.time + seconds[interval] ? bar : undefined;
+export function executionBar(execution: Execution, candles: Candle[], interval: Interval, session?: CandleSession): Candle | undefined {
+  return containingExecutionCandle(execution.time, candles, interval, session);
+}
+export function logicalTimeIndex(time: number, candles: Candle[], interval: Interval) {
+  if (!candles.length) return 0;
+  let lo = 0, hi = candles.length - 1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (candles[mid].time < time) lo = mid + 1; else hi = mid - 1; }
+  if (candles[lo]?.time === time) return lo;
+  if (!lo) return (time - candles[0].time) / seconds[interval];
+  if (lo === candles.length) return lo - 1 + (time - candles[lo - 1].time) / seconds[interval];
+  return lo - 1 + (time - candles[lo - 1].time) / (candles[lo].time - candles[lo - 1].time);
 }
 export function completedCandles(candles: Candle[], interval: Interval, cursor: number | null) { return cursor === null ? candles : candles.filter(bar => bar.time + seconds[interval] <= cursor); }
 export function visibleDrawings(drawings: Drawing[], panelId: string, replay: number | null) { return drawings.filter(d => !d.hidden && (!d.panel || d.panel === panelId) && (replay === null || d.createdAt <= replay)); }

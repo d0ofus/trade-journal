@@ -133,7 +133,7 @@ export class CandleHistory {
         }
       }
       this.publish({
-        result: { candles, source: [...this.sources].join(" / "), warning: [...this.warnings].join(" · "), identity: this.state.result.candles.length ? this.state.result.identity : response.identity },
+        result: { candles, source: [...this.sources].join(" / "), warning: [...this.warnings].join(" · "), identity: this.state.result.candles.length ? this.state.result.identity : response.identity, provider: response.provider ?? this.state.result.provider, session: response.session ?? this.state.result.session },
         range: { from: Math.min(previous.from, range.from), to: Math.max(previous.to, range.to) },
         messages,
       });

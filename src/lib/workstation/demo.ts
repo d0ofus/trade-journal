@@ -1,6 +1,7 @@
 import { aggregateCandles } from "./math";
 import { initialHistoryRange } from "./history";
 import { Candle, RevisionConflict, Trade, TradeDocument, WorkstationAdapter, emptyDocument } from "./types";
+import { diagnosticComparisonCandles, diagnosticDemoTrade } from "./diagnostic-demo";
 
 const day = Date.UTC(2026, 8, 9) / 1000;
 const configurations = [
@@ -19,7 +20,7 @@ export const demoTrades: Trade[] = configurations.map((c, index) => {
     { id: `demo-${index}-2`, time: start + 12 * 60 + 32, side: opening, quantity: c.qty * .4, price: c.entry + .18, commission: 1, fees: .1 },
     { id: `demo-${index}-3`, time: end - 35 * 60 + 4, side: closing, quantity: c.qty * .5, price: c.exit - .3, commission: 1, fees: .2 },
     ...(!c.partial ? [{ id: `demo-${index}-4`, time: end + 11, side: closing, quantity: c.qty * .5, price: c.exit + .3, commission: 1, fees: .2 }] : []),
-  ] as Trade["executions"];
+  ].map(e => ({ ...e, provenance: { timezoneStatus: "verified", timezone: "UTC", source: "Synthetic demo" } })) as Trade["executions"];
   const gross = executions.reduce((sum, e) => sum + (e.side === "SELL" ? 1 : -1) * e.price * e.quantity, 0);
   const fees = executions.reduce((sum, e) => sum + e.commission + e.fees, 0);
   return { id: `demo-${c.symbol.toLowerCase()}`, symbol: c.symbol, name: c.name, account: index === 4 ? "Swing · Demo" : "Momentum · Demo", currency: "USD", direction: c.direction, openTime: start, closeTime: end + 11, entry: c.entry, exit: c.exit, pnl: c.partial ? (c.exit - .3 - c.entry) * c.qty * .5 - fees : gross - fees, fees, quantity: c.qty, openQuantity: c.partial ? c.qty * .5 : 0, executions };
@@ -62,16 +63,19 @@ export function initialDemoDocument(trade: Trade): TradeDocument {
   return doc;
 }
 export const DEMO_PREFIX = "execution-lab:workstation:demo:v1:";
-export function createDemoAdapter(): WorkstationAdapter {
+export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
   return {
     mode: "demo",
-    async load(id) { const trade = demoTrades.find(t => t.id === id); if (!trade) throw new Error("Demo trade not found"); const raw = localStorage.getItem(DEMO_PREFIX + id); if (!raw) return initialDemoDocument(trade); const doc = JSON.parse(raw) as TradeDocument; if (doc.schema !== 1) throw new Error("Unsupported saved demo format. Export your local data before resetting."); return doc; },
+    async load(id) { const trade = trades.find(t => t.id === id); if (!trade) throw new Error("Demo trade not found"); const raw = localStorage.getItem(DEMO_PREFIX + id); if (!raw) return initialDemoDocument(trade); const doc = JSON.parse(raw) as TradeDocument; if (doc.schema !== 1) throw new Error("Unsupported saved demo format. Export your local data before resetting."); return doc; },
     async save(id, doc, revision) { const raw = localStorage.getItem(DEMO_PREFIX + id); const current = raw ? JSON.parse(raw) as TradeDocument : null; if ((current?.revision ?? 0) !== revision) throw new RevisionConflict(); const next = { ...doc, revision: revision + 1, updatedAt: new Date().toISOString() }; localStorage.setItem(DEMO_PREFIX + id, JSON.stringify(next)); return next; },
     async candles(trade, interval, signal, range = initialHistoryRange(trade, interval)) {
       signal?.throwIfAborted();
       // Aggregate before slicing so page boundaries never create partial daily/weekly candles.
-      const candles = aggregateCandles(demoCandles(trade), interval).filter(c => c.time >= range.from && c.time <= range.to);
-      return { candles, warning: "Synthetic candles · UTC · regular session", source: "Demo" };
+      const diagnostic = trade.id === diagnosticDemoTrade.id;
+      const source = diagnostic ? demoCandles(trade).map(c => diagnosticComparisonCandles.find(d => d.time === c.time) ?? c) : demoCandles(trade);
+      const candles = aggregateCandles(source, interval).filter(c => c.time >= range.from && c.time <= range.to);
+      if (diagnostic) return { candles, warning: "Synthetic context with two audited comparison bars · source timezone unverified", source: "Diagnostic fixture", session: { timezone: "UTC", calendar: "utc", marketHours: "unknown" } };
+      return { candles, warning: "Synthetic candles · UTC · regular session", source: "Demo", session: { timezone: "UTC", calendar: "utc", marketHours: "unknown" } };
     },
     reset() { for (const key of Object.keys(localStorage)) if (key.startsWith(DEMO_PREFIX) || key.startsWith("execution-lab:workstation:draft:demo:")) localStorage.removeItem(key); },
   };

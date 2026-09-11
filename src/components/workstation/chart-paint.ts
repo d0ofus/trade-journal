@@ -1,15 +1,15 @@
-import { Candle, Drawing, Interval, Trade, WorkspacePreferences } from "@/lib/workstation/types";
-import { executionBar, measureText, riskReward } from "@/lib/workstation/math";
+import { Candle, CandleSession, Drawing, Interval, Trade, WorkspacePreferences } from "@/lib/workstation/types";
+import { diagnoseExecution } from "@/lib/workstation/execution-diagnostics";
+import { measureText, riskReward } from "@/lib/workstation/math";
 
 export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; x: number; y: number; w: number; h: number };
-export type PaintOptions = { width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
+export type PaintOptions = { width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
 export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
   const hits: Hit[] = [], occupied: { x: number; y: number; w: number; h: number }[] = [];
   const { x, y, plotWidth: w, plotHeight: h } = o;
   // Reserve the in-chart OHLC strip so labels never disappear beneath it.
   const topInset = o.export ? 3 : 24;
-  if (!o.export) occupied.push({ x: 0, y: h - 32, w: 84, h: 32 });
   const label = (text: string, px: number, py: number, color: string, fill = o.light ? "#ffffff" : "#171d2a", maxWidth = 320) => {
     ctx.font = "11px system-ui, sans-serif";
     const width = Math.min(ctx.measureText(text).width + 18, maxWidth);
@@ -68,11 +68,12 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
   }
   if (o.labels !== "hidden") for (let i = 0; i < o.trade.executions.length; i++) {
     const e = o.trade.executions[i]; if (o.replay !== null && e.time > o.replay) continue;
-    const bar = executionBar(e, o.candles, o.interval); if (!bar) continue;
+    const diagnostic = diagnoseExecution(e, o.candles, o.interval, o.session), bar = diagnostic.candle; if (!bar) continue;
     const px = x(bar.time), py = y(e.price); if (px === null || py === null || px < 0 || px > w || py < 0 || py > h) continue;
     const color = e.side === "BUY" ? "#34d399" : "#fb7185", selected = o.selectedExecution === e.id;
     ctx.setLineDash([]); ctx.fillStyle = color; ctx.strokeStyle = o.light ? "#fff" : "#121722"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px, py, selected ? 6 : 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (diagnostic.status === "price-outside") { ctx.strokeStyle = "#eab35f"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, selected ? 9 : 7, 0, Math.PI * 2); ctx.stroke(); }
     if (o.labels === "compact") { hits.push({ id: e.id, kind: "execution", x: px - 9, y: py - 9, w: 18, h: 18 }); continue; }
     const text = `${i + 1}  ${e.side === "BUY" ? "Buy" : "Sell"} ${e.quantity} @ ${e.price.toFixed(2)}`;
     ctx.font = "11px system-ui, sans-serif";

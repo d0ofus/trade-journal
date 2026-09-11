@@ -18,10 +18,10 @@ export function createApplicationAdapter(): WorkstationAdapter {
       const key = `${trade.symbol}:${interval}:${from}:${to}:${identity ?? "initial"}`, cached = cache.get(key); if (cached && Date.now() - cached.at < 300000) return cached.data;
       const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, from: String(from), to: String(to), limit: "30000" });
       if (identity) params.set("identity", identity);
-      const response = await request<{ candles: Candle[]; source?: string; provider?: { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean }; metadata?: { warnings?: string[]; truncated?: boolean } }>(`/api/workstation/candles?${params}`, { signal });
+      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { signal });
       signal?.throwIfAborted();
       const providerLabel = response.provider ? `${response.provider.provider.toUpperCase()}${response.provider.feed ? ` ${response.provider.feed.toUpperCase()}` : ""} / ${response.provider.adjustment}${response.provider.cached ? " / cache" : ""}${response.provider.fallback ? " / fallback" : ""}` : response.source ?? "Provider";
-      const result = { identity: response.provider?.identity, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || "Provider history · UTC", truncated: response.metadata?.truncated ?? false };
+      const result = { identity: response.provider?.identity, provider: response.provider, session: response.metadata?.session, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || "Provider history · UTC", truncated: response.metadata?.truncated ?? false };
       // Failed, empty, partial, and truncated pages must remain retryable immediately.
       if (result.candles.length && !result.truncated && !response.metadata?.warnings?.length) {
         if (cache.size >= 48) cache.delete(cache.keys().next().value!);

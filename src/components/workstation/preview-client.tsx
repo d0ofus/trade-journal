@@ -6,10 +6,12 @@ import { TradesWorkstation } from "./workstation";
 import { ApplicationShell } from "@/components/application-shell";
 import { tradeFilterError, tradeFilterHref, type WorkstationTradeFilters } from "@/lib/workstation/trade-filters";
 import { filterDemoTrades } from "@/lib/workstation/demo-filters";
-export function WorkstationPreview({ initialId, journalView = false, filters = {} }: { initialId?: string; journalView?: boolean; filters?: WorkstationTradeFilters }) {
-  const adapter = useMemo(() => createDemoAdapter(), []);
+import { diagnosticDemoTrade } from "@/lib/workstation/diagnostic-demo";
+export function WorkstationPreview({ initialId, journalView = false, filters = {}, diagnostic = false }: { initialId?: string; journalView?: boolean; filters?: WorkstationTradeFilters; diagnostic?: boolean }) {
+  const samples = useMemo(() => diagnostic ? [diagnosticDemoTrade, ...demoTrades] : demoTrades, [diagnostic]);
+  const adapter = useMemo(() => createDemoAdapter(samples), [samples]);
   const router = useRouter(), pathname = usePathname();
   const [pending, startTransition] = useTransition();
-  const trades = useMemo(() => tradeFilterError(filters) ? [] : filterDemoTrades(demoTrades, filters), [filters]);
-  return <ApplicationShell mode="demo"><TradesWorkstation trades={trades} adapter={adapter} initialId={initialId} journalView={journalView} filterControls={{ applied: filters, pending, apply: (next, selected) => startTransition(() => router.replace(tradeFilterHref(pathname, next, selected), { scroll: false })) }} /></ApplicationShell>;
+  const trades = useMemo(() => tradeFilterError(filters) ? [] : filterDemoTrades(samples, filters), [filters, samples]);
+  return <ApplicationShell mode="demo"><TradesWorkstation trades={trades} adapter={adapter} initialId={initialId ?? (diagnostic ? diagnosticDemoTrade.id : undefined)} journalView={journalView} filterControls={{ applied: filters, pending, apply: (next, selected) => startTransition(() => { const href = new URL(tradeFilterHref(pathname, next, selected), window.location.origin); if (diagnostic) href.searchParams.set("scenario", "execution-mismatch"); router.replace(href.pathname + href.search, { scroll: false }); }) }} /></ApplicationShell>;
 }

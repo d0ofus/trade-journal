@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   AutoscaleInfo,
   CandlestickSeries,
@@ -11,7 +11,7 @@ import {
   LineSeries,
   UTCTimestamp,
 } from "lightweight-charts";
-import { Crosshair, Download, Maximize2, Minimize2, Info, X } from "lucide-react";
+import { Crosshair, Download, Maximize2, Minimize2, Info, X, Eye, EyeOff } from "lucide-react";
 import {
   Candle,
   ChartPanel,
@@ -29,6 +29,7 @@ import {
   completedCandles,
   executionBar,
   movingAverage,
+  logicalTimeIndex,
   visibleDrawings,
 } from "@/lib/workstation/math";
 import {
@@ -47,8 +48,9 @@ import {
 
 export type ChartHandle = {
   focus: () => void;
+  inspect: (id: string) => void;
   cancel: () => void;
-  capture: (light?: boolean, scale?: number) => Promise<HTMLCanvasElement>;
+  capture: (light?: boolean, scale?: number, frame?: { width: number; height: number }) => Promise<HTMLCanvasElement>;
   fit: () => void;
   reveal: (target: ChartDateTarget) => void;
   view: () => HistoryRange | null;
@@ -76,7 +78,12 @@ type Props = {
   fullscreen: boolean;
   onFullscreen: () => void;
   fullscreenTitle: string;
+  style?: CSSProperties;
+  onToggleLabels: () => void;
 };
+import { diagnoseExecution, executionDiagnosticSummary } from "@/lib/workstation/execution-diagnostics";
+import { ExecutionDetails } from "./execution-details";
+
 const asTime = (time: number) => time as UTCTimestamp;
 
 export function TradeChart(props: Props) {
@@ -103,6 +110,8 @@ export function TradeChart(props: Props) {
   const failure = historyState?.failed === "initial" ? historyState.error : "";
   const [reload, setReload] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const historyResult = useRef(result); historyResult.current = result;
   const [visibleWindow, setVisibleWindow] = useState<HistoryRange | null>(null);
   const [visibleBars, setVisibleBars] = useState(0);
   const clickGesture = useRef<{
@@ -268,7 +277,7 @@ export function TradeChart(props: Props) {
         textColor: "#7e899e",
         fontFamily: "Inter, system-ui, sans-serif",
         fontSize: 10,
-        attributionLogo: true,
+        attributionLogo: false,
       },
       grid: {
         vertLines: { color: "#1b2230" },
@@ -385,6 +394,7 @@ export function TradeChart(props: Props) {
       candles: bars.current,
       interval: latest.current.panel.interval,
       labels: latest.current.preferences.labels,
+      session: historyResult.current.session,
       selected: latest.current.selected,
       selectedExecution: latest.current.selectedExecution,
       light,
@@ -512,6 +522,7 @@ export function TradeChart(props: Props) {
         { time: detail.time } as never,
         renderedData.current,
         latest.current.panel.interval,
+        historyResult.current.session,
       );
       syncing = true;
       try {
@@ -611,6 +622,7 @@ export function TradeChart(props: Props) {
       paint();
     };
     p.register(p.panel.id, {
+      inspect: (id) => setInspectedId(id),
       focus: () => container.current?.focus({ preventScroll: true }),
       cancel: () => {
         pending.current = null;
@@ -668,16 +680,17 @@ export function TradeChart(props: Props) {
       async capture(
         light = latest.current.preferences.theme === "light",
         scale = 2,
+        frame?: { width: number; height: number },
       ) {
         if (!dataReady.current || !bars.current.length)
           throw new Error("Wait for chart candles before exporting.");
         const frozen = options(true, light),
           snapshotBars = [...bars.current],
           prefs = latest.current.preferences;
-        const width = dimensions.current.width,
-          height = dimensions.current.height,
-          header = 44,
-          footer = 26;
+        const header = 30, footer = 62;
+        const width = frame?.width ?? dimensions.current.width, height = frame ? Math.max(60, frame.height - header - footer) : dimensions.current.height;
+        const frozenTrade = latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
+        const priceRange = candles.priceScale().getVisibleRange();
         const container = document.createElement("div");
         container.style.cssText = `position:fixed;left:-100000px;top:0;width:${width * scale}px;height:${height * scale}px;`;
         document.body.appendChild(container);
@@ -691,7 +704,7 @@ export function TradeChart(props: Props) {
             },
             textColor: light ? "#526077" : "#8996ad",
             fontSize: 10 * scale,
-            attributionLogo: true,
+            attributionLogo: false,
           },
           grid: {
             vertLines: { color: light ? "#edf0f5" : "#1b2230" },
@@ -754,6 +767,7 @@ export function TradeChart(props: Props) {
           });
           const range = api.timeScale().getVisibleLogicalRange();
           if (range) clone.timeScale().setVisibleLogicalRange(range);
+          if (priceRange) { cs.priceScale().setAutoScale(false); cs.priceScale().setVisibleRange(priceRange); }
           await new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
           );
@@ -774,23 +788,26 @@ export function TradeChart(props: Props) {
           ctx.save();
           ctx.translate(0, header * scale);
           ctx.scale(scale, scale);
-          paintChart(ctx, frozen);
+          paintChart(ctx, { ...frozen, width, height, plotWidth: clone.timeScale().width() / scale, plotHeight: height - clone.timeScale().height() / scale, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / scale; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / scale; } });
           ctx.restore();
           ctx.scale(scale, scale);
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
           ctx.font = "600 13px system-ui";
           ctx.fillText(
-            `${latest.current.trade.symbol} / ${latest.current.panel.interval} · ${latest.current.trade.direction} · UTC${latest.current.replay !== null ? " · REPLAY" : ""}`,
+            `${frozenTrade.symbol} / ${frozenInterval} · ${frozenTrade.direction} · UTC${frozen.replay !== null ? " · REPLAY" : ""}`,
             16,
-            26,
+            21,
           );
           ctx.fillStyle = light ? "#526077" : "#8996ad";
           ctx.font = "10px system-ui";
-          ctx.fillText(
-            `${latest.current.adapter.mode === "demo" ? "Synthetic demo data" : "Provider history"} · ${new Date().toISOString()} · Execution Lab · TradingView Lightweight Charts`,
-            12,
-            height + header + 17,
-          );
+          const comparisons = frozenTrade.executions.filter(e => frozen.replay === null || e.time <= frozen.replay).map(e => diagnoseExecution(e, snapshotBars, frozenInterval, frozenHistory.session));
+          const lines = [
+            'Fills: ' + comparisons.filter(d => d.status === 'missing').length + ' missing / ' + comparisons.filter(d => d.status === 'price-outside').length + ' price mismatch',
+            !comparisons.length ? 'No visible executions / UTC display' : comparisons.some(d => d.timezoneUnverified || d.periodUnverified) ? 'Source or candle time basis unverified / UTC display' : 'Execution source timezone verified / UTC display',
+            (frozenHistory.provider?.provider ?? frozenHistory.source) + ' / adjustment: ' + (frozenHistory.provider?.adjustment ?? 'unverified'),
+            'TradingView Lightweight Charts / tradingview.com',
+          ];
+          lines.forEach((line, i) => ctx.fillText(line, 8, height + header + 12 + i * 13, width - 16));
           return output;
         } finally {
           clone.remove();
@@ -1154,33 +1171,31 @@ export function TradeChart(props: Props) {
       Math.hypot(event.clientX - click.x, event.clientY - click.y) > 4
     )
       return;
-    if (click.execution) props.onExecution(click.execution);
+    if (click.execution) { setInspectedId(click.execution); props.onExecution(click.execution); }
     else if (click.target) props.onDateClick(click.target);
   };
   const visibleExecutions = props.trade.executions.filter(
     (e) => props.replay === null || e.time <= props.replay,
   );
-  const missing = loading
-    ? 0
-    : visibleExecutions.filter(
-        (e) => !executionBar(e, data, props.panel.interval),
-      ).length;
+  const diagnostics = loading ? [] : visibleExecutions.map(e => diagnoseExecution(e, data, props.panel.interval, result.session));
+  const missing = diagnostics.filter(d => d.status === "missing").length;
+  const outside = diagnostics.filter(d => d.status === "price-outside").length;
+  const inspected = diagnostics.find(d => d.execution.id === inspectedId);
   const last =
     (visibleWindow && data.findLast((bar) => bar.time <= visibleWindow.to)) ||
     data[data.length - 1];
-  const coverageLabel =
-    missing > 0
-      ? `${missing} execution${missing === 1 ? "" : "s"} outside candle coverage`
-      : `${visibleExecutions.length} executions · candle aligned`;
+  const coverageLabel = loading ? "Loading execution comparison" : executionDiagnosticSummary(diagnostics);
   const historyWarning =
     !!historyState?.error ||
-    missing > 0 ||
+    missing > 0 || outside > 0 || diagnostics.some(d => d.timezoneUnverified || d.periodUnverified) ||
     (!!result.warning && props.adapter.mode !== "demo");
   return (
     <section
       ref={container}
       tabIndex={0}
       data-chart-id={props.panel.id}
+      style={props.fullscreen ? undefined : props.style}
+      data-label-mode={props.preferences.labels}
       onFocusCapture={props.onActive}
       onPointerDownCapture={(event) => {
         props.onActive();
@@ -1210,6 +1225,7 @@ export function TradeChart(props: Props) {
           </span>
         </div>
         <div className="ws-chart-actions">
+          {props.fullscreen && <button aria-label={props.preferences.labels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={props.preferences.labels === "labels"} title="Toggle labels across all charts; markers remain visible" onClick={props.onToggleLabels}>{props.preferences.labels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}</button>}
           <button
             className={`ws-history-toggle ${historyWarning ? "ws-history-warning" : ""}`}
             aria-label={`Chart history ${props.panel.id}`}
@@ -1221,8 +1237,8 @@ export function TradeChart(props: Props) {
             <span>
               {historyState?.loading
                 ? "Loading"
-                : missing
-                  ? "Coverage"
+                : missing || outside
+                  ? "Check fills"
                   : result.source || "History"}
             </span>
           </button>
@@ -1324,6 +1340,8 @@ export function TradeChart(props: Props) {
           </div>
         )}
       </div>
+      {props.fullscreen && <a className="ws-fullscreen-credit" href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>}
+      {inspected && <ExecutionDetails diagnostic={inspected} history={result} onClose={() => setInspectedId(null)} />}
       {historyOpen && (
         <div
           ref={historyPopover}
@@ -1418,8 +1436,9 @@ export function TradeChart(props: Props) {
             </span>
             <span className="ws-chart-coverage">{coverageLabel}</span>
           </div>
+          <div className="ws-diagnostic-list">{diagnostics.map(d => <button key={d.execution.id} onClick={() => { setHistoryOpen(false); setInspectedId(d.execution.id); props.onExecution(d.execution.id); }}>{d.execution.side} {d.execution.quantity} @ {d.execution.price.toFixed(2)} <span>{d.status === "price-outside" ? "Price outside candle" : d.status === "missing" ? "Missing candle" : "Time bucket / price match"}</span></button>)}</div>
           <p className="ws-history-help">
-            Pan near an edge to load more. Execution times are exact; markers
+            Pan near an edge to load more. Stored times display in UTC; markers
             use their containing candle.
             {props.replay !== null
               ? " Future bars and executions are concealed during replay."

@@ -21,24 +21,15 @@ export function reviewCsv(rows: { trade: Trade; doc: TradeDocument; url: string 
 export function downloadBlob(blob: Blob, name: string) { const url = URL.createObjectURL(blob), anchor = document.createElement("a"); anchor.href = url; anchor.download = name; document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000); }
 export async function canvasBlob(canvas: HTMLCanvasElement) { return new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("PNG export failed")), "image/png")); }
 export async function copyChart(canvas: HTMLCanvasElement, name: string): Promise<boolean> { const blob = await canvasBlob(canvas); try { if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") throw new Error("Image clipboard unavailable"); await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); return true; } catch { downloadBlob(blob, name); return false; } }
-export function compositeCharts(images: HTMLCanvasElement[], light = false, arrangement: "left" | "top" = "left") {
-  if (images.length === 3) {
-    const [main, second] = images, gap = 16;
-    const positions = arrangement === "top"
-      ? [{ x: 0, y: 0 }, { x: 0, y: main.height + gap }, { x: second.width + gap, y: main.height + gap }]
-      : [{ x: 0, y: 0 }, { x: main.width + gap, y: 0 }, { x: main.width + gap, y: second.height + gap }];
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(...images.map((image, i) => positions[i].x + image.width));
-    canvas.height = Math.max(...images.map((image, i) => positions[i].y + image.height));
-    const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = light ? "#edf0f5" : "#0b0f17"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    images.forEach((image, i) => ctx.drawImage(image, positions[i].x, positions[i].y));
-    return canvas;
-  }
-  const columns = images.length > 1 ? 2 : 1, rows = Math.ceil(images.length / columns), width = Math.max(...images.map(i => i.width)), height = Math.max(...images.map(i => i.height)), gap = 16;
-  const canvas = document.createElement("canvas"); canvas.width = columns * width + (columns - 1) * gap; canvas.height = rows * height + (rows - 1) * gap;
-  const ctx = canvas.getContext("2d")!; ctx.fillStyle = light ? "#edf0f5" : "#0b0f17"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  images.forEach((image, index) => { const factor = Math.min(width / image.width, height / image.height); ctx.drawImage(image, (index % columns) * (width + gap), Math.floor(index / columns) * (height + gap), image.width * factor, image.height * factor); }); return canvas;
+export function compositeCharts(images: HTMLCanvasElement[], light = false, positions: { x: number; y: number; width: number; height: number }[], scale = 2) {
+  if (!images.length || positions.length !== images.length || positions.some(p => ![p.x, p.y, p.width, p.height].every(Number.isFinite) || p.width <= 0 || p.height <= 0)) throw new Error("Invalid chart layout for export.");
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(Math.max(...positions.map(p => p.x + p.width)) * scale);
+  canvas.height = Math.ceil(Math.max(...positions.map(p => p.y + p.height)) * scale);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = light ? "#edf0f5" : "#0b0f17"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  images.forEach((image, i) => { const p = positions[i]; ctx.drawImage(image, p.x * scale, p.y * scale, p.width * scale, p.height * scale); });
+  return canvas;
 }
 export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; url: string }[], columns: string[], headers: Record<string, string>) {
   const files: Record<string, Uint8Array> = { "reviews.csv": strToU8(reviewCsv(rows, columns, headers)) };

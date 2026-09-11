@@ -24,6 +24,7 @@ export type Execution = {
   price: number;
   commission: number;
   fees: number;
+  provenance?: { timezoneStatus: "verified" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null };
 };
 export type Trade = {
   id: string;
@@ -126,6 +127,7 @@ export type WorkspacePreferences = {
   bottomCollapsed: boolean;
   focusMode: boolean;
   chartArrangement: "left" | "top";
+  chartSizing?: import("./chart-sizing").ChartSizing;
   dateLink: "independent" | "target";
   dock: unknown;
   presets: Record<string, unknown>;
@@ -140,7 +142,10 @@ export type CandleResult = {
   warning: string;
   source: string;
   truncated?: boolean;
+  provider?: { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
+  session?: CandleSession;
 };
+export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "unknown" };
 export interface WorkstationAdapter {
   mode: "demo" | "application";
   load(id: string): Promise<TradeDocument>;
