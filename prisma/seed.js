@@ -111,11 +111,9 @@ function mergeCandleOverrides(rows, overrides) {
 }
 
 async function refreshCanonicalMaterializations(accountId) {
-  const [{ prisma: appPrisma }, { refreshMaterializedExecutionAnalytics }, { refreshMaterializedClosedTrades }] = await Promise.all([
-    import("../src/lib/prisma.ts"),
-    import("../src/lib/server/execution-analytics-materialized.ts"),
-    import("../src/lib/server/closed-trades-materialized.ts"),
-  ]);
+  const { prisma: appPrisma } = require("../src/lib/prisma.ts");
+  const { refreshMaterializedExecutionAnalytics } = require("../src/lib/server/execution-analytics-materialized.ts");
+  const { refreshMaterializedClosedTrades } = require("../src/lib/server/closed-trades-materialized.ts");
 
   try {
     await refreshMaterializedExecutionAnalytics();
@@ -157,8 +155,8 @@ function assertMaterializedTrade(trade, expected) {
 }
 
 async function authorizeDemoSeed() {
-  const { authorizeDemoSeedEnvironment } = await import("../src/lib/demo-seed-safety.ts");
-  const { loadDotEnvWithoutOverride } = await import("../src/lib/test-database-safety.ts");
+  const { authorizeDemoSeedEnvironment } = require("../src/lib/demo-seed-safety.ts");
+  const { loadDotEnvWithoutOverride } = require("../src/lib/test-database-safety.ts");
   loadDotEnvWithoutOverride();
   return authorizeDemoSeedEnvironment(process.env);
 }
@@ -302,7 +300,7 @@ async function resetDemoRows({ clearBackupAudits }) {
 
 async function seedDemo(safety) {
   await resetDemoRows(safety);
-  const { expectedUsEquitiesBarStarts } = await import("../src/lib/server/market-session-calendar.ts");
+  const { expectedUsEquitiesBarStarts } = require("../src/lib/server/market-session-calendar.ts");
 
   const account = await prisma.account.create({
     data: {

@@ -1,4 +1,7 @@
 import { Suspense } from "react";
+import { prisma } from "@/lib/prisma";
+import { ApplicationWorkstation } from "@/components/workstation/application-client";
+import { listWorkstationTrades } from "@/lib/server/trade-workstation";
 import { JournalWorkspace } from "@/components/journal-workspace";
 import { PageHeader } from "@/components/ui/page-header";
 import {
@@ -15,6 +18,14 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 export default async function JournalPage(props: { searchParams: SearchParams }) {
   const searchParams = await props.searchParams;
   const entryId = typeof searchParams.entryId === "string" ? searchParams.entryId : null;
+
+  if (entryId && process.env.TRADES_WORKSTATION_ENABLED === "1") {
+    const link = await prisma.journalLink.findFirst({ where: { journalEntryId: entryId, linkType: "REVIEW_SOURCE", targetType: "CLOSED_TRADE" } });
+    if (link?.targetId) {
+      const trades = await listWorkstationTrades({}, link.targetId);
+      return <div className="py-4"><ApplicationWorkstation trades={trades} initialId={link.targetId} journalView /></div>;
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -50,6 +61,7 @@ async function JournalPageContent({ entryId }: { entryId: string | null }) {
       initialSelectedEntryId={selectedEntry?.id ?? null}
       initialTags={tags}
       initialNowIso={initialNowIso}
+      sharedTradeWorkstation={process.env.TRADES_WORKSTATION_ENABLED === "1"}
     />
   );
 }

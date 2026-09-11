@@ -1,3 +1,4 @@
+import { WorkstationShortcutSettings } from "@/components/workstation/shortcut-settings";
 import { FlexRunButton } from "@/components/flex-run-button";
 import { ImportHistoryList } from "@/components/import-history-list";
 import { BackupActions } from "@/components/backup-actions";
@@ -124,6 +125,10 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
         description="Account references, Flex automation, and import history remain backed by the same data sources and routes."
       />
 
+      {process.env.TRADES_WORKSTATION_ENABLED === "1" && <Card id="workstation-shortcuts">
+        <CardHeader><CardTitle>Workstation · Keyboard shortcuts</CardTitle></CardHeader>
+        <CardContent><WorkstationShortcutSettings /></CardContent>
+      </Card>}
       <Card className="overflow-hidden">
         <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">Accounts</CardTitle>

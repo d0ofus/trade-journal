@@ -1,0 +1,5 @@
+"use client";
+import { Drawing } from "@/lib/workstation/types";
+export function DrawingCoordinates({ drawing, onChange }: { drawing: Drawing; onChange: (drawing: Drawing) => void }) {
+  return <details className="ws-coordinate-editor"><summary>Coordinates</summary><div>{drawing.points.map((point, index) => <div key={index}><span>{drawing.tool === "long" || drawing.tool === "short" ? ["Entry", "Target", "Stop"][index] : `Anchor ${index + 1}`}</span><input aria-label={`Anchor ${index + 1} UTC time`} type="datetime-local" step={1} disabled={drawing.locked} value={new Date(point.time * 1000).toISOString().slice(0, 19)} onChange={e => { const time = new Date(`${e.target.value}Z`).getTime() / 1000; if (Number.isFinite(time)) onChange({ ...drawing, points: drawing.points.map((p, i) => index === i ? { ...p, time } : p) }); }} /><input aria-label={`Anchor ${index + 1} price`} type="number" step="any" disabled={drawing.locked} value={point.price} onChange={e => { const price = e.target.valueAsNumber; if (Number.isFinite(price)) onChange({ ...drawing, points: drawing.points.map((p, i) => index === i ? { ...p, price } : p) }); }} /></div>)}</div></details>;
+}

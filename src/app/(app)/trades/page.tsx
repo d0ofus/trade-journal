@@ -8,6 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getClosedTrades, getTrades } from "@/lib/server/queries";
 import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
+import { ApplicationWorkstation } from "@/components/workstation/application-client";
+import { listWorkstationTrades } from "@/lib/server/trade-workstation";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -39,6 +41,11 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
       searchParams.includeStale === "on",
   };
   const selectedGroupKey = typeof searchParams.groupKey === "string" ? searchParams.groupKey : null;
+
+  if (process.env.TRADES_WORKSTATION_ENABLED === "1") {
+    const trades = await listWorkstationTrades(filters, selectedGroupKey);
+    return <div className="py-4"><TradesFilters filters={{ ...filters, groupKey: selectedGroupKey ?? undefined }} /><ApplicationWorkstation trades={trades} initialId={selectedGroupKey} /></div>;
+  }
 
   return (
     <div className="space-y-4 py-4">

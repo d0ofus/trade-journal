@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
   let result:
     | { stale: true }
     | { missing: true }
+    | { workstation: true }
     | { conflict: true; currentUpdatedAt: Date | null }
     | { conflict: false; note: { updatedAt: Date }; tags: string[] | null };
 
@@ -79,8 +80,9 @@ export async function POST(req: NextRequest) {
 
         const existingNote = await tx.closedTradeNote.findUnique({
           where: { groupKey: parsed.data.groupKey },
-          select: { updatedAt: true },
+          select: { updatedAt: true, workstationVersion: true },
         });
+        if (existingNote && existingNote.workstationVersion > 0) return { workstation: true as const };
 
         let note;
         if (existingNote) {
@@ -176,6 +178,8 @@ export async function POST(req: NextRequest) {
       { status: 409 },
     );
   }
+
+  if ("workstation" in result) return NextResponse.json({ error: "This review uses the new workstation. Restore the workstation to continue editing; the legacy editor is read-only for migrated reviews." }, { status: 409 });
 
   if ("missing" in result) {
     return NextResponse.json({ error: "Closed trade not found." }, { status: 404 });

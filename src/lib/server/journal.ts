@@ -675,6 +675,13 @@ export async function updateJournalEntry(
 ) {
   const expectedUpdatedAt = requiredExpectedUpdatedAtFromInput(input, "Journal entry");
   const entry = await prisma.$transaction(async (tx) => {
+    const shared = await tx.journalLink.findFirst({ where: { journalEntryId: id, linkType: "REVIEW_SOURCE", targetType: "CLOSED_TRADE" } });
+    if (shared?.targetId) {
+      // Serialize legacy journal edits against workstation adoption/saves, including flag-off rollback.
+      await lockClosedTradeForReview(tx, shared.targetId);
+      const review = await tx.closedTradeNote.findUnique({ where: { groupKey: shared.targetId }, select: { workstationVersion: true } });
+      if (review && review.workstationVersion > 0) throw new JournalStaleWriteError("Journal entry", expectedUpdatedAt, "This entry uses the shared trade review. Restore the workstation to edit it; the legacy editor is read-only for migrated reviews.");
+    }
     const data = {
         symbol: input.symbol as string | undefined,
         tradeTitle: input.tradeTitle as string | undefined,
