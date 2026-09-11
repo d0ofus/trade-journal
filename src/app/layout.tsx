@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "@/components/application-shell.css";
 
 export const metadata: Metadata = {
   title: "Execution Lab",

@@ -120,6 +120,7 @@ export type WorkspacePreferences = {
   magnet: boolean;
   keepTool: boolean;
   list: boolean;
+  filtersExpanded?: boolean;
   journal: boolean;
   heading: boolean;
   bottomCollapsed: boolean;
@@ -193,6 +194,7 @@ export const defaultPreferences = (): WorkspacePreferences => ({
   magnet: false,
   keepTool: false,
   list: true,
+  filtersExpanded: false,
   journal: true,
   heading: false,
   bottomCollapsed: true,

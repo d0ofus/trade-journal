@@ -6,12 +6,14 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
   const [document, setDocument] = useState<TradeDocument | null>(null);
   const [status, setStatus] = useState("Loading review…");
   const [error, setError] = useState("");
+  const [loadedFor, setLoadedFor] = useState("");
   const state = useRef<{ doc: TradeDocument | null; dirty: boolean; generation: number; job: Promise<boolean> | null; failed: boolean }>({ doc: null, dirty: false, generation: 0, job: null, failed: false });
   const key = `execution-lab:workstation:draft:${adapter.mode}:${id}`;
   const load = useCallback(async (discard = false) => {
     const generation = ++state.current.generation;
     state.current.dirty = false; state.current.failed = false; state.current.doc = null;
-    setDocument(null); setError(""); setStatus("Loading review…");
+    setDocument(null); setLoadedFor(""); setError(""); setStatus(id ? "Loading review…" : "Select a trade");
+    if (!id) return;
     try {
       if (discard) localStorage.removeItem(key);
       const saved = await adapter.load(id);
@@ -21,6 +23,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
       const current = draft ?? saved;
       state.current.doc = current; state.current.dirty = !!draft;
       setDocument(current);
+      setLoadedFor(id);
       if (draft && (draft.revision !== saved.revision || (draft.noteUpdatedAt ?? null) !== (saved.noteUpdatedAt ?? null) || (draft.journalUpdatedAt ?? null) !== (saved.journalUpdatedAt ?? null))) { state.current.failed = true; setError("Recovered draft conflicts with a newer saved review. Export the draft, then reload the saved review."); setStatus("Conflict · draft preserved"); }
       else setStatus(draft ? "Recovered local draft" : adapter.mode === "demo" ? "Saved on this device" : "All changes saved");
     } catch (e) { setError(e instanceof Error ? e.message : "Could not load review"); setStatus("Unable to load"); }
@@ -57,5 +60,5 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
   useEffect(() => { if (!document || !state.current.dirty || state.current.failed) return; const timer = setTimeout(() => void flush(), 700); return () => clearTimeout(timer); }, [document, flush]);
   useEffect(() => { const warn = (event: BeforeUnloadEvent) => { if (state.current.dirty) { event.preventDefault(); event.returnValue = ""; } }; window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn); }, []);
   const retry = useCallback(() => { state.current.failed = false; return flush(); }, [flush]);
-  return { document, change, flush, status, error, retry, reload: () => load(true), getDocument: () => state.current.doc };
+  return { document: loadedFor === id ? document : null, change, flush, status, error, retry, reload: () => load(true), getDocument: () => state.current.doc };
 }
