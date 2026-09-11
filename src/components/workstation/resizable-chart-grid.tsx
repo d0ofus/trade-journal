@@ -9,7 +9,15 @@ export function ResizableChartGrid({ count, arrangement, sizing, onChange, child
   const value = draft ?? restoreChartSizing(sizing), latest = useRef(value);
   useLayoutEffect(() => { latest.current = value; }, [value]);
   const drag = useRef<{ id: number; coordinate: number; divider: Divider; before: ChartSizing } | null>(null);
-  useEffect(() => { const observer = new ResizeObserver(([entry]) => setSize({ width: entry.contentRect.width, height: entry.contentRect.height })); if (host.current) observer.observe(host.current); return () => observer.disconnect(); }, []);
+  useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => {
+      // Fit inside fractional Dockview/zoom bounds instead of rounding past them.
+      const width = Math.floor(entry.contentRect.width), height = Math.floor(entry.contentRect.height);
+      setSize(previous => previous.width === width && previous.height === height ? previous : { width, height });
+    });
+    if (host.current) observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
   const geometry = chartGeometry(size.width, size.height, count, arrangement, value);
   function update(divider: Divider, next: number, commit = false) {
     const changed = restoreChartSizing(latest.current), clamped = Math.max(divider.min, Math.min(divider.max, next));

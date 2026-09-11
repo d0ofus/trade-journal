@@ -2687,10 +2687,17 @@
 }
 
 /* Flat chart geometry keeps chart instances mounted throughout resizing. */
-.ws-chart-grid.ws-resizable-grid { display:block; position:relative; overflow:auto; gap:0; min-width:0; min-height:0; }
+.ws-chart-grid.ws-resizable-grid { display:block; position:relative; overflow:hidden; gap:0; min-width:0; min-height:0; }
+/* Desktop charts fit the viewport. Only stacked charts need scrolling; reserve
+   their gutter so scrollbar appearance cannot change the measured chart width. */
+.ws-chart-grid.ws-resizable-grid[data-stacked] { overflow-x:hidden; overflow-y:auto; scrollbar-gutter:stable; }
 .ws-chart-geometry { position:relative; width:100%; min-height:100%; }
 .ws-chart-divider { position:absolute; z-index:6; background:var(--ws-bg); touch-action:none; user-select:none; outline:none; }
-.ws-chart-divider::before { content:""; position:absolute; inset:-2px; }
+.ws-chart-divider::before { content:""; position:absolute; }
+/* Enlarge only across a divider, never beyond the workspace at its ends. */
+.ws-divider-x::before { inset:0 -2px; }
+.ws-divider-y::before { inset:-2px 0; }
+.ws-resizable-grid[data-stacked] .ws-chart-divider:last-child::before { bottom:0; }
 .ws-divider-x { cursor:col-resize; }
 .ws-divider-y { cursor:row-resize; }
 .ws-chart-divider span { position:absolute; background:var(--ws-border); border-radius:2px; transition:background .12s; }

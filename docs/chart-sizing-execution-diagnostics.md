@@ -56,3 +56,13 @@ The archived timezone-free timestamp cannot verify its original timezone. A time
 Browser coverage is Chromium, including emulated touch and reduced motion; physical mobile devices and other browser engines were not tested. The existing default TypeScript configuration includes unrelated pre-existing test typing failures; the application's configured build checks and workstation validation checks pass.
 
 Individual-chart screenshots work in fullscreen. To export the entire multichart layout, restore the chart from individual fullscreen first; the UI explains this when needed. Workspace Focus supports layout export.
+
+## Scrollbar stability correction — 2026-09-12
+
+The divider's invisible pointer target extended two pixels beyond the workspace. With native scrollbars enabled, this repeatedly changed the measured width/height and resized the charts: 178 size changes across 180 animation frames in the reproduction. Chromium's default headless `--hide-scrollbars` flag concealed the feedback loop in the original browser checks.
+
+Divider targets now extend only across their drag axis and stay within the workspace at their ends. Desktop chart layouts do not scroll; stacked layouts retain vertical scrolling with a stable gutter. Resize measurements fit within fractional pixel bounds and skip unchanged dimensions. The same 180-frame check now records zero size changes and no desktop overflow.
+
+The entire preview browser configuration now enables native scrollbars. Regression tests cover all chart counts, both three-chart arrangements, Focus/fullscreen restoration, fractional layout sizes in both themes, and mobile scrolling/resizing.
+
+Correction verification: **27 preview browser tests and six authenticated production-build browser tests passed**, along with targeted lint, repository safety checks, diff checks and the production build (including application TypeScript). The authenticated tests used the restored isolated local fixture database. [Dark screenshot](../screenshots/chart-scrollbar-fixed-dark.png) · [Light screenshot](../screenshots/chart-scrollbar-fixed-light.png).
