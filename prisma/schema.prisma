@@ -403,6 +403,8 @@ model ClosedTradeNote {
   mistake     String   @default("")
   lesson      String   @default("")
   followUp    String   @default("")
+  workstationJson String?
+  workstationVersion Int @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

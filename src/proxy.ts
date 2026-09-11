@@ -46,6 +46,13 @@ export async function proxy(req: NextRequest) {
 
   const { pathname } = req.nextUrl;
 
+  if (pathname === "/preview/trades" || pathname === "/preview/journal") {
+    if (process.env.NODE_ENV === "development" && process.env.TRADES_WORKSTATION_PREVIEW === "1") {
+      return NextResponse.next();
+    }
+    return new NextResponse("Not found", { status: 404 });
+  }
+
   const isPublic = PUBLIC_PATHS.some((path) => pathname.startsWith(path));
   if (isPublic) {
     return NextResponse.next();

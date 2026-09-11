@@ -657,6 +657,7 @@ export function JournalWorkspace({
   initialReviews,
   initialSelectedEntryId,
   initialTags,
+  sharedTradeWorkstation = false,
 }: {
   initialAnalytics: JournalAnalytics;
   initialEntries: JournalEntry[];
@@ -665,6 +666,7 @@ export function JournalWorkspace({
   initialReviews: JournalReview[];
   initialSelectedEntryId?: string | null;
   initialTags: JournalTagRow[];
+  sharedTradeWorkstation?: boolean;
 }) {
   const stableInitialNowIso = stableIso(initialNowIso);
   const initialSelectedEntry = initialSelectedEntryId
@@ -895,6 +897,10 @@ export function JournalWorkspace({
 
   function selectEntry(entry: JournalEntry, options?: { force?: boolean }) {
     if (!options?.force && !confirmDiscardJournalChanges("open another journal entry")) return false;
+    if (sharedTradeWorkstation && entry.links.some(link => link.linkType === "REVIEW_SOURCE" && link.targetType === "CLOSED_TRADE" && link.targetId)) {
+      window.location.assign(`/journal?entryId=${encodeURIComponent(entry.id)}`);
+      return true;
+    }
     const nextForm = formFromEntry(entry);
     autosaveReadyRef.current = false;
     setJournalConflict(null);

@@ -12,6 +12,12 @@ const config = {
     globals: true,
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // These browser-independent suites use node:test via test:workstation.
+    exclude: [
+      "src/lib/workstation/workstation.test.ts",
+      "src/lib/workstation/history.test.ts",
+      "src/lib/workstation/shortcuts.test.ts",
+    ],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     coverage: {

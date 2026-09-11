@@ -263,6 +263,8 @@ function cacheUnavailableWarning(hasProviderFallback: boolean) {
   return `Candle cache unavailable; ${hasProviderFallback ? "using live provider candles." : "no cached candle fallback available."}`;
 }
 
+export type AlpacaCandleCredentials = { keyId: string; secretKey: string; baseUrl: string; feed: string; adjustment: string };
+
 function alpacaCredentials() {
   const keyId = process.env.ALPACA_API_KEY_ID ?? process.env.ALPACA_API_KEY;
   const secretKey = process.env.ALPACA_API_SECRET_KEY ?? process.env.ALPACA_SECRET_KEY;
@@ -277,6 +279,7 @@ function alpacaCredentials() {
 }
 
 async function readCachedCandles(input: {
+  sources?: string[];
   symbol: string;
   timeframe: CandleTimeframe;
   range: CandleRange;
@@ -288,7 +291,7 @@ async function readCachedCandles(input: {
   const where = {
     symbol: input.symbol,
     timeframe: input.timeframe,
-    source: { in: READABLE_CACHE_SOURCES },
+    source: { in: input.sources ?? READABLE_CACHE_SOURCES },
     time: input.range
       ? {
           gte: new Date(input.range.from * 1000),
@@ -315,7 +318,8 @@ async function readCachedCandles(input: {
   }));
 }
 
-async function readCachedCandlesWithRetry(input: {
+export async function readCachedCandlesWithRetry(input: {
+  sources?: string[];
   symbol: string;
   timeframe: CandleTimeframe;
   range: CandleRange;
@@ -417,7 +421,7 @@ function chunked<T>(rows: T[], size: number) {
   return chunks;
 }
 
-async function cacheAlpacaCandles(symbol: string, timeframe: CandleTimeframe, candles: Candle[]) {
+async function cacheAlpacaCandles(symbol: string, timeframe: CandleTimeframe, candles: Candle[], source = ALPACA_SOURCE) {
   const rows = dedupeCandles(candles).filter((candle) =>
     [candle.time, candle.open, candle.high, candle.low, candle.close].every(Number.isFinite),
   );
@@ -428,7 +432,7 @@ async function cacheAlpacaCandles(symbol: string, timeframe: CandleTimeframe, ca
       data: chunk.map((candle) => ({
         symbol,
         timeframe,
-        source: ALPACA_SOURCE,
+        source,
         time: new Date(candle.time * 1000),
         open: candle.open,
         high: candle.high,
@@ -447,7 +451,7 @@ async function cacheAlpacaCandles(symbol: string, timeframe: CandleTimeframe, ca
         symbol_timeframe_time_source: {
           symbol,
           timeframe,
-          source: ALPACA_SOURCE,
+          source,
           time: new Date(candle.time * 1000),
         },
       },
@@ -461,7 +465,7 @@ async function cacheAlpacaCandles(symbol: string, timeframe: CandleTimeframe, ca
       create: {
         symbol,
         timeframe,
-        source: ALPACA_SOURCE,
+        source,
         time: new Date(candle.time * 1000),
         open: candle.open,
         high: candle.high,
@@ -489,7 +493,9 @@ function parseAlpacaRows(payload: unknown, symbol: string) {
   });
 }
 
-async function loadAlpacaCandlesForSymbol(input: {
+export async function loadAlpacaCandlesForSymbol(input: {
+  credentials?: AlpacaCandleCredentials;
+  cacheSource?: string;
   symbol: string;
   timeframe: CandleTimeframe;
   range: { from: number; to: number };
@@ -497,7 +503,7 @@ async function loadAlpacaCandlesForSymbol(input: {
   signal?: AbortSignal;
 }) {
   throwIfCandleRequestAborted(input.signal);
-  const credentials = alpacaCredentials();
+  const credentials = input.credentials ?? alpacaCredentials();
   if (!credentials) return null;
 
   const rows: Candle[] = [];
@@ -541,7 +547,7 @@ async function loadAlpacaCandlesForSymbol(input: {
   throwIfCandleRequestAborted(input.signal);
   let cacheWriteWarning: string | null = null;
   try {
-    await cacheAlpacaCandles(input.symbol, input.timeframe, candles);
+    await cacheAlpacaCandles(input.symbol, input.timeframe, candles, input.cacheSource);
   } catch {
     cacheWriteWarning = "Candle cache update failed; showing live provider candles.";
   }
@@ -554,7 +560,7 @@ async function loadAlpacaCandlesForSymbol(input: {
   };
 }
 
-function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleTimeframe) {
+export function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleTimeframe) {
   const intervalSeconds =
     timeframe === "5m"
       ? 5 * 60
@@ -573,7 +579,7 @@ function normalizedYahooRange(fromRaw: number, toRaw: number, timeframe: CandleT
   return { period1, period2: Math.max(period1 + intervalSeconds, period2) };
 }
 
-function aggregateCandles(rows: Candle[], bucketSeconds: number) {
+export function aggregateCandles(rows: Candle[], bucketSeconds: number) {
   const buckets = new Map<number, Candle[]>();
   for (const row of rows) {
     const bucket = Math.floor(row.time / bucketSeconds) * bucketSeconds;
@@ -598,7 +604,7 @@ function aggregateCandles(rows: Candle[], bucketSeconds: number) {
     });
 }
 
-function trimTrailingDuplicateDailyCandle(rows: Candle[]) {
+export function trimTrailingDuplicateDailyCandle(rows: Candle[]) {
   if (rows.length < 2) return rows;
   const trimmed = [...rows];
   while (trimmed.length >= 2) {
@@ -679,7 +685,7 @@ function yahooSessionProfile(payload: unknown): CandleSessionProfile | null {
     : null;
 }
 
-function parseYahooRows(payload: unknown) {
+export function parseYahooRows(payload: unknown) {
   const result = yahooChartResult(payload);
   const timestamps = result?.timestamp ?? [];
   const quote = result?.indicators?.quote?.[0];

@@ -1,10 +1,11 @@
+import { describe, expect, it } from "vitest";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { buildBackupReadinessManifest, buildImportArtifactBackupManifest } from "@/lib/server/backup-assets";
 import { BACKUP_TABLES, buildBackupTableManifest, type BackupTableKey } from "@/lib/server/backup-contract";
 import { BackupRestorePlanError, buildBackupRestorePlan } from "@/lib/server/backup-restore";
 
 function emptyTablePayload() {
-  return Object.fromEntries(BACKUP_TABLES.map((table) => [table.key, []])) as Record<BackupTableKey, unknown[]>;
+  return Object.fromEntries(BACKUP_TABLES.map((table) => [table.key, [] as unknown[]])) as Record<BackupTableKey, unknown[]>;
 }
 
 function buildPayload(tables: Partial<Record<BackupTableKey, unknown[]>> = {}) {
@@ -151,6 +152,13 @@ function planTable(plan: ReturnType<typeof buildBackupRestorePlan>, key: BackupT
 }
 
 describe("backup restore planning", () => {
+  it("retains the versioned workstation document in backup restore rows", () => {
+    const payload = compactGraphPayload();
+    const document = JSON.stringify({ schema: 1, review: { notes: "Formatted notes" }, drawings: [], evidence: [], legacy: { journal: "Preserved original" } });
+    Object.assign(payload.closedTradeNotes[0] as object, { workstationVersion: 7, workstationJson: document });
+    const rows = planTable(buildBackupRestorePlan(payload), "closedTradeNotes").rows;
+    expect(rows[0]).toMatchObject({ workstationVersion: 7, workstationJson: document });
+  });
   it("converts a validated backup graph into ordered Prisma-ready restore rows", () => {
     const plan = buildBackupRestorePlan(compactGraphPayload());
 
