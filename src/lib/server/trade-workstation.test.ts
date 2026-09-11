@@ -46,6 +46,13 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("keeps selected deep links out of strict filtered results while allowing explicit journal links", async () => {
+    const key = await fixture(false);
+    expect(await listWorkstationTrades({ symbol: "NO_MATCH", account: key }, key)).toEqual([]);
+    expect((await listWorkstationTrades({ symbol: "NO_MATCH", account: key }, key, true)).map(t => t.id)).toEqual([key]);
+    expect((await listWorkstationTrades({ account: key, from: "2024-09-10", to: "2024-09-10" }, key)).map(t => t.id)).toEqual([key]);
+    expect(await listWorkstationTrades({ account: key, from: "2024-09-11" }, key)).toEqual([]);
+  });
   it.each([
     { direction: "LONG", totalQuantity: 10, openingQuantity: 0, closingQuantity: 0 },
     { direction: "LONG", totalQuantity: 30, openingQuantity: 100, closingQuantity: 100 },

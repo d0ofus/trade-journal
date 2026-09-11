@@ -42,13 +42,11 @@ import {
   Flag,
   Grid2X2,
   ImageIcon,
-  LayoutDashboard,
   ListFilter,
   LockKeyhole,
   Magnet,
   Maximize2,
   Minus,
-  Moon,
   MousePointer2,
   MoveUpRight,
   PanelLeftClose,
@@ -62,7 +60,6 @@ import {
   Settings2,
   Square,
   Star,
-  Sun,
   Target,
   Trash2,
   TrendingUp,
@@ -103,6 +100,10 @@ import { ChartDateTarget, restoredDateLink } from "@/lib/workstation/date-link";
 import Image from "next/image";
 import { commands, defaultShortcuts, matchCommand, shortcutLabel, typingTarget } from "@/lib/workstation/shortcuts";
 import { ShortcutSettings, useShortcutPreferences } from "./shortcut-settings";
+import { useAppearance } from "@/lib/workstation/appearance";
+import { useApplicationShell } from "@/components/application-shell";
+import { WorkstationFilterControls } from "./trade-filter-controls";
+import { normalizeWorkstationFilters, tradeFilterError, type TradeFilterControls, type WorkstationTradeFilters } from "@/lib/workstation/trade-filters";
 import "dockview/dist/styles/dockview.css";
 import "./workstation.css";
 
@@ -259,12 +260,17 @@ export function TradesWorkstation({
   adapter,
   initialId,
   journalView = false,
+  filterControls,
 }: {
   trades: Trade[];
   adapter: WorkstationAdapter;
   initialId?: string | null;
   journalView?: boolean;
+  filterControls?: TradeFilterControls;
 }) {
+  const appearance = useAppearance(adapter.mode);
+  const setAppearance = appearance.setTheme;
+  const { registerSave, setFocused } = useApplicationShell();
   const shortcuts = useShortcutPreferences(adapter.mode);
   const root = useRef<HTMLDivElement>(null);
   const [fullscreenChart, setFullscreenChart] = useState<string | null>(null);
@@ -289,8 +295,9 @@ export function TradesWorkstation({
       : (trades[0]?.id ?? ""),
   );
   const trade = trades.find((t) => t.id === selectedId) ?? trades[0];
-  const [preferences, setPreferences] = useState(defaultPreferences),
+  const [savedPreferences, setPreferences] = useState(defaultPreferences),
     [loadedPreferences, setLoadedPreferences] = useState(false);
+  const preferences = useMemo(() => ({ ...savedPreferences, theme: appearance.theme }), [savedPreferences, appearance.theme]);
   const prefRef = useRef(preferences);
   prefRef.current = preferences;
   const [targetDate, setTargetDate] = useState(() =>
@@ -305,6 +312,13 @@ export function TradesWorkstation({
   const [query, setQuery] = useState(""),
     [filter, setFilter] = useState("All trades"),
     [checked, setChecked] = useState<string[]>([]);
+  const appliedFilterKey = JSON.stringify(filterControls?.applied ?? {});
+  const [filterDraft, setFilterDraft] = useState<WorkstationTradeFilters>(filterControls?.applied ?? {});
+  const [filterError, setFilterError] = useState("");
+  const [filterBusy, setFilterBusy] = useState(false);
+  const [listDrawer, setListDrawer] = useState(false);
+  const tradeListRef = useRef<HTMLElement>(null);
+  useEffect(() => { setFilterDraft(JSON.parse(appliedFilterKey)); setFilterError(tradeFilterError(JSON.parse(appliedFilterKey))); }, [appliedFilterKey]);
   const [modal, setModal] = useState<
       "export" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
     >(null),
@@ -329,14 +343,16 @@ export function TradesWorkstation({
   const handles = useRef(new Map<string, ChartHandle>()),
     dock = useRef<DockviewApi | null>(null),
     dockDispose = useRef<(() => void) | null>(null);
-  const persistence = useTradeDocument(adapter, selectedId),
+  const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
   const notify = useCallback((message: string) => setNotice(message), []),
     closeModal = useCallback(() => setModal(null), []);
   const changePreferences = useCallback(
-    (patch: Partial<WorkspacePreferences>) =>
-      setPreferences((value) => ({ ...value, ...patch })),
-    [],
+    (patch: Partial<WorkspacePreferences>) => {
+      if (patch.theme && !setAppearance(patch.theme)) setNotice("Appearance could not be saved on this device.");
+      setPreferences((value) => ({ ...value, ...patch }));
+    },
+    [setAppearance],
   );
   const register = useCallback((id: string, handle: ChartHandle | null) => {
     if (handle) handles.current.set(id, handle);
@@ -349,14 +365,49 @@ export function TradesWorkstation({
           `${t.symbol} ${t.name} ${t.account}`
             .toLowerCase()
             .includes(query.toLowerCase()) &&
-          (filter === "All trades" ||
-            (filter === "Long" && t.direction === "LONG") ||
-            (filter === "Short" && t.direction === "SHORT") ||
-            (filter === "Unexported" && !exported[t.id])),
+          (filter === "All trades" || (filter === "Unexported" && !exported[t.id])),
       ),
     [trades, query, filter, exported],
   );
   const preferenceKey = `execution-lab:workstation:preferences:${adapter.mode}:v1`;
+  useEffect(() => registerSave(persistence.flush), [registerSave, persistence.flush]);
+  useEffect(() => { setFocused(!!trade && (preferences.focusMode || !!fullscreenChart)); return () => setFocused(false); }, [setFocused, preferences.focusMode, fullscreenChart, trade]);
+  useEffect(() => {
+    setSelectedId(current => initialId && trades.some(t => t.id === initialId) ? initialId : trades.some(t => t.id === current) ? current : trades[0]?.id ?? "");
+  }, [trades, initialId]);
+  useEffect(() => {
+    // A filtered-out deep link must not keep naming the previous review in the URL.
+    if (!initialId || trades.some(t => t.id === initialId)) return;
+    const url = new URL(window.location.href);
+    if (!url.pathname.endsWith("/trades")) return;
+    if (trade) url.searchParams.set("groupKey", trade.id); else url.searchParams.delete("groupKey");
+    window.history.replaceState({}, "", url);
+  }, [trades, initialId, trade]);
+  useEffect(() => {
+    setSelectedExecution(null); setSelectedDrawing(null); setUndo([]); setRedo([]); setReplay(null); setPlaying(false); setFullscreenChart(null); setTool("cursor");
+  }, [trade?.id]);
+  useEffect(() => {
+    if (!listDrawer || !tradeListRef.current) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const list = tradeListRef.current;
+    const restored: { element: HTMLElement; inert: boolean }[] = [];
+    let child: HTMLElement | null = list;
+    while (child?.parentElement && !child.classList.contains("application-shell")) {
+      for (const sibling of Array.from(child.parentElement.children)) if (sibling !== child && sibling instanceof HTMLElement && !sibling.classList.contains("ws-list-backdrop")) { restored.push({ element: sibling, inert: sibling.inert }); sibling.inert = true; }
+      child = child.parentElement;
+    }
+    list.querySelector<HTMLElement>("button,input")?.focus();
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setListDrawer(false); }
+      if (event.key === "Tab") {
+        const items = Array.from(list.querySelectorAll<HTMLElement>("button:not(:disabled),input:not(:disabled),select:not(:disabled)")).filter(el => el.getClientRects().length);
+        const index = items.indexOf(document.activeElement as HTMLElement);
+        if (items.length && ((event.shiftKey && index <= 0) || (!event.shiftKey && index === items.length - 1))) { event.preventDefault(); items[event.shiftKey ? items.length - 1 : 0].focus(); }
+      }
+    };
+    document.addEventListener("keydown", key);
+    return () => { restored.forEach(({ element, inert }) => { element.inert = inert; }); document.removeEventListener("keydown", key); previous?.focus(); };
+  }, [listDrawer]);
   useEffect(() => {
     try {
       const raw = localStorage.getItem(preferenceKey);
@@ -428,6 +479,7 @@ export function TradesWorkstation({
     }
     setFullscreenChart(null);
     setSelectedId(id);
+    setListDrawer(false);
     const next = trades.find((candidate) => candidate.id === id);
     if (next)
       setTargetDate(new Date(next.openTime * 1000).toISOString().slice(0, 16));
@@ -828,19 +880,34 @@ export function TradesWorkstation({
       setBusy("");
     }
   };
-  if (!trade)
-    return (
-      <div className="ws-empty">
-        No matching trades. Adjust the filters to begin a review.
-      </div>
-    );
+  const applyTradeFilters = async (draft: WorkstationTradeFilters, clear = false) => {
+    if (filterBusy || filterControls?.pending) return;
+    const next = normalizeWorkstationFilters(draft);
+    const error = tradeFilterError(next);
+    setFilterError(error);
+    if (error) { changePreferences({ filtersExpanded: true }); return; }
+    setFilterBusy(true);
+    try {
+      if (!(await persistence.flush())) { setFilterError("Resolve the review save issue before applying filters. Your draft is preserved."); return; }
+      if (clear) { setQuery(""); setFilter("All trades"); }
+      setFilterDraft(next);
+      filterControls?.apply(next, trade?.id ?? "");
+    } finally { setFilterBusy(false); }
+  };
+  const renderFilters = () => <WorkstationFilterControls applied={filterControls?.applied ?? {}} draft={filterDraft} onDraft={setFilterDraft} expanded={!!preferences.filtersExpanded} onExpanded={value => changePreferences({ filtersExpanded: value })} pending={filterBusy || !!filterControls?.pending} error={filterError} onApply={value => void applyTradeFilters(value)} onClear={() => void applyTradeFilters({}, true)} view={filter} onView={setFilter} count={filtered.length} />;
+  if (!trade) return <div ref={root} className={`workstation ws-${preferences.theme} ws-empty-workstation`}>
+    <div className="ws-app"><div className="ws-empty-topbar"><Activity size={16} /><span>Trade workspace</span></div><div className="ws-work-area">
+      <aside className="ws-trade-list ws-empty-trade-list" ref={tradeListRef}><div className="ws-list-heading"><span>YOUR TRADES</span></div>{renderFilters()}<div className="ws-trades-scroll"><div className="ws-empty">No matching trades.</div></div></aside>
+      <div className="ws-empty-results"><ListFilter size={28} /><h2>No trades match these filters</h2><p>Adjust your filters to find a trade to review.</p><button className="ws-primary" disabled={filterBusy || filterControls?.pending} onClick={() => void applyTradeFilters({}, true)}>Clear all filters</button></div>
+    </div></div>
+  </div>;
   const chosenDrawing = documentState?.drawings.find(
     (d) => d.id === selectedDrawing,
   );
   const currentPanel =
     preferences.panels.find((p) => p.id === activeChart) ??
     preferences.panels[0];
-  const dayPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
+  const dayPnl = filtered.reduce((sum, t) => sum + t.pnl, 0);
   const chartContent = (
     <div className="ws-chart-workspace">
       <div className="ws-chart-toolbar">
@@ -1522,61 +1589,6 @@ export function TradesWorkstation({
       ref={root}
       className={`workstation ws-${preferences.theme} ${fullscreenChart ? "ws-has-fullscreen" : ""} ${!preferences.heading ? "ws-heading-collapsed" : ""} ${preferences.focusMode ? "ws-focus" : ""} ${adapter.mode === "application" ? "ws-embedded" : ""}`}
     >
-      <nav className="ws-rail" aria-label="Application">
-        <a
-          className="ws-logo"
-          href={adapter.mode === "demo" ? "/preview/trades" : "/trades"}
-          title="Execution Lab"
-        >
-          <Activity size={22} />
-        </a>
-        <span className="ws-rail-divider" />
-        <a
-          href={adapter.mode === "demo" ? "/preview/trades" : "/"}
-          title="Overview"
-        >
-          <LayoutDashboard size={19} />
-        </a>
-        <button
-          className={!journalView ? "active" : ""}
-          title="Trades"
-          onClick={() => {
-            setMobileTab("Charts");
-            showPanel("charts");
-          }}
-        >
-          <TrendingUp size={20} />
-        </button>
-        <button
-          className={journalView ? "active" : ""}
-          title="Journal"
-          onClick={() => showPanel("journal")}
-        >
-          <BookOpen size={19} />
-        </button>
-        <button title="Evidence" onClick={() => showPanel("evidence")}>
-          <ImageIcon size={18} />
-        </button>
-        <span className="ws-flex-spacer" />
-        <button title="Help & shortcuts" onClick={() => setModal("help")}>
-          <CircleHelp size={19} />
-        </button>
-        <button
-          title="Appearance"
-          onClick={() =>
-            changePreferences({
-              theme: preferences.theme === "dark" ? "light" : "dark",
-            })
-          }
-        >
-          {preferences.theme === "dark" ? (
-            <Sun size={18} />
-          ) : (
-            <Moon size={18} />
-          )}
-        </button>
-        <div className="ws-avatar">EL</div>
-      </nav>
       <div className="ws-app">
         <header className="ws-topbar">
           <div className="ws-breadcrumb">
@@ -1585,6 +1597,7 @@ export function TradesWorkstation({
             <strong>Trade workspace</strong>
           </div>
           <div className="ws-topbar-right">
+            <button title="Help & shortcuts" aria-label="Help & shortcuts" onClick={() => setModal("help")}><CircleHelp size={15} /></button>
             <button
               aria-label={
                 preferences.heading ? "Hide page title" : "Show page title"
@@ -1671,13 +1684,14 @@ export function TradesWorkstation({
           </div>
         </div>
         <div className="ws-work-area">
-          {preferences.list && (
-            <aside className="ws-trade-list">
+          {listDrawer && <div className="ws-list-backdrop" onClick={() => setListDrawer(false)} />}
+          {(preferences.list || listDrawer) && (
+            <aside ref={tradeListRef} className={`ws-trade-list ${listDrawer ? "ws-list-open" : ""}`} role={listDrawer ? "dialog" : undefined} aria-modal={listDrawer || undefined} aria-label={listDrawer ? "Your trades" : undefined}>
               <div className="ws-list-heading">
                 <span>YOUR TRADES</span>
                 <button
                   title="Collapse trade list"
-                  onClick={() => changePreferences({ list: false })}
+                  onClick={() => { changePreferences({ list: false }); setListDrawer(false); }}
                 >
                   <PanelLeftClose size={14} />
                 </button>
@@ -1692,19 +1706,7 @@ export function TradesWorkstation({
                 />
                 <kbd>⌕</kbd>
               </div>
-              <div className="ws-list-filter">
-                <ListFilter size={13} />
-                <select
-                  aria-label="Filter trades"
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                >
-                  {["All trades", "Long", "Short", "Unexported"].map((v) => (
-                    <option key={v}>{v}</option>
-                  ))}
-                </select>
-                <span>{filtered.length}</span>
-              </div>
+              {renderFilters()}
               <div className="ws-list-summary">
                 <span>Realized P&L</span>
                 <b className={dayPnl >= 0 ? "positive" : "negative"}>
@@ -1805,15 +1807,7 @@ export function TradesWorkstation({
           )}
           <main className="ws-main">
             <div className="ws-trade-heading">
-              {!preferences.list && (
-                <button
-                  className="ws-icon-button"
-                  title="Show trade list"
-                  onClick={() => changePreferences({ list: true })}
-                >
-                  <ListFilter size={16} />
-                </button>
-              )}
+              <button className={`ws-icon-button ws-show-trades ${preferences.list ? "ws-desktop-list-visible" : ""}`} title="Show trade list" aria-label="Show trade list" onClick={() => { changePreferences({ list: true }); if (window.matchMedia("(max-width: 1150px)").matches) setListDrawer(true); }}><ListFilter size={16} /></button>
               <select
                 className="ws-trade-picker"
                 aria-label="Choose trade"
@@ -2529,6 +2523,8 @@ export function TradesWorkstation({
               className="ws-primary"
               onClick={() => {
                 adapter.reset?.();
+                localStorage.removeItem("execution-lab:appearance:demo:v1");
+                localStorage.removeItem("execution-lab:navigation:demo:expanded:v1");
                 shortcuts.save(defaultShortcuts());
                 for (const key of Object.keys(localStorage))
                   if (key.startsWith(preferenceKey))

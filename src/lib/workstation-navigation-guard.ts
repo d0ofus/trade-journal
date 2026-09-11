@@ -90,6 +90,8 @@ export function useWorkstationNavigationGuard(guard: NavigationGuard) {
       if (!(target instanceof Element)) return;
       const anchor = target.closest<HTMLAnchorElement>("a[href]");
       if (!anchor || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      // The shared rail awaits its review save, then requests this guard itself.
+      if (anchor.dataset.navigationManaged === "true") return;
 
       const destination = new URL(anchor.href, window.location.href);
       if (isSameDocumentAnchor(destination)) return;

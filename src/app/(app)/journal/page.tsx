@@ -22,8 +22,8 @@ export default async function JournalPage(props: { searchParams: SearchParams })
   if (entryId && process.env.TRADES_WORKSTATION_ENABLED === "1") {
     const link = await prisma.journalLink.findFirst({ where: { journalEntryId: entryId, linkType: "REVIEW_SOURCE", targetType: "CLOSED_TRADE" } });
     if (link?.targetId) {
-      const trades = await listWorkstationTrades({}, link.targetId);
-      return <div className="py-4"><ApplicationWorkstation trades={trades} initialId={link.targetId} journalView /></div>;
+      const trades = await listWorkstationTrades({}, link.targetId, true);
+      return <ApplicationWorkstation trades={trades} initialId={link.targetId} journalView />;
     }
   }
 

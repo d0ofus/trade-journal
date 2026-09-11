@@ -7,10 +7,10 @@ import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "@
 type Reader = Prisma.TransactionClient;
 export class WorkstationError extends Error { constructor(message: string, public status = 409) { super(message); } }
 
-export async function listWorkstationTrades(filters: TradeFilters = {}, selectedId?: string | null): Promise<Trade[]> {
+export async function listWorkstationTrades(filters: TradeFilters = {}, selectedId?: string | null, includeSelectedOutsideFilters = false): Promise<Trade[]> {
   // Read existing materialized trades only. This path never runs ingestion or materialization.
   const where = buildClosedTradeWhere(filters);
-  const groups = await prisma.closedTrade.findMany({ where: selectedId ? { OR: [{ groupKey: selectedId }, where] } : where, include: { account: { select: { ibkrAccount: true } }, instrument: { select: { currency: true } }, executions: { orderBy: { sortOrder: "asc" } } }, orderBy: [{ isStale: "asc" }, { closeTime: "desc" }, { groupKey: "asc" }] });
+  const groups = await prisma.closedTrade.findMany({ where: selectedId && includeSelectedOutsideFilters ? { OR: [{ groupKey: selectedId }, where] } : where, include: { account: { select: { ibkrAccount: true } }, instrument: { select: { currency: true } }, executions: { orderBy: { sortOrder: "asc" } } }, orderBy: [{ isStale: "asc" }, { closeTime: "desc" }, { groupKey: "asc" }] });
   // openingQuantity/closingQuantity are signed account-position baselines, not trade size.
   // Materialized ClosedTrade rows represent completed cycles, even when a separate carry position remains.
   return groups.map(g => ({ id: g.groupKey, symbol: g.symbol, name: g.symbol, account: g.account.ibkrAccount, currency: g.instrument.currency ?? "", direction: g.direction === "SHORT" ? "SHORT" : "LONG", openTime: g.openTime.getTime() / 1000, closeTime: g.closeTime.getTime() / 1000, entry: g.avgEntryPrice, exit: g.avgExitPrice, pnl: g.realizedPnl, fees: g.totalCommission, quantity: g.totalQuantity, openQuantity: 0, stale: g.isStale, executions: g.executions.map(e => ({ id: e.executionId, time: e.executedAt.getTime() / 1000, side: e.side === "BUY" ? "BUY" : "SELL", quantity: e.quantity, price: e.price, commission: e.commission, fees: e.fees })) }));
