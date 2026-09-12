@@ -2718,3 +2718,9 @@
 .ws-fullscreen-credit { flex:0 0 21px; font-size:9px; line-height:21px; text-align:right; padding:0 10px; color:var(--ws-muted); }
 .ws-has-fullscreen .ws-chart-grid.ws-resizable-grid { overflow:visible; }
 @media (prefers-reduced-motion:reduce) { .ws-chart-divider span { transition:none; } }
+
+.ws-session-select { max-width: 170px; min-width: 0; border: 1px solid var(--ws-border); border-radius: 4px; background: var(--ws-bg); color: var(--ws-text); font: inherit; padding: 4px; }
+@media (max-width: 600px) {
+  .ws-chart-toolbar { height: auto; flex: 0 0 auto; flex-wrap: wrap; padding: 4px 5px; row-gap: 3px; }
+  .ws-session-select { flex: 0 0 165px; }
+}

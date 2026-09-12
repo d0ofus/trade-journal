@@ -1,4 +1,5 @@
 import { WorkstationShortcutSettings } from "@/components/workstation/shortcut-settings";
+import { TimestampInterpretationSettings } from "@/components/workstation/timestamp-settings";
 import { FlexRunButton } from "@/components/flex-run-button";
 import { ImportHistoryList } from "@/components/import-history-list";
 import { BackupActions } from "@/components/backup-actions";
@@ -129,6 +130,7 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
         <CardHeader><CardTitle>Workstation · Keyboard shortcuts</CardTitle></CardHeader>
         <CardContent><WorkstationShortcutSettings /></CardContent>
       </Card>}
+      {process.env.TRADES_WORKSTATION_ENABLED === "1" && <Card id="timestamp-interpretation"><CardHeader><CardTitle>Trade data · Timestamp interpretation</CardTitle></CardHeader><CardContent><TimestampInterpretationSettings /></CardContent></Card>}
       <Card className="overflow-hidden">
         <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">Accounts</CardTitle>

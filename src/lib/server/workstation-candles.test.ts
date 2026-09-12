@@ -10,6 +10,19 @@ const input = { symbol: "AAPL", timeframe: "5m" as const, range: { from: start, 
 const bars = [0, 300, 600].map(offset => ({ t: new Date((start + offset) * 1000).toISOString(), o: 100, h: 102, l: 99, c: 101, v: 100 }));
 function alpaca() { return new Response(JSON.stringify({ bars: { AAPL: bars }, next_page_token: null })); }
 function yahoo() { return new Response(JSON.stringify({ chart: { result: [{ timestamp: [start], indicators: { quote: [{ open: [100], high: [102], low: [99], close: [101], volume: [100] }] } }] } })); }
+
+it("isolates extended Yahoo requests from the shared legacy regular-session cache", async () => {
+  vi.stubEnv("TRADES_CHART_PROVIDER", "legacy");
+  const fetcher = vi.fn().mockImplementation(async () => yahoo()); vi.stubGlobal("fetch", fetcher);
+  const extended = await loadWorkstationCandles({ ...input, session: "extended" });
+  expect(new URL(String(fetcher.mock.calls[0][0])).searchParams.get("includePrePost")).toBe("true");
+  expect(extended.provider.identity).toContain(":extended");
+  expect(db.findMany).not.toHaveBeenCalled(); expect(db.createMany).not.toHaveBeenCalled();
+  vi.stubEnv("TRADES_CHART_PROVIDER", "yahoo");
+  const regular = await loadWorkstationCandles({ ...input, session: "regular" });
+  expect(new URL(String(fetcher.mock.calls[1][0])).searchParams.get("includePrePost")).toBe("false");
+  expect(regular.provider.identity).not.toBe(extended.provider.identity);
+});
 beforeEach(() => {
   vi.clearAllMocks();
   db.findMany.mockResolvedValue([]); db.instrument.mockResolvedValue([]); db.createMany.mockResolvedValue({ count: 3 }); db.upsert.mockResolvedValue({});

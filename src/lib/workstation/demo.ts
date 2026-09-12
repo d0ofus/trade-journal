@@ -1,3 +1,5 @@
+import timingSnapshot from "./timing-candles.json";
+import { isRegularUsSession } from "./chart-session";
 import { aggregateCandles } from "./math";
 import { initialHistoryRange } from "./history";
 import { Candle, RevisionConflict, Trade, TradeDocument, WorkstationAdapter, emptyDocument } from "./types";
@@ -31,12 +33,12 @@ export function demoCandles(trade: Trade): Candle[] {
   let seed = [...trade.symbol].reduce((n, c) => n * 31 + c.charCodeAt(0), 17) >>> 0;
   const random = () => { seed = (1664525 * seed + 1013904223) >>> 0; return seed / 4294967296; };
   const start = Math.floor(trade.openTime / 86400) * 86400 - 800 * 86400;
-  const end = Math.floor(trade.openTime / 86400) * 86400 + 3 * 86400;
+  const end = Math.max(Math.floor(trade.openTime / 86400) * 86400 + 3 * 86400, trade.closeTime + 86400);
   const result: Candle[] = [];
   let last = trade.entry * .89;
   for (let time = start; time < end; time += 300) {
     const date = new Date(time * 1000), weekday = date.getUTCDay(), minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
-    if (weekday === 0 || weekday === 6 || minutes < 13 * 60 + 30 || minutes >= 20 * 60) continue;
+    if (weekday === 0 || weekday === 6 || minutes < (trade.id === "demo-mu-timing" ? 8 * 60 : 13 * 60 + 30) || minutes >= (trade.id === "demo-mu-timing" ? 24 * 60 : 20 * 60)) continue;
     const distance = (time - trade.openTime) / 86400;
     const baseline = trade.entry * (1 + distance * .0008) + Math.sin(distance * .8) * trade.entry * .004;
     let target = baseline;
@@ -71,6 +73,10 @@ export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
     async candles(trade, interval, signal, range = initialHistoryRange(trade, interval)) {
       signal?.throwIfAborted();
       // Aggregate before slicing so page boundaries never create partial daily/weekly candles.
+      if (trade.id === "demo-mu-timing") {
+        const source = timingSnapshot.candles.filter(c => trade.chartSession === "regular" ? isRegularUsSession(c.time) : true);
+        return { candles: aggregateCandles(source, interval).filter(c => c.time >= range.from && c.time <= range.to), warning: "Frozen Yahoo snapshot (4-10 Sep 2026). Higher intervals aggregate these bars; outside history unavailable.", source: "Yahoo snapshot / demo", session: { timezone: "America/New_York", calendar: "exchange", marketHours: trade.chartSession ?? "extended" } };
+      }
       const diagnostic = trade.id === diagnosticDemoTrade.id;
       const source = diagnostic ? demoCandles(trade).map(c => diagnosticComparisonCandles.find(d => d.time === c.time) ?? c) : demoCandles(trade);
       const candles = aggregateCandles(source, interval).filter(c => c.time >= range.from && c.time <= range.to);

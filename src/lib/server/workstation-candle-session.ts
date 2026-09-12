@@ -4,6 +4,7 @@ import type { WorkstationCandles } from "./workstation-candles";
 
 /** Chart metadata only. No changes to the ingestion loader or candle values. */
 export async function workstationCandleSession(loaded: WorkstationCandles): Promise<CandleSession> {
+  if (loaded.session) return loaded.session;
   const unknown: CandleSession = { timezone: null, calendar: "unknown", marketHours: "unknown" };
   let usEquity = loaded.coverage?.timezone === "America/New_York";
   if (!usEquity) {

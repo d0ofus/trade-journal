@@ -1,0 +1,62 @@
+import { expect, test, type BrowserContext } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { prisma } from "../../src/lib/prisma";
+import snapshot from "../../src/lib/workstation/timing-candles.json";
+import { aggregateCandles } from "../../src/lib/workstation/math";
+import type { Interval } from "../../src/lib/workstation/types";
+const batchId = "DEMO-TIMESTAMP-PREVIEW", endpoint = "/api/workstation/timestamp-interpretations";
+async function login(context: BrowserContext) {
+  const csrf = await (await context.request.get("/api/auth/csrf")).json();
+  await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true", callbackUrl: "http://127.0.0.1:3101/settings" } });
+}
+test.beforeAll(() => { execFileSync(process.execPath, ["--import", "tsx", "scripts/seed-timestamp-preview.ts"], { env: process.env, stdio: "pipe" }); });
+test.afterAll(async () => {
+  const batch = await prisma.importBatch.findUnique({ where: { id: batchId } });
+  const links = await prisma.journalLink.findMany({ where: { targetId: batchId, targetType: "CLOSED_TRADE" } });
+  await prisma.journalEntry.deleteMany({ where: { id: { in: links.map(l => l.journalEntryId) } } });
+  await prisma.closedTradeNote.deleteMany({ where: { groupKey: batchId } });
+  await prisma.closedTrade.deleteMany({ where: { groupKey: batchId } });
+  await prisma.execution.deleteMany({ where: { importBatchId: batchId } });
+  await prisma.importBatch.deleteMany({ where: { id: batchId } });
+  await prisma.instrument.deleteMany({ where: { id: batchId } });
+  if (batch?.rawStorageKey) await prisma.importArtifact.deleteMany({ where: { storageKey: batch.rawStorageKey } });
+  await prisma.$disconnect();
+});
+test("Settings confirms and disables a batch while preserving imported records and open review drafts", async ({ page, context }) => {
+  await login(context);
+  const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
+  const records = await prisma.execution.findMany({ where: { importBatchId: batchId }, orderBy: { id: "asc" } });
+  expect(records).toHaveLength(8);
+  const initial = await (await context.request.get(`${endpoint}?batchId=${batchId}`)).json();
+  if (initial.active) expect((await context.request.patch(endpoint, { data: { batchId, expectedRevision: initial.revision, action: "disable" } })).ok()).toBe(true);
+  const tradePage = await context.newPage();
+  await tradePage.route("**/api/workstation/candles?**", async route => {
+    const url = new URL(route.request().url()), interval = url.searchParams.get("timeframe") as Interval;
+    const candles = aggregateCandles(snapshot.candles, interval).filter(c => c.time >= Number(url.searchParams.get("from")) && c.time <= Number(url.searchParams.get("to")));
+    await route.fulfill({ json: { candles, source: "Yahoo snapshot", metadata: { warnings: [], session: { timezone: "America/New_York", calendar: "exchange", marketHours: "extended" } } } });
+  });
+  await tradePage.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${batchId}`);
+  await expect(tradePage.locator(".ws-chart-state")).toHaveCount(0);
+  await tradePage.getByPlaceholder("What will you repeat or change?").fill("Keep this review across timezone confirmation.");
+  await expect(tradePage.locator(".ws-journal-save")).toContainText("All changes saved");
+  await page.goto("/settings#timestamp-interpretation");
+  const settings = page.getByRole("region", { name: "Timestamp interpretation", exact: true });
+  const batch = settings.getByText("DEMO-timestamp-review.csv", { exact: true }).locator("../..");
+  await batch.getByRole("button", { name: "Preview times", exact: true }).click();
+  await expect(settings).toContainText("8 of 8");
+  await expect(settings).toContainText("2026-09-08 19:09:25 UTC");
+  await settings.getByRole("button", { name: "Confirm this report uses US Eastern", exact: true }).click();
+  await expect(settings.getByRole("status")).toContainText("Imported records are unchanged");
+  await page.locator("#timestamp-interpretation").screenshot({ path: "screenshots/timestamp-interpretation/settings-confirmed.png" });
+  await expect(tradePage.getByLabel("Chart session")).toContainText("Auto (extended)");
+  await expect(tradePage.getByPlaceholder("What will you repeat or change?")).toHaveValue("Keep this review across timezone confirmation.");
+  await tradePage.getByRole("button", { name: "Chart history chart-1", exact: true }).click();
+  await tradePage.locator(".ws-diagnostic-list").getByRole("button", { name: /SELL 6 @ 1008.71/ }).click();
+  await expect(tradePage.getByRole("dialog", { name: "Execution details", exact: true })).toContainText("2026-09-08 19:09:25 UTC");
+  await batch.getByRole("button", { name: "Disable", exact: true }).click();
+  await expect(settings.getByRole("status")).toContainText("Interpretation disabled");
+  await expect(tradePage.getByLabel("Chart session")).toContainText("Auto (regular)");
+  expect(await prisma.execution.findMany({ where: { importBatchId: batchId }, orderBy: { id: "asc" } })).toEqual(records);
+  expect(errors).toEqual([]);
+  await tradePage.close();
+});

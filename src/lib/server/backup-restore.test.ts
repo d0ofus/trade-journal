@@ -67,6 +67,7 @@ function compactGraphPayload() {
         cohortRole: "MEMBER",
       },
     ],
+    executionTimeInterpretations: [{ id: "time-1", importBatchId: "batch-1", timezone: "America/New_York", basis: "user-confirmed", normalizerVersion: 1, revision: 1, active: false, sourceHash: artifact.rawSha256, parserVersion: "test", fingerprint: "audit", rowsJson: "[]", confirmedAt: importedAt, updatedAt: later }],
     importRowErrors: [{ id: "row-error-1", importBatchId: "batch-1", rowNumber: 2, severity: "WARNING", code: "SKIPPED", message: "Skipped row", rawJson: "{}", createdAt: importedAt }],
     executions: [
       {

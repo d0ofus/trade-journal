@@ -207,6 +207,7 @@ model ImportBatch {
   errorMessage         String?
   notes                String?
   executions           Execution[]
+  timeInterpretation   ExecutionTimeInterpretation?
   rowErrors            ImportRowError[]
   rawArtifact          ImportArtifact?       @relation(fields: [rawStorageKey], references: [storageKey], onDelete: SetNull)
 
@@ -215,6 +216,24 @@ model ImportBatch {
   @@index([cohortId, importedAt, id])
   @@index([sourceId])
   @@index([rawSha256])
+}
+
+// Presentation metadata only. Original executions and materialized accounting are immutable here.
+model ExecutionTimeInterpretation {
+  id              String      @id @default(cuid())
+  importBatchId   String      @unique
+  importBatch     ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  timezone        String
+  basis           String      @default("user-confirmed")
+  normalizerVersion Int       @default(1)
+  revision        Int         @default(1)
+  active          Boolean     @default(true)
+  sourceHash      String
+  parserVersion   String?
+  fingerprint     String
+  rowsJson        String
+  confirmedAt     DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 }
 
 model ImportRowError {

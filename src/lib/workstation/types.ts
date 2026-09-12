@@ -24,9 +24,12 @@ export type Execution = {
   price: number;
   commission: number;
   fees: number;
-  provenance?: { timezoneStatus: "verified" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null };
+  provenance?: { timezoneStatus: "verified" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null; storedTime?: number; brokerWallTime?: string; confirmationBasis?: string; interpretationStatus?: "applied" | "stale" | "unresolved"; interpretationVersion?: string };
 };
 export type Trade = {
+  brokerTradeDate?: string;
+  timeInterpretationVersion?: string;
+  chartSession?: "regular" | "extended";
   id: string;
   symbol: string;
   name: string;
@@ -91,6 +94,7 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  timeInterpretationVersion?: string;
   id: string;
   name: string;
   image: string;
@@ -112,6 +116,7 @@ export type TradeDocument = {
 };
 export type ChartPanel = { id: string; interval: Interval };
 export type WorkspacePreferences = {
+  chartSession?: "auto" | "regular" | "extended";
   theme: "dark" | "light";
   panels: ChartPanel[];
   labels: "labels" | "compact" | "hidden";
@@ -145,7 +150,7 @@ export type CandleResult = {
   provider?: { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
   session?: CandleSession;
 };
-export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "unknown" };
+export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown" };
 export interface WorkstationAdapter {
   mode: "demo" | "application";
   load(id: string): Promise<TradeDocument>;

@@ -1,5 +1,6 @@
 import { Candle, CandleResult, TradeDocument, WorkstationAdapter, seconds } from "./types";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "./payload";
+import { tradeChartSession } from "./chart-session";
 export function createApplicationAdapter(): WorkstationAdapter {
   const cache = new Map<string, { at: number; data: CandleResult }>();
   async function request<T>(url: string, init?: RequestInit): Promise<T> { const response = await fetch(url, { credentials: "same-origin", ...init }); const body = await response.json(); if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Request failed"); return body as T; }
@@ -13,11 +14,13 @@ export function createApplicationAdapter(): WorkstationAdapter {
     },
     async candles(trade, interval, signal, range, identity) {
       signal?.throwIfAborted();
+      const session = trade.chartSession ?? tradeChartSession(trade);
       const padding = Math.max(seconds[interval] * 240, trade.closeTime - trade.openTime);
       const from = range?.from ?? Math.max(1, trade.openTime - padding), to = range?.to ?? trade.closeTime + Math.max(seconds[interval] * 60, 86400);
-      const key = `${trade.symbol}:${interval}:${from}:${to}:${identity ?? "initial"}`, cached = cache.get(key); if (cached && Date.now() - cached.at < 300000) return cached.data;
+      const key = `${trade.symbol}:${interval}:${from}:${to}:${identity ?? "initial"}:${session}:${trade.timeInterpretationVersion ?? "original"}`, cached = cache.get(key); if (cached && Date.now() - cached.at < 300000) return cached.data;
       const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, from: String(from), to: String(to), limit: "30000" });
       if (identity) params.set("identity", identity);
+      params.set("session", session);
       const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { signal });
       signal?.throwIfAborted();
       const providerLabel = response.provider ? `${response.provider.provider.toUpperCase()}${response.provider.feed ? ` ${response.provider.feed.toUpperCase()}` : ""} / ${response.provider.adjustment}${response.provider.cached ? " / cache" : ""}${response.provider.fallback ? " / fallback" : ""}` : response.source ?? "Provider";

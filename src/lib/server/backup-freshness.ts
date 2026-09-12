@@ -15,6 +15,7 @@ const SOURCE_TABLE_KEYS = BACKUP_TABLES
 export const BACKUP_RELEVANT_TIMESTAMP_SOURCES = [
   { key: "accounts", prismaModel: "Account", timestampFields: ["createdAt", "updatedAt"] },
   { key: "importBatches", prismaModel: "ImportBatch", timestampFields: ["importedAt"] },
+  { key: "executionTimeInterpretations", prismaModel: "ExecutionTimeInterpretation", timestampFields: ["confirmedAt", "updatedAt"] },
   { key: "importRowErrors", prismaModel: "ImportRowError", timestampFields: ["createdAt"] },
   { key: "importArtifacts", prismaModel: "ImportArtifact", timestampFields: ["createdAt"] },
   { key: "materializationWatermarks", prismaModel: "MaterializationWatermark", timestampFields: ["refreshedAt", "createdAt", "updatedAt"] },

@@ -5,6 +5,7 @@ export type BackupTableContract = {
   restoreOrder: number;
   canonicalRows: boolean;
   notes?: string;
+  optionalInLegacy?: boolean;
 };
 
 export const BACKUP_TABLES = [
@@ -16,6 +17,7 @@ export const BACKUP_TABLES = [
   { key: "backupAudits", prismaModel: "BackupAudit", dependencies: [], restoreOrder: 60, canonicalRows: true },
   { key: "importBatches", prismaModel: "ImportBatch", dependencies: ["accounts", "importArtifacts"], restoreOrder: 70, canonicalRows: true },
   { key: "importRowErrors", prismaModel: "ImportRowError", dependencies: ["importBatches"], restoreOrder: 80, canonicalRows: true },
+  { key: "executionTimeInterpretations", prismaModel: "ExecutionTimeInterpretation", dependencies: ["importBatches"], restoreOrder: 85, canonicalRows: true, optionalInLegacy: true },
   { key: "executions", prismaModel: "Execution", dependencies: ["accounts", "instruments", "importBatches"], restoreOrder: 90, canonicalRows: true },
   { key: "positions", prismaModel: "Position", dependencies: ["accounts", "instruments"], restoreOrder: 100, canonicalRows: true },
   { key: "positionSnapshots", prismaModel: "PositionSnapshot", dependencies: ["accounts", "instruments"], restoreOrder: 110, canonicalRows: true },
@@ -66,7 +68,7 @@ export function buildBackupTableManifestFromRowCounts(rowCountInput: BackupRowCo
   const rowCounts = Object.fromEntries(
     BACKUP_TABLES.map((table) => [table.key, rowCountInput[table.key] ?? 0]),
   ) as Record<BackupTableKey, number>;
-  const missingTables = BACKUP_TABLES.filter((table) => rowCountInput[table.key] === undefined).map((table) => table.key);
+  const missingTables = BACKUP_TABLES.filter((table) => rowCountInput[table.key] === undefined && !("optionalInLegacy" in table && table.optionalInLegacy)).map((table) => table.key);
   const tables = [...BACKUP_TABLES]
     .sort((left, right) => left.restoreOrder - right.restoreOrder)
     .map((table) => ({

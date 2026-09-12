@@ -127,6 +127,7 @@ export function TradeChart(props: Props) {
     target: ChartDateTarget;
     width: number;
   } | null>(null);
+  const interpretationVersion = useRef(props.trade.timeInterpretationVersion);
   const historyPopover = useRef<HTMLDivElement>(null);
   const navigation = useRef<{
     time: number;
@@ -172,8 +173,11 @@ export function TradeChart(props: Props) {
   bars.current = data;
 
   useEffect(() => {
+    const changedTimeBasis = interpretationVersion.current !== props.trade.timeInterpretationVersion;
+    interpretationVersion.current = props.trade.timeInterpretationVersion;
+    if (changedTimeBasis) { focusedWindow.current = null; focusedTarget.current = null; beforeReplay.current = null; }
     const visible =
-      currentTrade.current === props.trade.id
+      !changedTimeBasis && currentTrade.current === props.trade.id
         ? chart.current?.timeScale().getVisibleRange()
         : null;
     const intervalContext =
@@ -188,7 +192,7 @@ export function TradeChart(props: Props) {
             trade: props.trade.id,
           }
         : null;
-    const requested: typeof navigation.current =
+    const requested: typeof navigation.current = changedTimeBasis ? { time: props.trade.openTime, trade: props.trade.id, fit: true } :
       navigation.current?.trade === props.trade.id
         ? navigation.current
         : intervalContext;
@@ -687,7 +691,7 @@ export function TradeChart(props: Props) {
         const frozen = options(true, light),
           snapshotBars = [...bars.current],
           prefs = latest.current.preferences;
-        const header = 30, footer = 62;
+        const header = 30, footer = 75;
         const width = frame?.width ?? dimensions.current.width, height = frame ? Math.max(60, frame.height - header - footer) : dimensions.current.height;
         const frozenTrade = latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
         const priceRange = candles.priceScale().getVisibleRange();
@@ -805,6 +809,7 @@ export function TradeChart(props: Props) {
             'Fills: ' + comparisons.filter(d => d.status === 'missing').length + ' missing / ' + comparisons.filter(d => d.status === 'price-outside').length + ' price mismatch',
             !comparisons.length ? 'No visible executions / UTC display' : comparisons.some(d => d.timezoneUnverified || d.periodUnverified) ? 'Source or candle time basis unverified / UTC display' : 'Execution source timezone verified / UTC display',
             (frozenHistory.provider?.provider ?? frozenHistory.source) + ' / adjustment: ' + (frozenHistory.provider?.adjustment ?? 'unverified'),
+            'Session: ' + (frozenHistory.session?.marketHours ?? 'unknown') + ' / ' + (comparisons.some(d => d.execution.provenance?.interpretationStatus === 'applied') ? 'User-confirmed source to UTC' : 'Original time basis'),
             'TradingView Lightweight Charts / tradingview.com',
           ];
           lines.forEach((line, i) => ctx.fillText(line, 8, height + header + 12 + i * 13, width - 16));
@@ -1438,7 +1443,7 @@ export function TradeChart(props: Props) {
           </div>
           <div className="ws-diagnostic-list">{diagnostics.map(d => <button key={d.execution.id} onClick={() => { setHistoryOpen(false); setInspectedId(d.execution.id); props.onExecution(d.execution.id); }}>{d.execution.side} {d.execution.quantity} @ {d.execution.price.toFixed(2)} <span>{d.status === "price-outside" ? "Price outside candle" : d.status === "missing" ? "Missing candle" : "Time bucket / price match"}</span></button>)}</div>
           <p className="ws-history-help">
-            Pan near an edge to load more. Stored times display in UTC; markers
+            Pan near an edge to load more. Workstation times display in UTC; markers
             use their containing candle.
             {props.replay !== null
               ? " Future bars and executions are concealed during replay."

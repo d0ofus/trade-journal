@@ -38,6 +38,7 @@ const RESTORE_KEYS: KeySpec[] = [
   { table: "materializationWatermarks", fields: ["key"] },
   { table: "importBatches", fields: ["id"] },
   { table: "importRowErrors", fields: ["id"] },
+  { table: "executionTimeInterpretations", fields: ["id"] },
   { table: "executions", fields: ["id"] },
   { table: "positions", fields: ["id"] },
   { table: "positionSnapshots", fields: ["id"] },
@@ -77,6 +78,7 @@ const RESTORE_KEYS: KeySpec[] = [
 const FOREIGN_KEYS: ForeignKeySpec[] = [
   { table: "importBatches", field: "accountId", targetTable: "accounts", optional: true },
   { table: "importBatches", field: "rawStorageKey", targetTable: "importArtifacts", targetField: "storageKey", optional: true },
+  { table: "executionTimeInterpretations", field: "importBatchId", targetTable: "importBatches" },
   { table: "importRowErrors", field: "importBatchId", targetTable: "importBatches" },
   { table: "executions", field: "accountId", targetTable: "accounts" },
   { table: "executions", field: "instrumentId", targetTable: "instruments" },
@@ -188,6 +190,7 @@ function validateBackupManifest(payload: JsonRecord, tableManifest: ReturnType<t
   }
 
   for (const table of BACKUP_TABLES) {
+    if ("optionalInLegacy" in table && table.optionalInLegacy && payload[table.key] === undefined && rowCounts[table.key] === undefined) continue;
     const expected = tableManifest.rowCounts[table.key];
     const actual = numberValue(rowCounts[table.key]);
     if (actual !== expected) {
@@ -567,6 +570,7 @@ function validateJournalScreenshotAssets(payload: JsonRecord) {
 function validateUniqueDomainKeys(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
   const specs: Array<{ table: BackupTableKey; fields: string[]; label: string }> = [
+    { table: "executionTimeInterpretations", fields: ["importBatchId"], label: "timestamp interpretation batch" },
     { table: "closedTradeNotes", fields: ["groupKey"], label: "closed-trade note groupKey" },
     { table: "closedTradeLayouts", fields: ["closedTradeGroupKey"], label: "closed-trade chart layout groupKey" },
   ];
@@ -606,6 +610,7 @@ function parseJsonField(value: unknown) {
 function validateJsonStateFields(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
   const specs: Array<{ table: BackupTableKey; field: string; shape: "array" | "object" }> = [
+    { table: "executionTimeInterpretations", field: "rowsJson", shape: "array" },
     { table: "closedTradeLayouts", field: "panelsJson", shape: "array" },
     { table: "closedTradeAnnotations", field: "pointsJson", shape: "array" },
     { table: "closedTradeAnnotations", field: "styleJson", shape: "object" },

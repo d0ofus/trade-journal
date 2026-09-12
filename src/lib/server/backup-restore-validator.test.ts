@@ -48,6 +48,13 @@ const closedTradeRow = { groupKey: "closed-trade-1", accountId: "account-1", ins
 const journalEntryRow = { id: "entry-1" };
 
 describe("validateBackupRestoreDryRun", () => {
+  it("accepts backups created before timestamp interpretation metadata existed", () => {
+    const payload = buildPayload() as unknown as Record<string, unknown>;
+    delete payload.executionTimeInterpretations;
+    const manifest = payload.manifest as { tables: { rowCounts: Record<string, number> } };
+    delete manifest.tables.rowCounts.executionTimeInterpretations;
+    expect(validateBackupRestoreDryRun(payload).ok).toBe(true);
+  });
   it("accepts a valid minimal backup payload", () => {
     const result = validateBackupRestoreDryRun(buildPayload());
 

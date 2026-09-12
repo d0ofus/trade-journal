@@ -1,4 +1,5 @@
 "use client";
+import { tradeChartSession } from "@/lib/workstation/chart-session";
 import {
   createContext,
   ReactNode,
@@ -296,10 +297,11 @@ export function TradesWorkstation({
       ? initialId
       : (trades[0]?.id ?? ""),
   );
-  const trade = trades.find((t) => t.id === selectedId) ?? trades[0];
+  const selectedTrade = trades.find((t) => t.id === selectedId) ?? trades[0];
   const [savedPreferences, setPreferences] = useState(defaultPreferences),
     [loadedPreferences, setLoadedPreferences] = useState(false);
   const preferences = useMemo(() => ({ ...savedPreferences, theme: appearance.theme }), [savedPreferences, appearance.theme]);
+  const trade = useMemo(() => selectedTrade ? { ...selectedTrade, chartSession: tradeChartSession(selectedTrade, preferences.chartSession) } : selectedTrade, [selectedTrade, preferences.chartSession]);
   const prefRef = useRef(preferences);
   prefRef.current = preferences;
   const [targetDate, setTargetDate] = useState(() =>
@@ -328,6 +330,7 @@ export function TradesWorkstation({
   const [replay, setReplay] = useState<number | null>(null),
     [playing, setPlaying] = useState(false),
     [speed, setSpeed] = useState(1);
+  useEffect(() => { setPlaying(false); setReplay(null); }, [selectedTrade?.id, selectedTrade?.timeInterpretationVersion]);
   const [undo, setUndo] = useState<Drawing[][]>([]),
     [redo, setRedo] = useState<Drawing[][]>([]);
   const [layoutName, setLayoutName] = useState(""),
@@ -420,6 +423,7 @@ export function TradesWorkstation({
           ...parsed,
           dateLink: restoredDateLink(parsed.dateLink),
           chartSizing: restoreChartSizing(parsed.chartSizing),
+          chartSession: ["auto", "regular", "extended"].includes(parsed.chartSession) ? parsed.chartSession : "auto",
         });
         if (parsed.exportColumns?.length) setColumns(parsed.exportColumns);
       }
@@ -793,6 +797,7 @@ export function TradesWorkstation({
           time: replay ?? Date.now() / 1000,
           revision: persistence.getDocument()?.revision ?? 0,
           timeframe: interval,
+          timeInterpretationVersion: trade.timeInterpretationVersion ?? "original",
         };
         persistence.change((d) => ({
           ...d,
@@ -941,6 +946,7 @@ export function TradesWorkstation({
           <span>Fit trade</span>
         </button>
         <button className={`ws-tool-button ${preferences.labels === "labels" ? "active" : ""}`} aria-label={preferences.labels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={preferences.labels === "labels"} title="Toggle labels across all charts; markers remain visible" onClick={toggleLabels}>{preferences.labels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
+        <select className="ws-session-select" aria-label="Chart session" value={preferences.chartSession ?? "auto"} onChange={event => changePreferences({ chartSession: event.target.value as "auto" | "regular" | "extended" })}><option value="auto">Session: Auto ({trade.chartSession})</option><option value="regular">Regular hours</option><option value="extended">Extended hours</option></select>
         <span className="ws-flex-spacer" />
         <details className="ws-date-control">
           <summary
@@ -1358,7 +1364,7 @@ export function TradesWorkstation({
             trade.executions.filter((e) => replay === null || e.time <= replay)
               .length
           }{" "}
-          fills <b>·</b> Stored timestamps in UTC
+          fills <b>·</b> Workstation times in UTC
         </span>
         <div>
           <button
@@ -1479,6 +1485,7 @@ export function TradesWorkstation({
                 </a>
                 <span>
                   {e.timeframe} · r{e.revision}
+                  {e.timeInterpretationVersion !== (trade.timeInterpretationVersion ?? "original") && (e.timeInterpretationVersion || trade.executions.some(fill => fill.provenance?.interpretationStatus === "applied")) && <small>Earlier timestamp basis</small>}
                   <button
                     title="Download chart"
                     onClick={() => {
