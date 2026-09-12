@@ -1,3 +1,4 @@
+import { prepareCandlesAfterResponse } from "@/lib/server/workstation-cache-after";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -30,8 +31,10 @@ export async function PATCH(request: NextRequest) {
     const body = update.safeParse(await request.json().catch(() => null));
     if (!body.success) return NextResponse.json({ error: "Invalid timestamp confirmation." }, { status: 400 });
     const value = body.data;
-    if (value.action === "disable") { await revokeBatchTimestamps(value.batchId, value.expectedRevision); return NextResponse.json({ active: false }); }
+    if (value.action === "disable") { await revokeBatchTimestamps(value.batchId, value.expectedRevision); prepareCandlesAfterResponse(); return NextResponse.json({ active: false }); }
     if (!value.timezone || !value.fingerprint) return NextResponse.json({ error: "Preview this batch before confirming." }, { status: 400 });
-    return NextResponse.json(await confirmBatchTimestamps(value.batchId, { timezone: value.timezone, fingerprint: value.fingerprint, expectedRevision: value.expectedRevision }));
+    const result = await confirmBatchTimestamps(value.batchId, { timezone: value.timezone, fingerprint: value.fingerprint, expectedRevision: value.expectedRevision });
+    prepareCandlesAfterResponse();
+    return NextResponse.json(result);
   } catch (error) { return failure(error); }
 }

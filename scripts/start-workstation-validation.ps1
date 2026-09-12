@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$NodePath)
+param([Parameter(Mandatory = $true)][string]$NodePath, [switch]$Cache)
 $ErrorActionPreference = 'Stop'
 # This launches only the prepared, disposable production-build copy. It never loads .env.local.
 $phaseRoot = Join-Path $env:TEMP 'trade-workstation-phase2'
@@ -25,6 +25,18 @@ $env:AUTH_USERNAME = 'phase2-reviewer'
 $env:AUTH_PASSWORD = 'phase2-local-test-only'
 $env:NEXTAUTH_SECRET = 'isolated-phase-two-test-secret-not-production'
 $networkFence = ([Uri](Join-Path $PSScriptRoot 'workstation-test-network.mjs')).AbsoluteUri
+if ($Cache) {
+    $env:TRADES_CANDLE_CACHE_ENABLED = '1'
+    $env:TRADES_CANDLE_PREPARE_ENABLED = '1'
+    $env:TRADES_CHART_PROVIDER = 'alpaca'
+    $env:TRADES_ALPACA_API_KEY_ID = 'isolated-dummy-key'
+    $env:TRADES_ALPACA_API_SECRET_KEY = 'isolated-dummy-secret'
+    $env:TRADES_ALPACA_DATA_FEED = 'sip'
+    $env:TRADES_ALPACA_ADJUSTMENT = 'raw'
+    $env:WORKSTATION_TEST_CANDLES_FILE = Join-Path $phaseRoot 'alpaca-production-diagnostic.json'
+    $env:WORKSTATION_TEST_PROVIDER_LOG = Join-Path $phaseRoot 'cache-provider.log'
+    $networkFence = ([Uri](Join-Path $PSScriptRoot 'workstation-cache-test-network.mjs')).AbsoluteUri
+}
 Push-Location -LiteralPath $buildDirectory
 try {
     & $NodePath --import $networkFence node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3101

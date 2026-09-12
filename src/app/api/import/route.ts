@@ -1,3 +1,4 @@
+import { prepareCandlesAfterResponse } from "@/lib/server/workstation-cache-after";
 import { NextRequest, NextResponse } from "next/server";
 import { parse as parseSync } from "csv-parse/sync";
 import { parseCsvWithMapping, previewCsv, type ParsedImport } from "@/lib/import/ibkr-parser";
@@ -558,6 +559,7 @@ export async function POST(req: NextRequest) {
       const totalRowsSkipped = results.reduce((sum, result) => sum + result.rowsSkipped, 0);
       const totalRowsPerSecond = Number(((totalRowsImported / totalDurationMs) * 1000).toFixed(2));
 
+      prepareCandlesAfterResponse();
       return NextResponse.json({
         results,
         summary: {

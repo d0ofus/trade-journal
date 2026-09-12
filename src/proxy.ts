@@ -54,6 +54,9 @@ export async function proxy(req: NextRequest) {
   }
 
   const isPublic = PUBLIC_PATHS.some((path) => pathname.startsWith(path));
+  // These exact handlers validate their own session/bearer credentials. Cron and CLI
+  // callers do not have a browser cookie and must reach that authentication check.
+  if (pathname === "/api/cron/candle-preparation" || pathname === "/api/workstation/market-data") return NextResponse.next();
   if (isPublic) {
     return NextResponse.next();
   }

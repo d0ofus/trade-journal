@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   BACKUP_TABLES,
+  REGENERABLE_CACHE_MODELS,
   buildBackupTableManifest,
   buildBackupTableManifestFromRowCounts,
   validateBackupPayloadShape,
@@ -13,11 +14,12 @@ function prismaModelNames() {
 }
 
 describe("backup table contract", () => {
-  it("maps every Prisma model to exactly one backup table", () => {
+  it("accounts for every Prisma model as a backup table or explicitly regenerable cache", () => {
     const models = prismaModelNames();
     const contractModels = BACKUP_TABLES.map((table) => table.prismaModel).sort();
 
-    expect(contractModels).toEqual(models);
+    expect([...contractModels, ...REGENERABLE_CACHE_MODELS].sort()).toEqual(models);
+    expect(REGENERABLE_CACHE_MODELS.every(model => !contractModels.includes(model))).toBe(true);
     expect(new Set(BACKUP_TABLES.map((table) => table.key)).size).toBe(BACKUP_TABLES.length);
     expect(new Set(contractModels).size).toBe(contractModels.length);
   });

@@ -537,6 +537,59 @@ model ClosedTradeExecution {
   @@index([side, executedAt])
 }
 
+// Workstation-only compact history. Legacy market/ingestion tables stay independent.
+model WorkstationCandleChunk {
+  key         String   @id
+  symbol      String
+  timeframe   String
+  source      String
+  start       DateTime
+  end         DateTime
+  payload     Bytes
+  checksum    String
+  version     Int      @default(1)
+  barCount    Int
+  tradeWindow Boolean  @default(false)
+  accessedAt  DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  coverage    WorkstationCandleCoverage?
+
+  @@index([symbol, timeframe, source, start])
+  @@index([tradeWindow, accessedAt])
+}
+
+model WorkstationCandleCoverage {
+  chunkKey String @id
+  segments String @default("[]")
+  chunk WorkstationCandleChunk @relation(fields: [chunkKey], references: [key], onDelete: Cascade)
+}
+
+model WorkstationCandleJob {
+  key         String   @id
+  symbol      String
+  timeframe   String
+  source      String
+  session     String
+  start       DateTime
+  end         DateTime
+  priority    Int      @default(10)
+  status      String   @default("pending")
+  attempts    Int      @default(0)
+  availableAt DateTime @default(now())
+  leaseUntil  DateTime?
+  leaseToken  String?
+  lastError   String?
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, priority, availableAt])
+}
+
+model WorkstationCandleLease {
+  key       String @id
+  token     String
+  expiresAt DateTime
+}
+
 model MarketCandle {
   id        String   @id @default(cuid())
   symbol    String

@@ -1,3 +1,4 @@
+import { prepareCandlesAfterResponse } from "@/lib/server/workstation-cache-after";
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiSessionOrBearerSecret } from "@/lib/server/api-auth";
 import { rejectE2eBlockedMutation } from "@/lib/server/e2e-demo-write-guard";
@@ -11,6 +12,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await runFlexImport();
+    prepareCandlesAfterResponse();
     return NextResponse.json({ ok: true, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Flex import failed.";

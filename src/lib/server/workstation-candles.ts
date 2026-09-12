@@ -9,10 +9,13 @@ import { workstationCandlePolicy } from "./workstation-candle-policy";
 import { isRegularUsSession } from "@/lib/workstation/chart-session";
 import type { CandleSession } from "@/lib/workstation/types";
 import { alpacaFailureSummary } from "./alpaca-candle-error";
+import { cacheEnabled } from "./workstation-cache-store";
+import { loadCompactWorkstationCandles } from "./workstation-cache-loader";
+import type { CandleCacheMetadata } from "@/lib/workstation/candle-ranges";
 
 export type ChartProviderMetadata = { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
-export type WorkstationCandles = LoadedCandles & { provider: ChartProviderMetadata; session?: CandleSession };
-type Input = { symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; signal?: AbortSignal; identity?: string | null; session?: "regular" | "extended" };
+export type WorkstationCandles = LoadedCandles & { provider: ChartProviderMetadata; session?: CandleSession; cache?: CandleCacheMetadata };
+type Input = { symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; signal?: AbortSignal; identity?: string | null; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete" };
 const yahooIdentity = "workstation:v1:yahoo:unverified";
 const day = 86400;
 const defaults: Record<CandleTimeframe, number> = { "5m": 60, "10m": 60, "15m": 60, "1h": 730, "1d": 3650, "1wk": 3650 };
@@ -44,6 +47,20 @@ async function yahoo(input: Input, warnings: string[], fallback: boolean): Promi
 export async function loadWorkstationCandles(input: Input): Promise<WorkstationCandles> {
   input.signal?.throwIfAborted();
   const policy = workstationCandlePolicy();
+  const pinnedYahoo = [yahooIdentity, `${yahooIdentity}:extended`].includes(input.identity ?? "");
+  if (input.mode === "cache" && (!cacheEnabled() || policy.provider !== "alpaca" || pinnedYahoo)) {
+    const range = input.range ?? { from: 1, to: 1 };
+    return { symbol: input.symbol, candles: [], source: null, provider: { identity: input.identity ?? "", provider: policy.provider, feed: null, adjustment: "unverified", delaySeconds: 0, cached: false, fallback: false }, cache: { enabled: false, status: "miss", covered: [], missing: [range], refresh: [], effectiveRange: range } };
+  }
+  if (cacheEnabled() && policy.provider === "alpaca" && !pinnedYahoo && input.range) {
+    const expected = input.session ? `${policy.cacheSource}:${input.session}` : policy.cacheSource;
+    if (input.identity && input.identity !== expected) throw new Error("Chart provider identity changed. Reload to start a separate series.");
+    try { return await loadCompactWorkstationCandles({ ...input, range: input.range }, policy); }
+    catch (error) {
+      if (isCandleRequestAbort(error, input.signal) || input.mode === "cache" || input.identity || !policy.fallback) throw error;
+      return yahoo(input, [`Alpaca unavailable (${alpacaFailureSummary(error)}); Yahoo fallback is active.`], true);
+    }
+  }
   // Extended Yahoo requests are workstation-only and never reuse the shared regular-session cache.
   if (policy.provider === "legacy" && input.session === "extended") return yahoo(input, [], false);
   if (policy.provider === "legacy") {

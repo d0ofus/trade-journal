@@ -80,6 +80,7 @@ type Props = {
   fullscreenTitle: string;
   style?: CSSProperties;
   onToggleLabels: () => void;
+  onHistoryReady?: (tradeId: string) => void;
 };
 import { diagnoseExecution, executionDiagnosticSummary } from "@/lib/workstation/execution-diagnostics";
 import { ExecutionDetails } from "./execution-details";
@@ -100,14 +101,14 @@ export function TradeChart(props: Props) {
   const [historyState, setHistoryState] = useState<HistoryState | null>(null);
   const history = useRef<CandleHistory | null>(null),
     checkHistory = useRef<() => void>(() => {}),
-    autoPages = useRef(3);
+    autoPages = useRef(0);
   const result = historyState?.result ?? {
     candles: [],
     warning: "",
     source: "",
   };
-  const loading = !historyState || historyState.loading === "initial";
-  const failure = historyState?.failed === "initial" ? historyState.error : "";
+  const loading = (!historyState || historyState.loading === "initial") && !result.candles.length;
+  const failure = historyState?.failed === "initial" && !result.candles.length ? historyState.error : "";
   const [reload, setReload] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
@@ -218,21 +219,17 @@ export function TradeChart(props: Props) {
     dataReady.current = false;
     pending.current = null;
     draft.current = null;
-    autoPages.current = 3;
+    autoPages.current = 0;
     setHistoryState(null);
     let disposed = false;
-    let preparing = true;
     const session = new CandleHistory(
       props.adapter,
       props.trade,
       props.panel.interval,
       initialHistoryRange(props.trade, props.panel.interval, context),
       (state) => {
-        setHistoryState(preparing ? { ...state, loading: "initial" } : state);
-        dataReady.current =
-          !preparing &&
-          state.loading !== "initial" &&
-          state.failed !== "initial";
+        setHistoryState(state);
+        dataReady.current = state.result.candles.length > 0 || (!state.loading && !state.failed);
       },
     );
     history.current = session;
@@ -240,9 +237,9 @@ export function TradeChart(props: Props) {
       const started = await session.start();
       if (started && requested?.range) await session.cover(requested.range);
       if (disposed) return;
-      preparing = false;
-      dataReady.current = session.state.failed !== "initial";
+      dataReady.current = session.state.result.candles.length > 0 || session.state.failed !== "initial";
       setHistoryState(session.state);
+      if (session.state.result.candles.length) latest.current.onHistoryReady?.(props.trade.id);
     })();
     return () => {
       disposed = true;
@@ -430,6 +427,7 @@ export function TradeChart(props: Props) {
     };
     paintRef.current = paint;
     const resize = new ResizeObserver((entries) => {
+      autoPages.current = 0;
       const { width, height } = entries[0].contentRect;
       if (width < 20 || height < 20) return;
       dimensions.current = {
@@ -468,7 +466,7 @@ export function TradeChart(props: Props) {
             : null;
       if (direction) {
         autoPages.current--;
-        void session.extend(direction);
+        void session.extend(direction, false, Math.ceil(threshold + (direction === "older" ? Math.max(0, -range.from) : Math.max(0, range.to - bars.current.length))));
       }
     };
     const rangeChanged = () => {
@@ -634,7 +632,7 @@ export function TradeChart(props: Props) {
         drag.current = null;
         paintRef.current();
       },
-      fit: () => requestFit.current(),
+      fit: () => { autoPages.current = 0; requestFit.current(); },
       view() {
         const range = api.timeScale().getVisibleRange();
         return range &&
@@ -1053,7 +1051,6 @@ export function TradeChart(props: Props) {
     focusedWindow.current = null;
     focusedTarget.current = null;
     clickGesture.current = null;
-    autoPages.current = 3;
     props.onActive();
     if (!dataReady.current || loading || failure || event.button !== 0) return;
     const pos = pointer(event);
@@ -1144,6 +1141,7 @@ export function TradeChart(props: Props) {
         Math.hypot(event.clientX - click.x, event.clientY - click.y) > 4)
     )
       click.moved = true;
+    if (click?.moved && click.target && event.buttons === 1 && props.tool === "cursor") autoPages.current = 3;
     if (!dataReady.current) return;
     const point = pointAt(pointer(event));
     if (!point) return;
@@ -1250,7 +1248,7 @@ export function TradeChart(props: Props) {
           <button
             title="Fit trade"
             aria-label={`Fit trade ${props.panel.id}`}
-            onClick={() => requestFit.current()}
+            onClick={() => { autoPages.current = 0; requestFit.current(); }}
           >
             <Crosshair size={13} />
           </button>
@@ -1328,6 +1326,7 @@ export function TradeChart(props: Props) {
       >
         <div ref={host} className="ws-chart-canvas" />
         <canvas ref={overlay} className="ws-chart-overlay" />
+        {!!historyState?.loading && !!result.candles.length && <div className="ws-history-progress" role="status">Loading additional history</div>}
         {loading && <div className="ws-chart-state">Loading candles…</div>}
         {failure && (
           <div className="ws-chart-state">
@@ -1363,6 +1362,8 @@ export function TradeChart(props: Props) {
               <X size={13} />
             </button>
           </div>
+          {props.adapter.refreshCandles && <button className="ws-tool-button" disabled={!!historyState?.loading} onClick={() => void history.current?.refresh(visibleWindow)}>Refresh this history window</button>}
+          {result.cache?.enabled && <p>Cache: {result.cache.status} · {result.cache.missing.length} uncovered range{result.cache.missing.length === 1 ? "" : "s"}. Cached candles stay visible while history loads.</p>}
           {visibleWindow && (
             <p className="ws-visible-window">
               {Math.round(visibleBars)} visible bars ·{" "}

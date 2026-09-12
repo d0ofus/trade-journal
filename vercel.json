@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/flex-import",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/candle-preparation",
+      "schedule": "0 9 * * *"
     }
   ]
 }

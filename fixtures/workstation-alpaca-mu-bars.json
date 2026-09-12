@@ -1,0 +1,58 @@
+{
+  "description": "Frozen sanitized MU SIP/raw 5m bars from the previously verified provider response; no account data.",
+  "session": {
+    "timezone": "America/New_York",
+    "calendar": "exchange",
+    "marketHours": "extended"
+  },
+  "candles": [
+    {
+      "time": 1788524700,
+      "open": 977.3,
+      "high": 979.04,
+      "low": 977.17,
+      "close": 979,
+      "volume": 29908
+    },
+    {
+      "time": 1788528600,
+      "open": 971.88,
+      "high": 994.74,
+      "low": 969,
+      "close": 994.33,
+      "volume": 2220251
+    },
+    {
+      "time": 1788877200,
+      "open": 1014.1528,
+      "high": 1019.17,
+      "low": 1013,
+      "close": 1017.76,
+      "volume": 402807
+    },
+    {
+      "time": 1788894300,
+      "open": 1011.58,
+      "high": 1012.1972,
+      "low": 1008,
+      "close": 1008.49,
+      "volume": 290720
+    },
+    {
+      "time": 1788960600,
+      "open": 998.805,
+      "high": 1004.53,
+      "low": 992.29,
+      "close": 996.895,
+      "volume": 866455
+    },
+    {
+      "time": 1789047000,
+      "open": 997,
+      "high": 997.46,
+      "low": 982.12,
+      "close": 987.435,
+      "volume": 1659921
+    }
+  ]
+}

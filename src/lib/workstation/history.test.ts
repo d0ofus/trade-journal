@@ -5,11 +5,47 @@ import { createDemoAdapter, demoCandles, demoTrades, initialDemoDocument } from 
 import { Candle, CandleResult, WorkstationAdapter, intervals } from "./types";
 import { createApplicationAdapter } from "./application-adapter";
 import { executionBar } from "./math";
+import { CandleMemory } from "./candle-memory";
+import { missingRanges } from "./candle-ranges";
 
 const trade = demoTrades[0];
 const bar = (time: number, close = 101): Candle => ({ time, open: 100, high: 105, low: 95, close, volume: 500 });
 const range = { from: trade.openTime - 86400, to: trade.closeTime + 86400 };
 const result = (candles: Candle[], source = "alpaca"): CandleResult => ({ candles, source, warning: "" });
+const cachedResult = (candles: Candle[], covered = [{ from: range.from, to: range.to + .001 }], identity = "alpaca:sip:raw:extended"): CandleResult => ({ ...result(candles), identity, cache: { enabled: true, status: covered.length ? "partial" : "miss", covered, missing: missingRanges({ from: range.from, to: range.to + .001 }, covered), refresh: [], effectiveRange: { from: range.from, to: range.to + .001 } } });
+
+test("partial cached candles publish before provider completion, without advancing history or losing drawings", async () => {
+  let finish!: (r: CandleResult) => void; const pending = new Promise<CandleResult>(resolve => { finish = resolve; });
+  const updates: HistoryState[] = [];
+  const adapter = { ...createDemoAdapter(), cachedCandles: async () => cachedResult([bar(trade.openTime)], [{ from: range.from, to: trade.openTime + 1 }]), candles: async () => pending };
+  const history = new CandleHistory(adapter, trade, "5m", range, state => updates.push(state));
+  const run = history.start(); await new Promise(r => setTimeout(r, 0));
+  assert.equal(history.state.loading, "initial"); assert.equal(history.state.result.candles.length, 1); assert.deepEqual(history.state.range, range);
+  finish(cachedResult([bar(trade.openTime), bar(trade.closeTime)])); await run;
+  assert.equal(history.state.loading, null); assert.equal(history.state.result.candles.length, 2); assert.ok(updates.some(s => s.loading && s.result.candles.length));
+});
+test("fully covered cache including empty periods never invokes the fill adapter", async () => {
+  let calls = 0;
+  for (const candles of [[], [bar(trade.openTime)]]) {
+    const history = new CandleHistory({ ...createDemoAdapter(), cachedCandles: async () => cachedResult(candles), candles: async () => { calls++; return result([]); } }, trade, "5m", range, () => {});
+    assert.equal(await history.start(), true); assert.equal(calls, 0);
+  }
+});
+test("overlapping browser ranges keep provider identities isolated and expire without discarding verification semantics", () => {
+  let now = 1; const memory = new CandleMemory(() => now);
+  const a = { ...cachedResult([bar(trade.openTime)]), cache: { ...cachedResult([]).cache!, status: "hit" as const } };
+  memory.put("MU:5m:extended", a);
+  assert.equal(memory.get("MU:5m:extended", { from: trade.openTime, to: trade.openTime + 1 })?.cache?.status, "hit");
+  assert.equal(memory.get("MU:5m:regular", range), null);
+  memory.put("MU:5m:extended", { ...a, identity: "yahoo:unverified", candles: [bar(trade.openTime, 104)] });
+  assert.equal(memory.get("MU:5m:extended", range, a.identity)?.candles[0].close, 101);
+  assert.equal(memory.get("MU:5m:extended", range, "yahoo:unverified")?.candles[0].close, 104);
+  now += 300001; assert.equal(memory.get("MU:5m:extended", range), null);
+});
+test("provider failure after a partial cache hit leaves usable cached bars available", async () => {
+  const history = new CandleHistory({ ...createDemoAdapter(), cachedCandles: async () => cachedResult([bar(trade.openTime)], []), candles: async () => { throw new Error("Provider offline"); } }, trade, "5m", range, () => {});
+  assert.equal(await history.start(), false); assert.equal(history.state.result.candles.length, 1); assert.match(history.state.error, /offline/);
+});
 function fixture(candles: WorkstationAdapter["candles"], callback: (state: HistoryState) => void = () => {}) {
   return new CandleHistory({ ...createDemoAdapter(), candles }, trade, "5m", range, callback, () => range.to + 86400 * 30);
 }

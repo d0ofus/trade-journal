@@ -2724,3 +2724,5 @@
   .ws-chart-toolbar { height: auto; flex: 0 0 auto; flex-wrap: wrap; padding: 4px 5px; row-gap: 3px; }
   .ws-session-select { flex: 0 0 165px; }
 }
+
+.ws-history-progress { position:absolute; z-index:3; top:8px; right:70px; pointer-events:none; font-size:10px; color:var(--ws-muted); background:var(--ws-bg); padding:3px 6px; border-radius:3px; }

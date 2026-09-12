@@ -3,6 +3,9 @@
   "compilerOptions": { "incremental": false },
   "include": [
     "src/**/*.d.ts",
+    "src/lib/server/workstation-cache.test.ts",
+    "src/lib/server/workstation-cache-after.test.ts",
+    "src/lib/workstation/history.test.ts",
     "scripts/workstation-migration-check.ts",
     "scripts/workstation-ingestion-parity.ts",
     "scripts/verify-workstation-alpaca.ts",

@@ -8,6 +8,10 @@ export type BackupTableContract = {
   optionalInLegacy?: boolean;
 };
 
+// Disposable market-data cache and jobs are reconstructed from the provider and trade read model.
+// They are deliberately excluded from user-data backup payloads, freshness, and restores.
+export const REGENERABLE_CACHE_MODELS = ["WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease"] as const;
+
 export const BACKUP_TABLES = [
   { key: "accounts", prismaModel: "Account", dependencies: [], restoreOrder: 10, canonicalRows: true },
   { key: "instruments", prismaModel: "Instrument", dependencies: [], restoreOrder: 20, canonicalRows: true },

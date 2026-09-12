@@ -1,4 +1,5 @@
 "use client";
+import { initialHistoryRange } from "@/lib/workstation/history";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import {
   createContext,
@@ -374,6 +375,19 @@ export function TradesWorkstation({
       ),
     [trades, query, filter, exported],
   );
+  const prefetched = useRef(new Set<string>());
+  const prefetchNext = (tradeId: string) => {
+    if (!adapter.cachedCandles || tradeId !== trade?.id) return;
+    const index = filtered.findIndex(t => t.id === tradeId);
+    for (const next of filtered.slice(index + 1, index + 3)) for (const panel of preferences.panels) {
+      const candidate = { ...next, chartSession: tradeChartSession(next, preferences.chartSession) };
+      const key = `${candidate.id}:${panel.interval}:${candidate.chartSession}:${candidate.timeInterpretationVersion}`;
+      if (prefetched.current.has(key)) continue;
+      if (prefetched.current.size >= 100) prefetched.current.delete(prefetched.current.values().next().value!);
+      prefetched.current.add(key);
+      void adapter.cachedCandles(candidate, panel.interval, undefined, initialHistoryRange(candidate, panel.interval)).catch(() => prefetched.current.delete(key));
+    }
+  };
   const preferenceKey = `execution-lab:workstation:preferences:${adapter.mode}:v1`;
   useEffect(() => registerSave(persistence.flush), [registerSave, persistence.flush]);
   useEffect(() => { setFocused(!!trade && (preferences.focusMode || !!fullscreenChart)); return () => setFocused(false); }, [setFocused, preferences.focusMode, fullscreenChart, trade]);
@@ -1081,6 +1095,7 @@ export function TradesWorkstation({
               key={`${trade.id}:${panel.id}`}
               style={styles[index]}
               onToggleLabels={toggleLabels}
+              onHistoryReady={prefetchNext}
               panel={panel}
               trade={trade}
               adapter={adapter}

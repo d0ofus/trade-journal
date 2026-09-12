@@ -73,6 +73,7 @@ export class CandleHistory {
     this.changed(this.state);
   }
   async start() { return this.load(this.state.range, "initial"); }
+  async refresh(context?: HistoryRange | null) { return this.load(initialHistoryRange(this.trade, this.interval, context), "initial", true); }
   /** Fill an explicitly requested calendar window in bounded, cancellable pages. */
   async cover(range: HistoryRange): Promise<void> {
     const end = Math.min(range.to, this.now());
@@ -87,13 +88,13 @@ export class CandleHistory {
     if (failed) return this.extend(failed, true);
     return false;
   }
-  async extend(direction: HistoryDirection, manual = false): Promise<boolean> {
+  async extend(direction: HistoryDirection, manual = false, visibleBars?: number): Promise<boolean> {
     if (this.busy || this.controller.signal.aborted || this.state.failed === "initial" || (!manual && this.paused.has(direction))) return false;
     if (this.state.result.candles.length >= MAX_HISTORY_CANDLES) {
       this.publish({ messages: { ...this.state.messages, [direction]: "Chart memory limit reached (100,000 bars). Switch timeframe or reopen the chart to browse another period." } });
       return false;
     }
-    const width = pageDays[this.interval] * DAY, overlap = seconds[this.interval] * 2;
+    const width = visibleBars ? Math.min(pageDays[this.interval] * DAY, Math.max(2 * DAY, seconds[this.interval] * visibleBars)) : pageDays[this.interval] * DAY, overlap = seconds[this.interval] * 2;
     const current = this.state.range;
     const range = direction === "older"
       ? { from: Math.max(1, current.from - width), to: current.from + overlap }
@@ -105,12 +106,43 @@ export class CandleHistory {
     }
     return this.load(range, direction);
   }
-  private async load(range: HistoryRange, direction: "initial" | HistoryDirection): Promise<boolean> {
+  private async load(range: HistoryRange, direction: "initial" | HistoryDirection, refresh = false): Promise<boolean> {
     if (this.busy || this.controller.signal.aborted) return false;
     this.busy = true;
     this.publish({ loading: direction, error: "", failed: null });
     try {
-      const response = await this.adapter.candles(this.trade, this.interval, this.controller.signal, range, this.state.result.identity);
+      const publishCached = (value: CandleResult) => {
+        if (value.truncated) throw new Error("History response was truncated. Use a smaller history window.");
+        if (this.state.result.candles.length && this.state.result.identity && value.candles.length && value.identity !== this.state.result.identity) throw new Error("History provider changed. Existing candles are preserved; reload to start a separate series.");
+        const previous = value.cache?.enabled ? this.state.result.candles.filter(c => !value.cache!.covered.some(r => c.time >= r.from && c.time < r.to)) : this.state.result.candles;
+        const candles = mergeHistory(previous, value.candles, range);
+        if (candles.length > MAX_HISTORY_CANDLES) throw new Error("Chart memory limit reached (100,000 bars). Use a larger timeframe.");
+        this.publish({ result: { ...value, candles, identity: this.state.result.candles.length ? this.state.result.identity : value.identity } });
+      };
+      let response = await this.adapter.cachedCandles?.(this.trade, this.interval, this.controller.signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
+      if (response?.cache?.enabled && !response.truncated) publishCached(response);
+      const deadline = Date.now() + 90_000;
+      let attempts = 0;
+      while (refresh || !response?.cache?.enabled || response.cache.missing.length || response.cache.refresh.length) {
+        if (attempts >= 60 || Date.now() > deadline) throw new Error("Additional history is still queued. Cached candles are ready; retry to resume the missing range.");
+        if (attempts && response?.cache?.retryAfterMs) {
+          const wait = response.cache.retryAfterMs;
+          if (wait > 5000) throw new Error(response.warning || "History preparation is paused. Cached candles remain available.");
+          await new Promise<void>((resolve, reject) => {
+            const abort = () => { clearTimeout(timer); reject(new Error("History cancelled")); };
+            const timer = setTimeout(() => { this.controller.signal.removeEventListener("abort", abort); resolve(); }, wait);
+            this.controller.signal.addEventListener("abort", abort, { once: true });
+          });
+        }
+        this.controller.signal.throwIfAborted();
+        const fetch = refresh ? this.adapter.refreshCandles ?? this.adapter.candles : this.adapter.candles;
+        response = await fetch(this.trade, this.interval, this.controller.signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
+        refresh = false;
+        attempts++;
+        if (response.cache?.enabled) publishCached(response);
+        else break; // Original adapters and explicitly separate Yahoo fallback keep their existing contract.
+      }
+      if (!response) throw new Error("History response unavailable.");
       if (this.controller.signal.aborted) return false;
       // Advancing past a truncated response could silently skip unreturned history.
       if (response.truncated) throw new Error("History response was truncated. Existing candles are preserved; retry this range before continuing.");
@@ -129,11 +161,11 @@ export class CandleHistory {
         else {
           this.paused.add(direction);
           messages[direction] = `No ${direction} bars returned for ${new Date(range.from * 1000).toISOString().slice(0, 10)}–${new Date(range.to * 1000).toISOString().slice(0, 10)}. History may be unavailable; use Load ${direction} to search the next window.`;
-          this.warnings.add(`No bars returned for ${new Date(range.from * 1000).toISOString().slice(0, 10)}–${new Date(range.to * 1000).toISOString().slice(0, 10)}; coverage is not confirmed.`);
+          this.warnings.add(response.cache?.enabled && !response.cache.missing.length ? "Provider query completed: no eligible bars in this period." : `No bars returned for ${new Date(range.from * 1000).toISOString().slice(0, 10)}–${new Date(range.to * 1000).toISOString().slice(0, 10)}; coverage is not confirmed.`);
         }
       }
       this.publish({
-        result: { candles, source: [...this.sources].join(" / "), warning: [...this.warnings].join(" · "), identity: this.state.result.candles.length ? this.state.result.identity : response.identity, provider: response.provider ?? this.state.result.provider, session: response.session ?? this.state.result.session },
+        result: { cache: response.cache, candles, source: [...this.sources].join(" / "), warning: [...this.warnings].join(" · "), identity: this.state.result.candles.length ? this.state.result.identity : response.identity, provider: response.provider ?? this.state.result.provider, session: response.session ?? this.state.result.session },
         range: { from: Math.min(previous.from, range.from), to: Math.max(previous.to, range.to) },
         messages,
       });

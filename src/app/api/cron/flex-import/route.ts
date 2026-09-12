@@ -1,3 +1,4 @@
+import { prepareCandlesAfterResponse } from "@/lib/server/workstation-cache-after";
 import { NextRequest, NextResponse } from "next/server";
 import { requireBearerSecret } from "@/lib/server/api-auth";
 import { runFlexImport } from "@/lib/server/flex-service";
@@ -8,6 +9,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const result = await runFlexImport();
+    prepareCandlesAfterResponse();
     return NextResponse.json({ ok: true, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Flex import failed.";

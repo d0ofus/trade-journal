@@ -142,6 +142,7 @@ export type WorkspacePreferences = {
   exportColumns: string[];
 };
 export type CandleResult = {
+  cache?: import("./candle-ranges").CandleCacheMetadata;
   identity?: string;
   candles: Candle[];
   warning: string;
@@ -152,6 +153,8 @@ export type CandleResult = {
 };
 export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown" };
 export interface WorkstationAdapter {
+  cachedCandles?: WorkstationAdapter["candles"];
+  refreshCandles?: WorkstationAdapter["candles"];
   mode: "demo" | "application";
   load(id: string): Promise<TradeDocument>;
   save(
