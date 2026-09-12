@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { AlpacaCandleError } from "./alpaca-candle-error";
 import { inferBarIntervalSeconds } from "@/lib/charts/execution-marker-alignment";
 import {
   evaluateUsEquitiesCandleCoverage,
@@ -531,7 +532,7 @@ export async function loadAlpacaCandlesForSymbol(input: {
         "APCA-API-SECRET-KEY": credentials.secretKey,
       },
     });
-    if (!res.ok) throw new Error("Alpaca candle provider unavailable.");
+    if (!res.ok) throw new AlpacaCandleError("http", res.status);
 
     const payload = await res.json();
     throwIfCandleRequestAborted(input.signal);
@@ -541,7 +542,7 @@ export async function loadAlpacaCandlesForSymbol(input: {
   } while (pageToken && rows.length < targetLimit && page < MAX_ALPACA_PAGES);
 
   const candles = dedupeCandles(rows).slice(-targetLimit);
-  if (candles.length === 0) throw new Error("Alpaca candle provider returned no usable data.");
+  if (candles.length === 0) throw new AlpacaCandleError("empty");
 
   // Once usable provider data is accepted, finish its durable cache write even if the caller disconnects.
   throwIfCandleRequestAborted(input.signal);

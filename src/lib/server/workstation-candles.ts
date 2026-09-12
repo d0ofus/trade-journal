@@ -8,6 +8,7 @@ import { evaluateUsEquitiesCandleCoverage, isSessionAwareTimeframe } from "./mar
 import { workstationCandlePolicy } from "./workstation-candle-policy";
 import { isRegularUsSession } from "@/lib/workstation/chart-session";
 import type { CandleSession } from "@/lib/workstation/types";
+import { alpacaFailureSummary } from "./alpaca-candle-error";
 
 export type ChartProviderMetadata = { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
 export type WorkstationCandles = LoadedCandles & { provider: ChartProviderMetadata; session?: CandleSession };
@@ -75,8 +76,9 @@ export async function loadWorkstationCandles(input: Input): Promise<WorkstationC
     return { ...loaded, candles: visibleCandles(loaded.candles), provider, session: { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" }, warnings: [...warnings, ...(loaded.warnings ?? [])] };
   } catch (error) {
     if (isCandleRequestAbort(error, input.signal)) throw error;
-    if (cached.length) return { symbol: input.symbol, candles: visibleCandles(cached), source: "cache", cacheKind: "native", provider: { ...provider, cached: true }, coverage, warnings: [...warnings, "Alpaca unavailable; showing incomplete cached history from the same feed and price basis."] };
-    if (policy.fallback) return yahoo(input, [...warnings, "Alpaca unavailable; Yahoo fallback is active."], true);
-    throw new Error("Alpaca history unavailable. Yahoo fallback is disabled; existing chart history is preserved.");
+    const failure = `Alpaca unavailable (${alpacaFailureSummary(error)})`;
+    if (cached.length) return { symbol: input.symbol, candles: visibleCandles(cached), source: "cache", cacheKind: "native", provider: { ...provider, cached: true }, coverage, warnings: [...warnings, `${failure}; showing incomplete cached history from the same feed and price basis.`] };
+    if (policy.fallback) return yahoo(input, [...warnings, `${failure}; Yahoo fallback is active.`], true);
+    throw new Error(`${failure}. Yahoo fallback is disabled; existing chart history is preserved.`);
   }
 }

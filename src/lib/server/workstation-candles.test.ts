@@ -129,3 +129,37 @@ it("does not substitute Yahoo when fallback is disabled or a request is aborted"
   await expect(loadWorkstationCandles({ ...input, signal: controller.signal })).rejects.toThrow();
   expect(fetcher).not.toHaveBeenCalled();
 });
+
+it.each([
+  [401, "credentials rejected"],
+  [403, "access denied"],
+  [422, "historical data request rejected"],
+  [429, "request rate limit reached"],
+  [503, "provider service error"],
+])("explains HTTP %s fallback without disclosing the upstream body", async (status, detail) => {
+  const fetcher = vi.fn().mockImplementation(async (url: string | URL) => String(url).includes("alpaca")
+    ? new Response("sensitive-upstream-body test-chart-secret", { status }) : yahoo());
+  vi.stubGlobal("fetch", fetcher);
+  const result = await loadWorkstationCandles(input);
+  expect(result.provider.fallback).toBe(true);
+  expect(result.warnings?.join(" ")).toContain(`HTTP ${status}: ${detail}`);
+  expect(JSON.stringify(result)).not.toMatch(/sensitive-upstream-body|test-chart-secret/);
+});
+
+it("distinguishes empty Alpaca history from rejected credentials", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string | URL) => String(url).includes("alpaca")
+    ? new Response(JSON.stringify({ bars: {}, next_page_token: null })) : yahoo()));
+  const result = await loadWorkstationCandles(input);
+  expect(result.warnings?.join(" ")).toContain("no usable bars returned for this period");
+  expect(db.createMany).not.toHaveBeenCalled();
+});
+
+it("never returns arbitrary transport error messages in a fallback response", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string | URL) => {
+    if (String(url).includes("alpaca")) throw new TypeError("bad header test-chart-secret");
+    return yahoo();
+  }));
+  const result = await loadWorkstationCandles(input);
+  expect(result.warnings?.join(" ")).toContain("connection or response failure");
+  expect(JSON.stringify(result)).not.toContain("test-chart-secret");
+});
