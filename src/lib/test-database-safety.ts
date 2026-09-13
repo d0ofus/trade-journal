@@ -33,9 +33,13 @@ function urlError(variable: DatabaseUrlVariable, detail: string): TestDatabaseSa
   return new TestDatabaseSafetyError(`${variable} ${detail}`);
 }
 
-export function loadDotEnvWithoutOverride(envFile = path.resolve(process.cwd(), ".env")): void {
+export function loadDotEnvWithoutOverride(envFile = path.resolve(process.cwd(), ".env.test.local")): void {
   if (existsSync(envFile)) {
     loadEnvFile(envFile);
+  }
+  if (envFile === path.resolve(process.cwd(), ".env.test.local")) {
+    process.env.DATABASE_URL ??= "postgresql://postgres@127.0.0.1:5432/trade_journal_test";
+    process.env.DIRECT_URL ??= process.env.DATABASE_URL;
   }
 }
 
@@ -108,6 +112,12 @@ export function assertTestDatabaseSafety(env: TestDatabaseEnvironment): TestData
 
   const databaseUrl = parsePostgresTarget(env.DATABASE_URL, "DATABASE_URL");
   const directUrl = parsePostgresTarget(env.DIRECT_URL, "DIRECT_URL");
+  for (const value of [env.DATABASE_URL, env.DIRECT_URL]) {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (hostname !== "localhost" && hostname !== "::1" && !(isIP(hostname) === 4 && hostname.startsWith("127."))) {
+      throw new TestDatabaseSafetyError("Database tests require local PostgreSQL. Remote targets, including test schemas in a production database, are rejected.");
+    }
+  }
 
   if (
     databaseUrl.host !== directUrl.host ||

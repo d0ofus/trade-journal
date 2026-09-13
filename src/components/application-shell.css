@@ -50,3 +50,7 @@
   .app-focused .application-content:has(.workstation) { height:100dvh; }
 }
 @media(prefers-reduced-motion:reduce) { .application-shell * { scroll-behavior:auto; transition:none; } }
+
+.app-backup-reminder { position:fixed; bottom:12px; left:72px; right:12px; margin-left:auto; width:max-content; max-width:calc(100vw - 88px); z-index:45; padding:10px 12px; font-size:12px; border:1px solid var(--ws-border); border-radius:8px; background:var(--ws-elevated); color:var(--ws-text); box-shadow:0 3px 12px #0002; }
+.app-backup-reminder a,.app-backup-reminder button { color:var(--ws-accent); margin-left:10px; text-decoration:underline; }
+.app-backup-reminder :focus-visible { outline:2px solid var(--ws-accent); outline-offset:3px; }

@@ -763,7 +763,7 @@ export async function getCalendarPerformance(target?: Date) {
   });
 }
 
-async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>> {
+export async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>> {
   const [
     accounts,
     instruments,
@@ -787,6 +787,7 @@ async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>
     symbolNoteTags,
     closedTrades,
     closedTradeNotes,
+    workstationTradeViews,
     closedTradeLayouts,
     closedTradeAnnotationStates,
     closedTradeAnnotations,
@@ -831,12 +832,13 @@ async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>
     prisma.symbolNoteTag.count(),
     prisma.closedTrade.count(),
     prisma.closedTradeNote.count(),
+    prisma.workstationTradeView.count(),
     prisma.closedTradeChartLayout.count(),
     prisma.closedTradeAnnotationState.count(),
     prisma.closedTradeAnnotation.count(),
     prisma.closedTradeTag.count(),
     prisma.closedTradeExecution.count(),
-    prisma.marketCandle.count(),
+    Promise.resolve(0), // Historical provider cache is not part of journal backup freshness.
     prisma.journalPlaybook.count(),
     prisma.journalPlaybookRule.count(),
     prisma.journalEntry.count(),
@@ -877,6 +879,7 @@ async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, number>
     symbolNoteTags,
     closedTrades,
     closedTradeNotes,
+    workstationTradeViews,
     closedTradeLayouts,
     closedTradeAnnotationStates,
     closedTradeAnnotations,
@@ -937,7 +940,7 @@ export async function getSettingsData(options: { includeBackupReadiness?: boolea
     prisma.closedTradeAnnotation.count(),
     prisma.journalEntry.count(),
     prisma.journalChart.count(),
-    prisma.marketCandle.count(),
+    Promise.resolve(0), // Historical provider cache is not part of journal backup freshness.
     prisma.importBatch.count({ where: { status: "FAILED" } }),
     prisma.importBatch.count({ where: { status: "MATERIALIZATION_FAILED" } }),
     prisma.importBatch.count({

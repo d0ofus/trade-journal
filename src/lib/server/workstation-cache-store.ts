@@ -42,7 +42,10 @@ export async function cacheUsage(db: UsageReader = prisma) {
     SELECT (pg_total_relation_size('"WorkstationCandleChunk"') + pg_total_relation_size('"WorkstationCandleCoverage"') +
       pg_total_relation_size('"WorkstationCandleJob"') + pg_total_relation_size('"WorkstationCandleLease"'))::bigint AS cache,
       (SELECT sum(pg_database_size(oid))::bigint FROM pg_database WHERE NOT datistemplate) AS databases`;
-  return { cacheBytes: Number(rows[0].cache), databaseBytes: Number(rows[0].databases), cacheLimit: 100_000_000, databaseLimit: 400_000_000 };
+  const cacheBytes = Number(rows[0].cache), databaseBytes = Number(rows[0].databases);
+  return { cacheBytes, databaseBytes, cacheLimit: 100_000_000, databaseLimit: 400_000_000,
+    warning: cacheBytes >= 80_000_000 || databaseBytes >= 350_000_000,
+    persistencePaused: cacheBytes >= 99_000_000 || databaseBytes >= 399_000_000 };
 }
 export async function cacheBudgetAvailable(db: UsageReader = prisma): Promise<boolean> {
   const usage = await cacheUsage(db);
@@ -51,14 +54,6 @@ export async function cacheBudgetAvailable(db: UsageReader = prisma): Promise<bo
 export async function protectTradeCache(series: CacheSeries, range: CandleRange) {
   await prisma.workstationCandleChunk.updateMany({ where: { ...series, tradeWindow: false, start: { lt: new Date(range.to * 1000) }, end: { gt: new Date(range.from * 1000) } }, data: { tradeWindow: true } });
 }
-export async function evictExploratoryCache() {
-  if (await cacheBudgetAvailable()) return;
-  // Only dispensable chart chunks are eligible. Coverage is deleted with its chunk.
-  const candidates = await prisma.workstationCandleChunk.findMany({ where: { tradeWindow: false }, orderBy: { accessedAt: "asc" }, take: 200, select: { key: true, accessedAt: true, updatedAt: true } });
-  if (candidates.length) await prisma.workstationCandleChunk.deleteMany({ where: { tradeWindow: false, OR: candidates } });
-  // Physical table allocation may not shrink immediately. Stay paused until measurements permit growth.
-}
-
 export async function readCompactCandles(series: CacheSeries, range: CandleRange, limit: number, now = Date.now() / 1000) {
   const records = await prisma.workstationCandleChunk.findMany({ where: { symbol: series.symbol, timeframe: series.timeframe, source: series.source, start: { lt: new Date(range.to * 1000) }, end: { gt: new Date(range.from * 1000) } }, include: { coverage: true }, orderBy: { start: "asc" } });
   let candles: Candle[] = []; const segments: CacheSegment[] = []; let corrupt = false;
@@ -90,6 +85,9 @@ export async function persistCompactCandles(series: CacheSeries, range: CandleRa
   const accepted = validateCandles(incoming).filter(c => c.time >= range.from && c.time < range.to);
   const bounds = candleChunks(range, series.timeframe), keys = bounds.map(b => chunkKey(series, b.from));
   await prisma.$transaction(async tx => {
+    // Bulk timestamp parameters are timestamptz; storage columns use UTC timestamp.
+    // Never let the server/session timezone shift chunk boundaries.
+    await tx.$executeRawUnsafe("SET LOCAL TIME ZONE 'UTC'");
     // Fencing: an expired/reassigned network request cannot overwrite newer data.
     const live = await tx.$queryRaw<{ key: string }[]>`SELECT "key" FROM "WorkstationCandleLease" WHERE "key"=${lease.key} AND "token"=${lease.token} AND "expiresAt">(clock_timestamp() AT TIME ZONE 'UTC') FOR UPDATE`;
     if (!live.length) throw new Error("Chart fetch lease expired; retry from cache.");

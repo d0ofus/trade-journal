@@ -1,3 +1,5 @@
+import { tradeViewSchema } from "@/lib/workstation/trade-view";
+import { workstationEvidenceManifest } from "./workstation-backup";
 import { rawImportArchiveIdentity } from "@/lib/import/raw-archive";
 import { inspectInlineDataUrl, type JournalScreenshotBackupAsset } from "@/lib/server/backup-assets";
 import { BACKUP_TABLES, buildBackupTableManifest, type BackupTableKey } from "@/lib/server/backup-contract";
@@ -52,6 +54,7 @@ const RESTORE_KEYS: KeySpec[] = [
   { table: "symbolNoteTags", fields: ["symbolNoteId", "tagId"] },
   { table: "closedTrades", fields: ["groupKey"] },
   { table: "closedTradeNotes", fields: ["id"] },
+  { table: "workstationTradeViews", fields: ["groupKey"] },
   { table: "closedTradeLayouts", fields: ["id"] },
   { table: "closedTradeAnnotationStates", fields: ["closedTradeGroupKey"] },
   { table: "closedTradeAnnotations", fields: ["id"] },
@@ -569,6 +572,9 @@ function validateJournalScreenshotAssets(payload: JsonRecord) {
 
 function validateUniqueDomainKeys(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
+  tableRows(payload, "workstationTradeViews").forEach((row, index) => {
+    if (!isRecord(row) || row.version !== 1 || !tradeViewSchema.safeParse(row.view).success) errors.push(issue("INVALID_TRADE_VIEW", "Saved chart view is invalid.", `workstationTradeViews.${index}`));
+  });
   const specs: Array<{ table: BackupTableKey; fields: string[]; label: string }> = [
     { table: "executionTimeInterpretations", fields: ["importBatchId"], label: "timestamp interpretation batch" },
     { table: "closedTradeNotes", fields: ["groupKey"], label: "closed-trade note groupKey" },
@@ -609,6 +615,12 @@ function parseJsonField(value: unknown) {
 
 function validateJsonStateFields(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
+  const evidence = workstationEvidenceManifest(tableRows(payload, "closedTradeNotes").filter(isRecord));
+  if (evidence.invalid.length) errors.push(issue("INVALID_WORKSTATION_EVIDENCE", "Workstation review JSON or inline screenshot is invalid.", "closedTradeNotes"));
+  if (isRecord(payload.assets) && payload.assets.workstationEvidence !== undefined && JSON.stringify(payload.assets.workstationEvidence) !== JSON.stringify(evidence.entries)) errors.push(issue("WORKSTATION_EVIDENCE_MISMATCH", "Workstation screenshot checksums do not match the manifest.", "assets.workstationEvidence"));
+  tableRows(payload, "workstationTradeViews").forEach((row, index) => {
+    if (!isRecord(row) || row.version !== 1 || !tradeViewSchema.safeParse(row.view).success) errors.push(issue("INVALID_TRADE_VIEW", "Saved chart view is invalid.", `workstationTradeViews.${index}`));
+  });
   const specs: Array<{ table: BackupTableKey; field: string; shape: "array" | "object" }> = [
     { table: "executionTimeInterpretations", field: "rowsJson", shape: "array" },
     { table: "closedTradeLayouts", field: "panelsJson", shape: "array" },

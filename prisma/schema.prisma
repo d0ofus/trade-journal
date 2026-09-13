@@ -538,6 +538,17 @@ model ClosedTradeExecution {
 }
 
 // Workstation-only compact history. Legacy market/ingestion tables stay independent.
+// Independent revision: chart navigation must never rewrite a review.
+// Stable group key deliberately has no cascading materialization dependency.
+model WorkstationTradeView {
+  groupKey String @id
+  version Int @default(1)
+  revision Int @default(1)
+  view Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model WorkstationCandleChunk {
   key         String   @id
   symbol      String

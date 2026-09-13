@@ -31,5 +31,8 @@ export type CandleCacheMetadata = {
   refresh: CandleRange[];
   effectiveRange: CandleRange;
   retryAfterMs?: number;
+  persistencePaused?: boolean;
+  /** Successfully fetched in this response, but NOT durably covered. */
+  temporary?: CandleRange[];
   timings?: { cacheReadMs: number; providerFetchMs: number; persistenceMs: number };
 };

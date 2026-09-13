@@ -1,5 +1,11 @@
 export const REPOSITORY_SAFETY_ALLOWLIST = Object.freeze([
   {
+    ruleId: "database-url",
+    path: "src/lib/test-database-safety.ts",
+    fileSha256: "ccb4aa075ba0625de6fa4ed63c14b084125cf68517dd580ea4e45acfe0edf2d2",
+    reason: "Reviewed password-free local PostgreSQL default for isolated tests; remote targets are rejected.",
+  },
+  {
     ruleId: "financial-export-file",
     path: "fixtures/sample-ibkr-executions.csv",
     fileSha256: "f26371f050a43399c74e4175aface42e93cc1da010a74e04964db8ba749e8ded",
@@ -56,7 +62,7 @@ export const REPOSITORY_SAFETY_ALLOWLIST = Object.freeze([
   {
     ruleId: "database-url",
     path: "src/lib/test-database-safety.test.ts",
-    fileSha256: "b0ddacce0bb65a9a8d1c01d940feede1787db8282b83c79864fba2d1c6728e68",
+    fileSha256: "d6c6d4a97e4bc73c5061bf07d80d17fcce81647e72a12de99d210fbd2c3bfb4d",
     reason: "Reviewed database target validation fixtures.",
   },
   {

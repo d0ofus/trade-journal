@@ -81,6 +81,8 @@ type Props = {
   style?: CSSProperties;
   onToggleLabels: () => void;
   onHistoryReady?: (tradeId: string) => void;
+  initialRange?: HistoryRange | null;
+  onViewChange?: (range: HistoryRange) => void;
 };
 import { diagnoseExecution, executionDiagnosticSummary } from "@/lib/workstation/execution-diagnostics";
 import { ExecutionDetails } from "./execution-details";
@@ -196,7 +198,7 @@ export function TradeChart(props: Props) {
     const requested: typeof navigation.current = changedTimeBasis ? { time: props.trade.openTime, trade: props.trade.id, fit: true } :
       navigation.current?.trade === props.trade.id
         ? navigation.current
-        : intervalContext;
+        : intervalContext ?? (latest.current.initialRange ? { time: (latest.current.initialRange.from + latest.current.initialRange.to) / 2, trade: props.trade.id, fit: false, range: latest.current.initialRange } : null);
     if (
       currentTrade.current !== props.trade.id ||
       currentInterval.current !== props.panel.interval
@@ -226,7 +228,9 @@ export function TradeChart(props: Props) {
       props.adapter,
       props.trade,
       props.panel.interval,
-      initialHistoryRange(props.trade, props.panel.interval, context),
+      // Restore the saved viewport itself. Recentring default context here would
+      // expand a fully cached view and fetch an unnecessary new edge on reload.
+      requested?.range ? { from: requested.range.from, to: Math.min(requested.range.to, requested.range.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(props.trade, props.panel.interval, context),
       (state) => {
         setHistoryState(state);
         dataReady.current = state.result.candles.length > 0 || (!state.loading && !state.failed);
@@ -482,6 +486,7 @@ export function TradeChart(props: Props) {
           typeof range.to === "number"
         ) {
           const window = { from: range.from, to: range.to };
+          if (latest.current.replay === null && !changingData.current && dataReady.current && window.to > window.from) latest.current.onViewChange?.(window);
           setVisibleWindow((previous) =>
             previous?.from === window.from && previous?.to === window.to
               ? previous
@@ -1327,6 +1332,7 @@ export function TradeChart(props: Props) {
         <div ref={host} className="ws-chart-canvas" />
         <canvas ref={overlay} className="ws-chart-overlay" />
         {!!historyState?.loading && !!result.candles.length && <div className="ws-history-progress" role="status">Loading additional history</div>}
+        {result.cache?.persistencePaused && <div className="ws-history-progress" role="status">Storage limit reached—this history was not saved</div>}
         {loading && <div className="ws-chart-state">Loading candles…</div>}
         {failure && (
           <div className="ws-chart-state">

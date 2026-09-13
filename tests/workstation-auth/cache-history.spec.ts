@@ -34,6 +34,7 @@ test("cache paints before gap fill; reload, resize and Fit make zero upstream re
   await login(context);
   const trade = (await listWorkstationTrades({ account: "DEMO-WORKSTATION" })).find(t => t.id === previewId)!;
   const range = initialHistoryRange(trade, "5m");
+  await prisma.workstationTradeView.deleteMany({ where: { groupKey: previewId } });
   await prisma.workstationCandleChunk.deleteMany({ where: { symbol: "MU", timeframe: "5m" } });
   const partial = new URLSearchParams({ symbol: "MU", timeframe: "5m", from: String(range.from), to: String(Math.floor((range.from + range.to) / 2)), session: "extended", mode: "fill" });
   expect((await context.request.get(`/api/workstation/candles?${partial}`)).ok()).toBe(true);
@@ -105,6 +106,7 @@ test("market-data settings and endpoints stay authenticated and explain preparat
 test("cached multichart resizing, fullscreen, replay and PNG export preserve chart data without downloads", async ({ page, context }) => {
   await login(context);
   const trade = (await listWorkstationTrades({ account: "DEMO-WORKSTATION" })).find(t => t.id === previewId)!;
+  await prisma.workstationTradeView.deleteMany({ where: { groupKey: previewId } });
   for (const interval of ["5m", "1h", "1d"] as const) {
     const range = initialHistoryRange(trade, interval);
     // Preparation may include a stale recent segment and a new 15-minute tail.

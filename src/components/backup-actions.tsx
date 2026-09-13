@@ -227,7 +227,7 @@ export function BackupActions() {
   const StatusIcon = loading ? Loader2 : state.status === "verified" ? CheckCircle2 : state.status === "error" ? XCircle : ShieldCheck;
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4" data-testid="backup-actions">
+    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4" id="download-verify" data-testid="backup-actions">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <StatusIcon className={`h-4 w-4 ${loading ? "animate-spin text-sky-700" : state.status === "verified" ? "text-emerald-700" : state.status === "error" ? "text-red-700" : "text-slate-500"}`} />
@@ -244,6 +244,7 @@ export function BackupActions() {
         </Button>
       </div>
 
+      <p className="mt-3 text-xs text-slate-600">Includes journal text, drawings, screenshots, timestamp interpretations and saved chart views. Downloaded candle history is recoverable cache and is excluded. Download &amp; Verify checks structure, references and asset checksums; it does not perform a database restore. Keep the downloaded file outside this repository. Release backups are separately restored into isolated PostgreSQL.</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <ResultTile label="SHA-256" value={state.sha256 ?? "-"} testId="backup-verify-sha256" />
         <ResultTile label="Payload Size" value={formatBytes(state.payloadBytes)} testId="backup-verify-payload-bytes" />

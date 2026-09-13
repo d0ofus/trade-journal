@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { cacheHash, candleChunks, decodeCandles, encodeCandles, replaceSegments } from "./workstation-cache-codec";
-import { cacheBudgetAvailable, cacheUsage, claimCacheLease, evictExploratoryCache, persistCompactCandles, readCompactCandles, releaseCacheLease, seriesKey, takeProviderSlot } from "./workstation-cache-store";
+import { cacheBudgetAvailable, cacheUsage, claimCacheLease, persistCompactCandles, readCompactCandles, releaseCacheLease, seriesKey, takeProviderSlot } from "./workstation-cache-store";
 import { loadWorkstationCandles } from "./workstation-candles";
 import { fetchCompactCandles } from "./workstation-cache-provider";
 import { planCandlePreparation, queueCandlePreparation, runCandlePreparation } from "./workstation-cache-jobs";
@@ -122,10 +122,10 @@ describe("compact candle cache on isolated PostgreSQL", () => {
     await expect(fetchCompactCandles(series.symbol, "5m", range, workstationCandlePolicy().credentials!)).rejects.toThrow("429");
     expect(await takeProviderSlot(false)).toBe(false); expect(await prisma.workstationCandleCoverage.count()).toBe(0);
   });
-  it("plans all six timeframes, coalesces duplicates and covers entire long holdings", () => {
+  it("plans the three selected timeframes, coalesces duplicates and covers entire long holdings", () => {
     const trade = { ...demoTrades[0], closeTime: demoTrades[0].openTime + 97 * 86400 };
     const planned = planCandlePreparation([trade, trade], trade.closeTime + 10 * 86400);
-    expect(new Set(planned.map(p => p.timeframe)).size).toBe(6);
+    expect(new Set(planned.map(p => p.timeframe)).size).toBe(3);
     const five = planned.filter(p => p.timeframe === "5m"); expect(five.length).toBeGreaterThan(6);
     expect(missingRanges({ from: trade.openTime, to: trade.closeTime }, five.map(p => p.range))).toEqual([]);
     expect(planned).toEqual(planCandlePreparation([trade], trade.closeTime + 10 * 86400));
@@ -138,16 +138,16 @@ describe("compact candle cache on isolated PostgreSQL", () => {
     expect(job.status).toBe("pending"); expect(job.attempts).toBe(1); expect(job.lastError).toContain("503"); expect(await prisma.execution.count()).toBe(before);
     vi.stubEnv("TRADES_CANDLE_PREPARE_ENABLED", "0"); expect((await queueCandlePreparation()).added).toBe(0);
   });
-  it("evicts only exploratory chunks at the storage guard and deletes their coverage together", async () => {
+  it("preserves both exploratory and trade chunks when growth is paused", async () => {
     const lease = (await claimCacheLease(`series:${seriesKey(series)}`))!;
     await persistCompactCandles(series, range, [candle()], lease, true);
     const later = { from: from + 86400, to: range.to + 86400 };
     await persistCompactCandles(series, later, [candle(later.from)], lease, false);
-    const before = await prisma.execution.count();
-    const query = vi.spyOn(prisma, "$queryRaw").mockResolvedValue([{ cache: BigInt(100_000_000), databases: BigInt(400_000_000) }]);
-    await evictExploratoryCache(); query.mockRestore();
-    expect(await prisma.workstationCandleChunk.count()).toBe(1); expect(await prisma.workstationCandleCoverage.count()).toBe(1);
-    expect((await prisma.workstationCandleChunk.findFirst())?.tradeWindow).toBe(true); expect(await prisma.execution.count()).toBe(before);
+    const reader = { $queryRaw: async <T>() => [{ cache: BigInt(100_000_000), databases: BigInt(400_000_000) }] as T } as Parameters<typeof cacheBudgetAvailable>[0];
+    expect(await cacheBudgetAvailable(reader)).toBe(false);
+    expect(await prisma.workstationCandleChunk.count()).toBe(2);
+    expect(await prisma.workstationCandleCoverage.count()).toBe(2);
+    expect((await cacheUsage(reader)).persistencePaused).toBe(true);
   });
   it("revalidates recent data no more often than 15 minutes and never refreshes old history implicitly", async () => {
     const lease = (await claimCacheLease(`series:${seriesKey(series)}`))!;
@@ -159,11 +159,11 @@ describe("compact candle cache on isolated PostgreSQL", () => {
     expect((await readCompactCandles(series, range, 30000, now + 2)).cache.refresh).toEqual([range]);
     expect((await readCompactCandles(series, range, 30000, now + 8 * 86400)).cache.refresh).toEqual([]);
   });
-  it("persists all six timeframe jobs idempotently before fetching any bars", async () => {
+  it("persists the three selected timeframe jobs idempotently before fetching any bars", async () => {
     vi.spyOn(workstationRead, "listWorkstationTrades").mockResolvedValue([demoTrades[0], demoTrades[0]]);
     const first = await queueCandlePreparation(), second = await queueCandlePreparation();
-    expect(first.added).toBeGreaterThanOrEqual(6); expect(second.added).toBe(0); expect(fetch).not.toHaveBeenCalled();
-    const jobs = await prisma.workstationCandleJob.findMany(); expect(new Set(jobs.map(j => j.timeframe)).size).toBe(6); expect(jobs.every(j => j.status === "pending")).toBe(true);
+    expect(first.added).toBeGreaterThanOrEqual(3); expect(second.added).toBe(0); expect(fetch).not.toHaveBeenCalled();
+    const jobs = await prisma.workstationCandleJob.findMany(); expect(new Set(jobs.map(j => j.timeframe)).size).toBe(3); expect(jobs.every(j => j.status === "pending")).toBe(true);
   });
   it("resumes an expired job lease and protects its completed trade window", async () => {
     await prisma.workstationCandleJob.create({ data: { key: "expired-job", ...series, session: "extended", start: new Date(from * 1000), end: new Date(range.to * 1000), status: "running", leaseUntil: new Date(0), leaseToken: "old-worker" } });
@@ -192,16 +192,5 @@ describe("compact candle cache on isolated PostgreSQL", () => {
     expect(await cacheBudgetAvailable(reader(98_999_999, 398_999_999))).toBe(true);
     expect(await cacheBudgetAvailable(reader(99_000_000, 10_000_000))).toBe(false);
     expect(await cacheBudgetAvailable(reader(10_000_000, 399_000_000))).toBe(false);
-  });
-  it("does not evict a chunk that becomes protected after the LRU candidates were read", async () => {
-    const lease = (await claimCacheLease(`series:${seriesKey(series)}`))!;
-    await persistCompactCandles(series, range, [candle()], lease, false);
-    const remove = prisma.workstationCandleChunk.deleteMany.bind(prisma.workstationCandleChunk);
-    vi.spyOn(prisma.workstationCandleChunk, "deleteMany").mockImplementationOnce((async (args: Parameters<typeof remove>[0]) => {
-      await prisma.workstationCandleChunk.updateMany({ data: { tradeWindow: true } }); return remove(args);
-    }) as typeof remove);
-    const query = vi.spyOn(prisma, "$queryRaw").mockResolvedValue([{ cache: BigInt(100_000_000), databases: BigInt(400_000_000) }]);
-    await evictExploratoryCache(); query.mockRestore();
-    expect(await prisma.workstationCandleChunk.count()).toBe(1); expect(await prisma.workstationCandleCoverage.count()).toBe(1);
   });
 });

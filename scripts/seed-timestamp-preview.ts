@@ -1,3 +1,4 @@
+import { rawImportArchiveIdentity } from "../src/lib/import/raw-archive";
 import { createHash } from "node:crypto";
 import { prisma } from "../src/lib/prisma";
 import { assertTestDatabaseSafety } from "../src/lib/test-database-safety";
@@ -11,7 +12,7 @@ async function main() {
   const id = "DEMO-TIMESTAMP-PREVIEW", accountCode = "DEMO-WORKSTATION", trade = timingDemoTrade(false);
   if (await prisma.importBatch.findUnique({ where: { id } })) { console.log("Synthetic timestamp preview already exists."); return; }
   const content = "AccountId,Symbol,DateTime,Buy/Sell,Quantity,TradePrice,IBExecID\n" + timingFills.map(([raw, side, quantity, price], i) => `${accountCode},MU,${raw},${side},${quantity},${price},demo-fill-${i}`).join("\n");
-  const sha = (value: string) => createHash("sha256").update(value).digest("hex"), sourceHash = sha(content), storageKey = `timestamp-preview/${sourceHash}`;
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex"), sourceHash = sha(content), storageKey = rawImportArchiveIdentity(content).rawStorageKey;
   await prisma.$transaction(async tx => {
     const account = await tx.account.upsert({ where: { ibkrAccount: accountCode }, create: { ibkrAccount: accountCode, name: "Synthetic workstation review", baseCurrency: "USD" }, update: {} });
     await tx.instrument.create({ data: { id, symbol: "MU", exchange: "NASDAQ", assetType: "STOCK", currency: "USD" } });

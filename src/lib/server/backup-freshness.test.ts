@@ -86,7 +86,7 @@ describe("backup freshness source metadata", () => {
     }
 
     for (const table of BACKUP_TABLES) {
-      if (table.key === "backupAudits") continue;
+      if (table.key === "backupAudits" || table.key === "marketCandles") continue;
 
       const mutationFields = modelDateFields(schema, table.prismaModel).filter((field) =>
         MUTATION_TIMESTAMP_FIELDS.has(field),

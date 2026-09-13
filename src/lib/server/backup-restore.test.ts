@@ -41,6 +41,7 @@ function compactGraphPayload() {
     accounts: [{ id: "account-1", name: "Demo Account", ibkrAccount: "DU123", createdAt: importedAt, updatedAt: later }],
     instruments: [{ id: "instrument-1", symbol: "DEMOA", exchange: "NASDAQ", assetType: "STOCK", currency: "USD" }],
     tags: [{ id: "tag-1", name: "restore-ready", createdAt: importedAt }],
+    workstationTradeViews: [{ groupKey: "trade-1", version: 1, revision: 2, view: { version: 1, arrangement: "left", panels: [{ id: "chart-1", interval: "5m", session: "extended", range: { from: 1700000000, to: 1700086400 } }] }, createdAt: importedAt, updatedAt: later }],
     importArtifacts: [{ storageKey: artifact.rawStorageKey, rawSha256: artifact.rawSha256, rawBytes: artifact.rawBytes, content: "account,symbol\nDU123,DEMOA\n", createdAt: importedAt }],
     materializationWatermarks: [{ key: "closed-trades", sourceSignature: "sig", sourceCountsJson: "{}", refreshedAt: importedAt, createdAt: importedAt, updatedAt: later }],
     backupAudits: [{ id: "backup-audit-1", sha256: "hash", exportedAt: importedAt, verifiedAt: later, payloadBytes: 100, totalRows: 1, tableCount: BACKUP_TABLES.length, strippedFieldCount: 0, warningCount: 0, errorCount: 0, sourceCountsJson: "{}", createdAt: later }],

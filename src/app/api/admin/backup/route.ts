@@ -12,6 +12,7 @@ import { buildBackupSourceMetadata } from "@/lib/server/backup-freshness";
 import { getLatestBackupRelevantUpdateAt } from "@/lib/server/queries";
 import { BackupRestorePlanError, buildBackupRestorePlan } from "@/lib/server/backup-restore";
 import { validateBackupRestoreDryRun } from "@/lib/server/backup-restore-validator";
+import { workstationEvidenceManifest } from "@/lib/server/workstation-backup";
 
 const BACKUP_EXPORT_TRANSACTION_TIMEOUT_MS = 30_000;
 const BACKUP_EXPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
@@ -37,6 +38,7 @@ export async function GET() {
     closedTrades,
     closedTradeExecutions,
     closedTradeNotes,
+    workstationTradeViews,
     closedTradeLayouts,
     closedTradeAnnotationStates,
     closedTradeAnnotations,
@@ -84,11 +86,12 @@ export async function GET() {
         tx.closedTrade.findMany({ orderBy: [{ closeTime: "asc" }, { groupKey: "asc" }] }),
         tx.closedTradeExecution.findMany({ orderBy: [{ closedTradeGroupKey: "asc" }, { sortOrder: "asc" }] }),
         tx.closedTradeNote.findMany({ orderBy: { updatedAt: "asc" } }),
+        tx.workstationTradeView.findMany({ orderBy: { groupKey: "asc" } }),
         tx.closedTradeChartLayout.findMany({ orderBy: { updatedAt: "asc" } }),
         tx.closedTradeAnnotationState.findMany({ orderBy: { updatedAt: "asc" } }),
         tx.closedTradeAnnotation.findMany({ orderBy: { updatedAt: "asc" } }),
         tx.closedTradeTag.findMany({ include: { tag: true }, orderBy: { tag: { name: "asc" } } }),
-        tx.marketCandle.findMany({ orderBy: [{ symbol: "asc" }, { timeframe: "asc" }, { time: "asc" }] }),
+        Promise.resolve([]),
         tx.journalEntry.findMany({
           include: {
             tags: { include: { tag: true } },
@@ -148,6 +151,7 @@ export async function GET() {
     closedTrades,
     closedTradeExecutions,
     closedTradeNotes,
+    workstationTradeViews,
     closedTradeLayouts,
     closedTradeAnnotationStates,
     closedTradeAnnotations,
@@ -190,6 +194,7 @@ export async function GET() {
     ...tablePayload,
     assets: {
       journalScreenshots: journalScreenshotAssets,
+      workstationEvidence: workstationEvidenceManifest(closedTradeNotes).entries,
     },
   };
   const serializedPayload = JSON.stringify(payload, null, 2);

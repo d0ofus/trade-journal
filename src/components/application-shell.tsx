@@ -1,6 +1,7 @@
 "use client";
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
 import { ApplicationNavigation } from "./application-navigation";
+import { BackupReminder } from "./backup-reminder";
 import { useAppearance } from "@/lib/workstation/appearance";
 
 const ShellContext = createContext<{ registerSave(save: () => Promise<boolean>): () => void; setFocused(focused: boolean): void }>({ registerSave: () => () => {}, setFocused: () => {} });
@@ -19,6 +20,7 @@ export function ApplicationShell({ children, mode = "application" }: { children:
     <div className={`application-shell app-theme ${focused ? "app-focused" : ""}`} data-theme={theme} data-demo={mode === "demo" || undefined}>
       <ApplicationNavigation mode={mode} theme={theme} setTheme={setTheme} menuOpen={menuOpen} setMenuOpen={setMenuOpen} beforeNavigate={() => save.current?.() ?? Promise.resolve(true)} />
       <main className="application-content" inert={menuOpen || undefined}>{children}</main>
+      {mode === "application" && !focused && !menuOpen && <BackupReminder beforeNavigate={() => save.current?.() ?? Promise.resolve(true)} />}
     </div>
   </ShellContext.Provider>;
 }

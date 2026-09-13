@@ -28,10 +28,10 @@ export const BACKUP_RELEVANT_TIMESTAMP_SOURCES = [
   { key: "dayNotes", prismaModel: "DayNote", timestampFields: ["createdAt", "updatedAt"] },
   { key: "closedTradeNotes", prismaModel: "ClosedTradeNote", timestampFields: ["createdAt", "updatedAt"] },
   { key: "closedTrades", prismaModel: "ClosedTrade", timestampFields: ["createdAt", "updatedAt"] },
+  { key: "workstationTradeViews", prismaModel: "WorkstationTradeView", timestampFields: ["createdAt", "updatedAt"] },
   { key: "closedTradeLayouts", prismaModel: "ClosedTradeChartLayout", timestampFields: ["createdAt", "updatedAt"] },
   { key: "closedTradeAnnotationStates", prismaModel: "ClosedTradeAnnotationState", timestampFields: ["createdAt", "updatedAt"] },
   { key: "closedTradeAnnotations", prismaModel: "ClosedTradeAnnotation", timestampFields: ["createdAt", "updatedAt"] },
-  { key: "marketCandles", prismaModel: "MarketCandle", timestampFields: ["createdAt", "updatedAt"] },
   { key: "executionAnalytics", prismaModel: "ExecutionAnalytics", timestampFields: ["createdAt", "updatedAt"] },
   { key: "symbolNotes", prismaModel: "SymbolNote", timestampFields: ["createdAt", "updatedAt"] },
   { key: "journalEntries", prismaModel: "JournalEntry", timestampFields: ["createdAt", "updatedAt"] },
@@ -91,7 +91,10 @@ export function readBackupSourceMetadata(payload: unknown) {
   const rowCounts = normalizeRowCounts(source.rowCounts as BackupSourceRowCounts);
   const expected = buildBackupSourceMetadata({ rowCounts, latestDataChangeAt });
 
-  if (source.signature !== expected.signature) return null;
+  // New optional tables must not invalidate a previously verified backup's checksum.
+  const legacyCounts = Object.fromEntries(Object.entries(rowCounts).filter(([key]) => key in (source.rowCounts as Record<string, unknown>)));
+  const legacySignature = crypto.createHash("sha256").update(JSON.stringify({ latestDataChangeAt, rowCounts: legacyCounts })).digest("hex");
+  if (source.signature !== expected.signature && source.signature !== legacySignature) return null;
 
   return {
     latestDataChangeAt,

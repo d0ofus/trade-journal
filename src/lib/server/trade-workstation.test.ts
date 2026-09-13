@@ -5,6 +5,8 @@ import { listWorkstationTrades, readWorkstationDocument, saveWorkstationDocument
 import { createJournalEntryFromClosedTrade, JournalStaleWriteError, updateJournalEntry } from "./journal";
 import { emptyDocument } from "@/lib/workstation/types";
 import { REVIEW_PACKAGE_MAX_BYTES } from "@/lib/workstation/payload";
+import { readTradeView, saveTradeView } from "./workstation-trade-view";
+import { tradeViewSchema } from "@/lib/workstation/trade-view";
 import { GET, PATCH } from "@/app/api/closed-trades/[groupKey]/workstation/route";
 import { POST as legacySave } from "@/app/api/notes/closed-trade/route";
 
@@ -37,6 +39,7 @@ beforeEach(() => { auth.session = true; vi.stubEnv("TRADES_WORKSTATION_ENABLED",
 afterEach(async () => {
   vi.unstubAllEnvs();
   for (const f of fixtures.splice(0)) {
+    await prisma.workstationTradeView.deleteMany({ where: { groupKey: f.groupKey } });
     await prisma.journalEntry.deleteMany({ where: { links: { some: { targetType: "CLOSED_TRADE", targetId: f.groupKey } } } });
     await prisma.closedTradeNote.deleteMany({ where: { groupKey: f.groupKey } });
     await prisma.closedTrade.deleteMany({ where: { groupKey: f.groupKey } });
@@ -46,6 +49,21 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("saves chart views independently and rejects stale revisions without changing reviews", async () => {
+    const key = await fixture();
+    const before = await readWorkstationDocument(key);
+    const view = tradeViewSchema.parse({ version: 1, arrangement: "left", panels: [{ id: "chart-1", interval: "5m", session: "extended", range: { from: 1700000000, to: 1700086400 } }] });
+    expect((await readTradeView(key)).revision).toBe(0);
+    const saved = await saveTradeView(key, view, 0);
+    expect(saved.revision).toBe(1); expect((await readTradeView(key)).view).toEqual(view);
+    await expect(saveTradeView(key, view, 0)).rejects.toMatchObject({ status: 409 });
+    await saveTradeView(key, { ...view, arrangement: "top" }, 1);
+    await expect(saveTradeView(key, view, 1)).rejects.toMatchObject({ status: 409 });
+    expect((await readTradeView(key)).revision).toBe(2);
+    expect(await readWorkstationDocument(key)).toEqual(before);
+    await prisma.closedTrade.update({ where: { groupKey: key }, data: { isStale: true } });
+    expect((await readTradeView(key)).view?.arrangement).toBe("top");
+  });
   it("keeps selected deep links out of strict filtered results while allowing explicit journal links", async () => {
     const key = await fixture(false);
     expect(await listWorkstationTrades({ symbol: "NO_MATCH", account: key }, key)).toEqual([]);

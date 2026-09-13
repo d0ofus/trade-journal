@@ -14,6 +14,18 @@ const range = { from: trade.openTime - 86400, to: trade.closeTime + 86400 };
 const result = (candles: Candle[], source = "alpaca"): CandleResult => ({ candles, source, warning: "" });
 const cachedResult = (candles: Candle[], covered = [{ from: range.from, to: range.to + .001 }], identity = "alpaca:sip:raw:extended"): CandleResult => ({ ...result(candles), identity, cache: { enabled: true, status: covered.length ? "partial" : "miss", covered, missing: missingRanges({ from: range.from, to: range.to + .001 }, covered), refresh: [], effectiveRange: { from: range.from, to: range.to + .001 } } });
 
+test("storage-paused history renders temporary bars once without claiming durable coverage", async () => {
+  let calls = 0;
+  const value = cachedResult([bar(trade.openTime)], []);
+  value.cache!.persistencePaused = true; value.cache!.temporary = [range]; value.warning = "Storage limit reached";
+  const adapter = { ...createDemoAdapter(), cachedCandles: async () => cachedResult([], []), candles: async () => { calls++; return value; } };
+  const history = new CandleHistory(adapter, trade, "5m", range, () => {});
+  assert.equal(await history.start(), true);
+  assert.equal(calls, 1); assert.equal(history.state.error, ""); assert.equal(history.state.loading, null);
+  assert.equal(history.state.result.candles.length, 1); assert.deepEqual(history.state.result.cache?.covered, []);
+  assert.equal(history.state.result.cache?.persistencePaused, true); history.dispose();
+});
+
 test("partial cached candles publish before provider completion, without advancing history or losing drawings", async () => {
   let finish!: (r: CandleResult) => void; const pending = new Promise<CandleResult>(resolve => { finish = resolve; });
   const updates: HistoryState[] = [];

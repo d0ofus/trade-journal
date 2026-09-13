@@ -94,6 +94,8 @@ import {
 } from "@/lib/workstation/export";
 import { measureText, riskReward } from "@/lib/workstation/math";
 import { useTradeDocument } from "./use-trade-document";
+import { useTradeView } from "./use-trade-view";
+import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
 import { ChartHandle, TradeChart } from "./trade-chart";
 import { ReviewEditor } from "./review-editor";
 import { DrawingCoordinates } from "./drawing-coordinates";
@@ -349,6 +351,7 @@ export function TradesWorkstation({
   const handles = useRef(new Map<string, ChartHandle>()),
     dock = useRef<DockviewApi | null>(null),
     dockDispose = useRef<(() => void) | null>(null);
+  const pendingDate = useRef<{ tradeId: string; time: number; panel: string | null } | null>(null);
   const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
   const notify = useCallback((message: string) => setNotice(message), []),
@@ -360,6 +363,28 @@ export function TradesWorkstation({
     },
     [setAppearance],
   );
+  const viewRanges = useRef<{ id: string; panels: TradeView["panels"] }>({ id: "", panels: [] });
+  if (viewRanges.current.id !== (trade?.id ?? "")) viewRanges.current = { id: trade?.id ?? "", panels: [] };
+  const restoreView = useCallback((view: TradeView) => {
+    viewRanges.current.panels = view.panels;
+    setPreferences(value => ({ ...value, ...viewPreferences(view) }));
+  }, []);
+  const viewState = useTradeView(adapter, trade?.id ?? "", loadedPreferences, restoreView);
+  const normalView = useRef<{ tradeId: string; preferences: Partial<WorkspacePreferences>; panels: TradeView["panels"] } | null>(null);
+  useEffect(() => {
+    if (replay !== null && !normalView.current) normalView.current = { tradeId: trade?.id ?? "", preferences: { panels: prefRef.current.panels, chartSession: prefRef.current.chartSession, chartArrangement: prefRef.current.chartArrangement, chartSizing: prefRef.current.chartSizing }, panels: structuredClone(viewRanges.current.panels) };
+    if (replay === null && normalView.current) {
+      const normal = normalView.current; normalView.current = null;
+      if (normal.tradeId === trade?.id) { viewRanges.current.panels = normal.panels; setPreferences(value => ({ ...value, ...normal.preferences })); }
+    }
+  }, [replay, trade?.id]);
+  const saveView = () => {
+    if (!trade || replay !== null || !viewState.ready) return;
+    const pref = prefRef.current;
+    viewState.change({ version: 1, arrangement: pref.chartArrangement, sizing: restoreChartSizing(pref.chartSizing), panels: pref.panels.map(panel => ({ ...panel, session: pref.chartSession ?? "auto", range: viewRanges.current.panels.find(p => p.id === panel.id && p.interval === panel.interval)?.range ?? null })) });
+  };
+  const viewConfiguration = JSON.stringify([preferences.panels, preferences.chartSession, preferences.chartArrangement, preferences.chartSizing]);
+  useEffect(() => { if (viewState.ready && replay === null) saveView(); }, [viewConfiguration, viewState.ready]); // eslint-disable-line react-hooks/exhaustive-deps
   const register = useCallback((id: string, handle: ChartHandle | null) => {
     if (handle) handles.current.set(id, handle);
     else handles.current.delete(id);
@@ -377,6 +402,10 @@ export function TradesWorkstation({
   );
   const prefetched = useRef(new Set<string>());
   const prefetchNext = (tradeId: string) => {
+    if (pendingDate.current?.tradeId === tradeId) {
+      const request = pendingDate.current; pendingDate.current = null;
+      handles.current.forEach((handle, id) => { if (!request.panel || id === request.panel) handle.reveal({ time: request.time }); });
+    }
     if (!adapter.cachedCandles || tradeId !== trade?.id) return;
     const index = filtered.findIndex(t => t.id === tradeId);
     for (const next of filtered.slice(index + 1, index + 3)) for (const panel of preferences.panels) {
@@ -389,7 +418,8 @@ export function TradesWorkstation({
     }
   };
   const preferenceKey = `execution-lab:workstation:preferences:${adapter.mode}:v1`;
-  useEffect(() => registerSave(persistence.flush), [registerSave, persistence.flush]);
+  const flushReview = persistence.flush, flushView = viewState.flush;
+  useEffect(() => registerSave(async () => { const saved = await flushReview(); if (saved) await flushView(); return saved; }), [registerSave, flushReview, flushView]);
   useEffect(() => { setFocused(!!trade && (preferences.focusMode || !!fullscreenChart)); return () => setFocused(false); }, [setFocused, preferences.focusMode, fullscreenChart, trade]);
   useEffect(() => {
     setSelectedId(current => initialId && trades.some(t => t.id === initialId) ? initialId : trades.some(t => t.id === current) ? current : trades[0]?.id ?? "");
@@ -499,6 +529,7 @@ export function TradesWorkstation({
       return;
     }
     setFullscreenChart(null);
+    await viewState.flush();
     setSelectedId(id);
     setListDrawer(false);
     const next = trades.find((candidate) => candidate.id === id);
@@ -744,6 +775,7 @@ export function TradesWorkstation({
   const goToDate = () => {
     const target = Date.parse(`${targetDate}Z`) / 1000;
     if (!Number.isFinite(target)) return;
+    if (!viewState.ready || !handles.current.size) { pendingDate.current = { tradeId: trade.id, time: target, panel: preferences.dateLink === "independent" ? activeChart : null }; return; }
     handles.current.forEach((handle, id) => {
       if (preferences.dateLink !== "independent" || id === activeChart)
         handle.reveal({ time: target });
@@ -901,6 +933,7 @@ export function TradesWorkstation({
     setFilterBusy(true);
     try {
       if (!(await persistence.flush())) { setFilterError("Resolve the review save issue before applying filters. Your draft is preserved."); return; }
+      await viewState.flush();
       if (clear) { setQuery(""); setFilter("All trades"); }
       setFilterDraft(next);
       filterControls?.apply(next, trade?.id ?? "");
@@ -1090,9 +1123,16 @@ export function TradesWorkstation({
           </button>
         </div>
         <ResizableChartGrid count={preferences.panels.length} arrangement={preferences.chartArrangement} sizing={preferences.chartSizing} onChange={chartSizing => changePreferences({ chartSizing })}>
-          {styles => preferences.panels.map((panel, index) => (
+          {styles => viewState.ready ? preferences.panels.map((panel, index) => (
             <TradeChart
-              key={`${trade.id}:${panel.id}`}
+              key={`${trade.id}:${panel.id}:${viewState.generation}`}
+              initialRange={viewRanges.current.panels.find(p => p.id === panel.id && p.interval === panel.interval)?.range}
+              onViewChange={range => {
+                if (replay !== null) return;
+                const next = { ...panel, session: preferences.chartSession ?? "auto" as const, range };
+                viewRanges.current.panels = [...viewRanges.current.panels.filter(p => p.id !== panel.id), next];
+                saveView();
+              }}
               style={styles[index]}
               onToggleLabels={toggleLabels}
               onHistoryReady={prefetchNext}
@@ -1128,9 +1168,10 @@ export function TradesWorkstation({
                 setModal("export");
               }}
             />
-          ))}
+          )) : <div role="status">Restoring chart views…</div>}
         </ResizableChartGrid>
       </div>
+      {viewState.error && <div role="status" className="ws-history-warning">{viewState.error} <button onClick={viewState.useSaved}>Use saved chart view</button></div>}
       {chosenDrawing && (
         <div className="ws-drawing-properties">
           <span>{tools.find((t) => t.id === chosenDrawing.tool)?.label}</span>

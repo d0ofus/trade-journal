@@ -15,7 +15,10 @@ async function call(action) {
   return result;
 }
 let status = await call();
-if ((args.has("--queue") || args.has("--run") || args.has("--retry")) && !args.has("--usage-checked")) throw new Error("Check Neon project-level Usage first, then supply --usage-checked. SQL measurements cannot see other branches or monthly allowances.");
+if ((args.has("--queue") || args.has("--run") || args.has("--retry") || args.has("--pilot")) && !args.has("--usage-checked")) throw new Error("Check Neon project-level Usage first, then supply --usage-checked. SQL measurements cannot see other branches or monthly allowances.");
+if (args.has("--pilot")) {
+  for (let batch = 0; batch < 30; batch++) { status = await call("pilot"); if (status.result?.paused || !status.result?.processed) break; }
+}
 if (args.has("--queue")) status = await call("plan");
 if (args.has("--retry")) status = await call("retry");
 if (args.has("--run")) {

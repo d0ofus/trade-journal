@@ -68,6 +68,8 @@ export const DEMO_PREFIX = "execution-lab:workstation:demo:v1:";
 export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
   return {
     mode: "demo",
+    async loadView(id) { const raw = localStorage.getItem(DEMO_PREFIX + "view:" + id); return raw ? JSON.parse(raw) : { revision: 0, updatedAt: null, view: null }; },
+    async saveView(id, view, expectedRevision) { const key = DEMO_PREFIX + "view:" + id, raw = localStorage.getItem(key), previous = raw ? JSON.parse(raw) : null; if ((previous?.revision ?? 0) !== expectedRevision) throw new Error("Chart view changed in another tab. Your local view is preserved."); const next = { view, revision: expectedRevision + 1, updatedAt: new Date().toISOString() }; localStorage.setItem(key, JSON.stringify(next)); return next; },
     async load(id) { const trade = trades.find(t => t.id === id); if (!trade) throw new Error("Demo trade not found"); const raw = localStorage.getItem(DEMO_PREFIX + id); if (!raw) return initialDemoDocument(trade); const doc = JSON.parse(raw) as TradeDocument; if (doc.schema !== 1) throw new Error("Unsupported saved demo format. Export your local data before resetting."); return doc; },
     async save(id, doc, revision) { const raw = localStorage.getItem(DEMO_PREFIX + id); const current = raw ? JSON.parse(raw) as TradeDocument : null; if ((current?.revision ?? 0) !== revision) throw new RevisionConflict(); const next = { ...doc, revision: revision + 1, updatedAt: new Date().toISOString() }; localStorage.setItem(DEMO_PREFIX + id, JSON.stringify(next)); return next; },
     async candles(trade, interval, signal, range = initialHistoryRange(trade, interval)) {

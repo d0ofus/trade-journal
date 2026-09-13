@@ -153,6 +153,8 @@ export type CandleResult = {
 };
 export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown" };
 export interface WorkstationAdapter {
+  loadView?(id: string): Promise<import("./trade-view").SavedTradeView>;
+  saveView?(id: string, view: import("./trade-view").TradeView, expectedRevision: number): Promise<import("./trade-view").SavedTradeView>;
   cachedCandles?: WorkstationAdapter["candles"];
   refreshCandles?: WorkstationAdapter["candles"];
   mode: "demo" | "application";

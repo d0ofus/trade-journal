@@ -10,7 +10,7 @@ import {
   parsePostgresTarget,
 } from "@/lib/test-database-safety";
 
-const SAFE_DATABASE_URL = "postgresql://user:password@db.example:5432/trade_journal_test?schema=public";
+const SAFE_DATABASE_URL = "postgresql://user:password@127.0.0.1:5432/trade_journal_test?schema=public";
 
 function safeEnvironment(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -48,8 +48,8 @@ describe("test database target parsing", () => {
   it("rejects malformed, non-PostgreSQL, and database-less URLs without echoing them", () => {
     const invalidUrls = [
       "not-a-url-with-a-secret",
-      "mysql://user:secret@db.example/trade_test",
-      "postgresql://user:secret@db.example",
+      "mysql://user:secret@127.0.0.1/trade_test",
+      "postgresql://user:secret@127.0.0.1",
     ];
 
     for (const invalidUrl of invalidUrls) {
@@ -74,7 +74,7 @@ describe("test database safety validation", () => {
   });
 
   it("accepts an explicit test schema on an otherwise non-test database", () => {
-    const url = "postgresql://user:password@db.example/trade_journal?schema=run_e2e";
+    const url = "postgresql://user:password@127.0.0.1/trade_journal?schema=run_e2e";
     expect(
       assertTestDatabaseSafety(safeEnvironment({ DATABASE_URL: url, DIRECT_URL: url })),
     ).toMatchObject({ databaseUrl: { database: "trade_journal", schema: "run_e2e" } });
@@ -93,19 +93,27 @@ describe("test database safety validation", () => {
   });
 
   it("rejects production-like database and schema names", () => {
-    const url = "postgresql://user:password@db.example/trade_journal?schema=public";
+    const url = "postgresql://user:password@127.0.0.1/trade_journal?schema=public";
     expect(() =>
       assertTestDatabaseSafety(safeEnvironment({ DATABASE_URL: url, DIRECT_URL: url })),
     ).toThrow("test, e2e, or ci token");
   });
 
+  it("rejects remote test databases and test schemas inside a production database", () => {
+    for (const target of ["trade_journal_test", "production?schema=run_e2e"]) {
+      const url = `postgresql://user:password@db.example/${target}`;
+      expect(() => assertTestDatabaseSafety(safeEnvironment({ DATABASE_URL: url, DIRECT_URL: url })))
+        .toThrow("Database tests require local PostgreSQL");
+    }
+  });
+
   it.each([
     [
       "host",
-      "postgresql://user:password@other.example/trade_journal_test?schema=public",
+      "postgresql://user:password@127.0.0.2/trade_journal_test?schema=public",
     ],
-    ["database", "postgresql://user:password@db.example/other_test?schema=public"],
-    ["schema", "postgresql://user:password@db.example/trade_journal_test?schema=other_test"],
+    ["database", "postgresql://user:password@127.0.0.1/other_test?schema=public"],
+    ["schema", "postgresql://user:password@127.0.0.1/trade_journal_test?schema=other_test"],
   ])("rejects a mismatched %s", (_field, directUrl) => {
     expect(() => assertTestDatabaseSafety(safeEnvironment({ DIRECT_URL: directUrl }))).toThrow(
       "same PostgreSQL host, database, and schema",

@@ -141,6 +141,8 @@ export class CandleHistory {
         attempts++;
         if (response.cache?.enabled) publishCached(response);
         else break; // Original adapters and explicitly separate Yahoo fallback keep their existing contract.
+        // Temporary bars are usable, but never claim durable coverage or retry storage automatically.
+        if (response.cache?.persistencePaused) break;
       }
       if (!response) throw new Error("History response unavailable.");
       if (this.controller.signal.aborted) return false;

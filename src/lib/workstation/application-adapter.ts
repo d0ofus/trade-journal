@@ -40,6 +40,8 @@ export function createApplicationAdapter(): WorkstationAdapter {
   };
   return {
     mode: "application",
+    loadView: id => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`),
+    saveView: (id, view, expectedRevision) => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ view, expectedRevision }), keepalive: true }),
     load: id => request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`),
     async save(id, document, expectedRevision) {
       if (jsonBytes({ document, expectedRevision }) > REVIEW_PACKAGE_MAX_BYTES) throw new Error(REVIEW_PACKAGE_TOO_LARGE);

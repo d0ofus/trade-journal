@@ -54,12 +54,13 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
       if (Date.now() > deadline) break;
       input.signal?.throwIfAborted();
       if (!(await cacheBudgetAvailable())) {
-        warnings.push("Chart cache budget reached. Existing candles are preserved; background preparation is paused.");
+        warnings.push("Storage limit reached—this history was not saved. Saved candles are preserved; automatic preparation is paused.");
+        snapshot.cache.persistencePaused = true;
         // Foreground browsing remains possible without growing the database.
         if (!input.background) {
           const incoming = await fetchRange(window, false);
           snapshot.candles = [...new Map([...snapshot.candles, ...incoming].map(c => [c.time, c])).values()].sort((a, b) => a.time - b.time).slice(0, input.limit);
-          snapshot.cache.retryAfterMs = 60_000; fetched = true;
+          snapshot.cache.temporary = [window]; fetched = true;
         }
         return makeResult();
       }
@@ -68,9 +69,10 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
       try { await persistCompactCandles(series, window, incoming, lease, !!input.tradeWindow); }
       catch (error) {
         if (!(error instanceof CacheBudgetError)) throw error;
-        warnings.push("Chart cache storage budget reached. New bars are available for this view; background persistence is paused.");
+        warnings.push("Storage limit reached—this history was not saved. Saved candles are preserved; automatic preparation is paused.");
         snapshot.candles = [...new Map([...snapshot.candles, ...incoming].map(c => [c.time, c])).values()].sort((a, b) => a.time - b.time).slice(0, input.limit);
-        snapshot.cache.retryAfterMs = 60_000; fetched = true; return makeResult();
+        snapshot.cache.persistencePaused = true;
+        snapshot.cache.temporary = [window]; fetched = true; return makeResult();
       }
       timings.persistenceMs += performance.now() - persistStarted;
       fetched = true;
