@@ -1,5 +1,5 @@
 import { Candle, CandleSession, Drawing, Execution, Interval, Point, seconds } from "./types";
-import { containingExecutionCandle } from "./execution-diagnostics";
+import { candlePeriod, containingExecutionCandle } from "./execution-diagnostics";
 
 export function percentageChange(start: number, end: number): number | null { return start > 0 ? ((end - start) / start) * 100 : null; }
 export function measureText(a: Point, b: Point, bars?: number) {
@@ -34,7 +34,7 @@ export function logicalTimeIndex(time: number, candles: Candle[], interval: Inte
   if (lo === candles.length) return lo - 1 + (time - candles[lo - 1].time) / seconds[interval];
   return lo - 1 + (time - candles[lo - 1].time) / (candles[lo].time - candles[lo - 1].time);
 }
-export function completedCandles(candles: Candle[], interval: Interval, cursor: number | null) { return cursor === null ? candles : candles.filter(bar => bar.time + seconds[interval] <= cursor); }
+export function completedCandles(candles: Candle[], interval: Interval, cursor: number | null, session?: CandleSession) { return cursor === null ? candles : candles.filter(bar => candlePeriod(bar.time, interval, session).end <= cursor); }
 export function visibleDrawings(drawings: Drawing[], panelId: string, replay: number | null) { return drawings.filter(d => !d.hidden && (!d.panel || d.panel === panelId) && (replay === null || d.createdAt <= replay)); }
 export function movingAverage(candles: Candle[], period: number) {
   let sum = 0;

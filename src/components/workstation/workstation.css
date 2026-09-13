@@ -2726,3 +2726,8 @@
 }
 
 .ws-history-progress { position:absolute; z-index:3; top:8px; right:70px; pointer-events:none; font-size:10px; color:var(--ws-muted); background:var(--ws-bg); padding:3px 6px; border-radius:3px; }
+
+.ws-fill-toggle { font-size: 10px; white-space: nowrap; color: var(--ws-muted); padding: 2px 5px; }
+.ws-fill-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--ws-border); }
+.ws-fill-row > button:last-child { font-size: 10px; color: var(--ws-accent); }
+.ws-fill-popover { z-index: 25; }

@@ -68,6 +68,8 @@ function compactGraphPayload() {
         cohortRole: "MEMBER",
       },
     ],
+    accountExecutionTimePolicies: [{ id: "policy-1", accountId: "account-1", source: "IBKR_EXECUTIONS", timezone: "America/New_York", basis: "user-confirmed", normalizerVersion: 1, revision: 1, active: true, confirmedAt: importedAt, updatedAt: later }],
+    executionTimePolicyApplications: [{ key: "application-1", policyId: "policy-1", importBatchId: "batch-1", policyRevision: 1, sourceHash: artifact.rawSha256, parserVersion: "test", fingerprint: "audit", status: "exception", reason: "Report override", rowsJson: "[]", createdAt: importedAt }],
     executionTimeInterpretations: [{ id: "time-1", importBatchId: "batch-1", timezone: "America/New_York", basis: "user-confirmed", normalizerVersion: 1, revision: 1, active: false, sourceHash: artifact.rawSha256, parserVersion: "test", fingerprint: "audit", rowsJson: "[]", confirmedAt: importedAt, updatedAt: later }],
     importRowErrors: [{ id: "row-error-1", importBatchId: "batch-1", rowNumber: 2, severity: "WARNING", code: "SKIPPED", message: "Skipped row", rawJson: "{}", createdAt: importedAt }],
     executions: [

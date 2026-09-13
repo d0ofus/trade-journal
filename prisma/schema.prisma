@@ -152,6 +152,7 @@ enum PositionSnapshotMode {
 }
 
 model Account {
+  executionTimePolicies AccountExecutionTimePolicy[]
   id                String             @id @default(cuid())
   name              String
   ibkrAccount       String             @unique
@@ -184,6 +185,7 @@ model Instrument {
 }
 
 model ImportBatch {
+  timePolicyApplications ExecutionTimePolicyApplication[]
   id                   String                @id @default(cuid())
   filename             String
   fileType             String
@@ -972,4 +974,37 @@ model JournalEntryNotionRelation {
 
   @@id([journalEntryId, relationTagId])
   @@index([relationTagId])
+}
+
+// Reversible presentation defaults; ingestion records are never rewritten.
+model AccountExecutionTimePolicy {
+  id                String @id @default(cuid())
+  accountId         String
+  account           Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  source            String @default("IBKR_EXECUTIONS")
+  timezone          String @default("America/New_York")
+  basis             String @default("user-confirmed")
+  revision          Int @default(1)
+  normalizerVersion Int @default(1)
+  active            Boolean @default(true)
+  confirmedAt       DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  applications      ExecutionTimePolicyApplication[]
+  @@unique([accountId, source])
+}
+model ExecutionTimePolicyApplication {
+  key            String @id
+  policyId       String
+  policy         AccountExecutionTimePolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  importBatchId  String
+  importBatch    ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
+  policyRevision Int
+  sourceHash     String
+  parserVersion  String?
+  fingerprint    String
+  status         String
+  reason         String?
+  rowsJson       String
+  createdAt      DateTime @default(now())
+  @@index([policyId, policyRevision, importBatchId])
 }

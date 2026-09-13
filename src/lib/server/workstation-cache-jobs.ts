@@ -1,3 +1,5 @@
+import { prepareAccountTimePolicies } from "./execution-time-policy";
+import { candleIdentity } from "@/lib/workstation/regular-hours";
 import { randomUUID } from "node:crypto";
 import type { WorkstationCandleJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -33,14 +35,15 @@ export async function queueCandlePreparation(pilot = false) {
   if (!(pilot ? cacheEnabled() : preparationEnabled())) return { trades: 0, symbols: 0, windows: 0, added: 0 };
   const policy = workstationCandlePolicy();
   if (policy.provider !== "alpaca") throw new Error("Preparation requires the Alpaca workstation provider.");
-  const allTrades = await listWorkstationTrades();
+  const allTrades = (await listWorkstationTrades()).filter(t => !t.executions.some(e => e.provenance?.interpretationStatus === "pending"));
   const trades = pilot ? [...allTrades].sort((a, b) => b.closeTime - a.closeTime).slice(0, 10) : allTrades;
   const windows = planCandlePreparation(trades, Math.floor(Date.now() / 1000) - policy.delaySeconds - 1);
+  await prisma.workstationCandleJob.updateMany({ where: { timeframe: "1h", session: "regular", source: { not: candleIdentity(policy.cacheSource, "1h", "regular") }, OR: [{ status: "pending" }, { status: "running", leaseUntil: { lt: new Date() } }] }, data: { status: "skipped", leaseUntil: null, leaseToken: null, lastError: "Superseded by market-open hourly aggregation. Native cached candles are retained." } });
   let added = 0;
   for (let offset = 0; offset < windows.length; offset += 200) {
     if (!(await cacheBudgetAvailable())) break;
     const batch = windows.slice(offset, offset + 200).map(w => {
-      const source = `${policy.cacheSource}:${w.session}`;
+      const source = candleIdentity(policy.cacheSource, w.timeframe, w.session);
       return { priority: pilot ? 0 : 10, availableAt: new Date(), key: cacheHash(`${w.symbol}:${w.timeframe}:${source}:${w.range.from}:${w.range.to}`), symbol: w.symbol, timeframe: w.timeframe, source, session: w.session, start: new Date(w.range.from * 1000), end: new Date(w.range.to * 1000) };
     });
     const result = await prisma.workstationCandleJob.createMany({ skipDuplicates: true, data: batch });
@@ -61,6 +64,8 @@ async function claimJob(pilot: boolean): Promise<WorkstationCandleJob | null> {
 }
 export async function runCandlePreparation(durationMs = 200_000, pilot = false) {
   if (!(pilot ? cacheEnabled() : preparationEnabled())) return { processed: 0, paused: "Background preparation is disabled." };
+  const timing = await prepareAccountTimePolicies(100);
+  if (timing.pending) return { processed: 0, paused: `${timing.pending} reports await timestamp preparation.` };
   await skipUnselectedPreparation();
   const policy = workstationCandlePolicy();
   if (policy.provider !== "alpaca") return { processed: 0, paused: "Alpaca is not the active provider." };
@@ -73,7 +78,7 @@ export async function runCandlePreparation(durationMs = 200_000, pilot = false) 
       if (!(await cacheBudgetAvailable())) return { processed, paused: "Storage budget reached. Existing candles remain available." };
       const job = await claimJob(pilot); if (!job) break;
       const update = (data: { status: string; lastError?: string | null; availableAt?: Date }) => prisma.workstationCandleJob.updateMany({ where: { key: job.key, leaseToken: job.leaseToken }, data: { ...data, leaseToken: null, leaseUntil: null } });
-      if (job.source !== `${policy.cacheSource}:${job.session}`) { await update({ status: "unavailable", lastError: "Provider identity changed; run preparation again with the current settings." }); continue; }
+      if (job.source !== candleIdentity(policy.cacheSource, job.timeframe as Interval, job.session)) { await update({ status: "skipped", lastError: "Provider identity changed; run preparation again with the current settings." }); continue; }
       try {
         const result = await loadCompactWorkstationCandles({ symbol: job.symbol, timeframe: job.timeframe as Interval, range: { from: job.start.getTime() / 1000, to: job.end.getTime() / 1000 - 0.001 }, session: job.session as "regular" | "extended", limit: 30000, background: true, tradeWindow: true, mode: "fill" }, policy);
         if (result.cache?.missing.length || result.cache?.refresh.length) await update({ status: "pending", availableAt: new Date(Date.now() + Math.max(2000, result.cache.retryAfterMs ?? 0)), lastError: "Waiting for uncovered history or an active chart request." });
@@ -107,6 +112,8 @@ export async function retryCandlePreparation() {
   return prisma.workstationCandleJob.updateMany({ where: { status: { in: ["failed", "unavailable"] }, timeframe: { in: preparationIntervals } }, data: { status: "pending", attempts: 0, availableAt: new Date(), lastError: null } });
 }
 export async function recoverCandlePreparation() {
+  const timing = await prepareAccountTimePolicies(100);
+  if (timing.pending) return { processed: 0, paused: `${timing.pending} reports await account timestamp preparation. Resume to continue.` };
   if (!preparationEnabled()) return;
   await skipUnselectedPreparation();
   await queueCandlePreparation();

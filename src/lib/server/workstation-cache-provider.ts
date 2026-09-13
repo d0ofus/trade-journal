@@ -10,11 +10,11 @@ export class CacheProviderError extends AlpacaCandleError {
   constructor(status: number, readonly retryAfterSeconds: number) { super("http", status); }
 }
 /** Workstation fetch only: no writes to the legacy candle cache. A 200 empty result is meaningful coverage. */
-export async function fetchCompactCandles(symbol: string, timeframe: CandleTimeframe, range: CandleRange, credentials: AlpacaCandleCredentials, background = false): Promise<Candle[]> {
+export async function fetchCompactCandles(symbol: string, timeframe: CandleTimeframe, range: CandleRange, credentials: AlpacaCandleCredentials, background = false, coordinate = true): Promise<Candle[]> {
   const rows: Candle[] = []; let token: string | null = null; const seen = new Set<string>();
   const deadline = Date.now() + 45_000;
   do {
-    while (!(await takeProviderSlot(background))) {
+    while (coordinate && !(await takeProviderSlot(background))) {
       if (Date.now() > deadline) throw new CacheBusyError();
       await new Promise(resolve => setTimeout(resolve, background ? 1050 : 525));
     }
@@ -27,7 +27,7 @@ export async function fetchCompactCandles(symbol: string, timeframe: CandleTimef
       const retry = response.headers.get("retry-after");
       const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : retry ? Math.ceil((Date.parse(retry) - Date.now()) / 1000) : 0;
       const retrySeconds = Number.isFinite(seconds) ? Math.min(86400, Math.max(0, seconds)) : 0;
-      if (response.status === 429) await deferProviderRequests(Math.max(60, retrySeconds));
+      if (response.status === 429 && coordinate) await deferProviderRequests(Math.max(60, retrySeconds));
       throw new CacheProviderError(response.status, retrySeconds);
     }
     const body = await response.json();

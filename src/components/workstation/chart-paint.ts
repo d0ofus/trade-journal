@@ -1,9 +1,10 @@
 import { Candle, CandleSession, Drawing, Interval, Trade, WorkspacePreferences } from "@/lib/workstation/types";
-import { diagnoseExecution } from "@/lib/workstation/execution-diagnostics";
+import { executionVisibility } from "@/lib/workstation/execution-visibility";
+import type { CandleRange } from "@/lib/workstation/candle-ranges";
 import { measureText, riskReward } from "@/lib/workstation/math";
 
 export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; x: number; y: number; w: number; h: number };
-export type PaintOptions = { width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
+export type PaintOptions = { covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
 export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
   const hits: Hit[] = [], occupied: { x: number; y: number; w: number; h: number }[] = [];
@@ -66,10 +67,9 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       for (let i = 0; i < points.length; i++) { const p = points[i]; if (p.x === null || p.y === null) continue; ctx.setLineDash([]); ctx.fillStyle = o.light ? "#fff" : "#121722"; ctx.strokeStyle = d.color; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); if (!d.locked) hits.push({ id: d.id, kind: "handle", point: i, x: p.x - 9, y: p.y - 9, w: 18, h: 18 }); }
     }
   }
-  if (o.labels !== "hidden") for (let i = 0; i < o.trade.executions.length; i++) {
-    const e = o.trade.executions[i]; if (o.replay !== null && e.time > o.replay) continue;
-    const diagnostic = diagnoseExecution(e, o.candles, o.interval, o.session), bar = diagnostic.candle; if (!bar) continue;
-    const px = x(bar.time), py = y(e.price); if (px === null || py === null || px < 0 || px > w || py < 0 || py > h) continue;
+  for (const row of executionVisibility({ ...o, executions: o.trade.executions })) {
+    if (row.reason !== "visible" || row.x === null || row.y === null) continue;
+    const { diagnostic, index: i, x: px, y: py } = row, e = diagnostic.execution;
     const color = e.side === "BUY" ? "#34d399" : "#fb7185", selected = o.selectedExecution === e.id;
     ctx.setLineDash([]); ctx.fillStyle = color; ctx.strokeStyle = o.light ? "#fff" : "#121722"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px, py, selected ? 6 : 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -87,6 +87,7 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
     const placed = candidates.sort((a, b) => a.distance - b.distance).find(c => !occupied.some(r => c.x < r.x + r.w + 3 && c.x + width + 3 > r.x && c.y < r.y + r.h + 3 && c.y + 27 > r.y));
     if (placed) { left = placed.x; top = placed.y; }
     ctx.strokeStyle = color; ctx.lineWidth = .7; ctx.setLineDash([2, 3]); line(px, py, Math.max(left, Math.min(left + width, px)), top + (top > py ? 0 : 24));
+    hits.push({ id: e.id, kind: "execution", x: px - 9, y: py - 9, w: 18, h: 18 });
     const rect = label(text, left, top, color, selected ? o.light ? "#e3e9f5" : "#283248" : undefined, width);
     hits.push({ id: e.id, kind: "execution", ...rect });
   }

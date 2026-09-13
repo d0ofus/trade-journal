@@ -1,3 +1,5 @@
+import { candleIdentity, isRegularHour, regularHourSession } from "@/lib/workstation/regular-hours";
+import { fetchRegularHours, readRegularHours } from "./workstation-regular-hours";
 import type { CandleTimeframe } from "./market-candles";
 import type { WorkstationCandles } from "./workstation-candles";
 import type { WorkstationCandlePolicy } from "./workstation-candle-policy";
@@ -21,22 +23,30 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
   // Recent history advances in 15-minute batches, behind the configured SIP delay.
   const cutoff = Math.floor((now - policy.delaySeconds - (policy.delaySeconds ? 1 : 0)) / 900) * 900;
   // Existing API ranges include their last timestamp; the compact store uses exclusive ends.
-  const range = { from: input.range.from, to: Math.max(input.range.from, Math.min(input.range.to + 0.001, cutoff)) };
-  const source = input.session ? `${policy.cacheSource}:${input.session}` : policy.cacheSource;
+  const derived = isRegularHour(input.timeframe, input.session);
+  // Derived coverage is whole UTC days so a mid-candle request never certifies or overwrites a partial hour.
+  const start = derived ? Math.floor(input.range.from / 86400) * 86400 : input.range.from;
+  const end = derived ? Math.ceil((input.range.to + 0.001) / 86400) * 86400 : input.range.to + 0.001;
+  const range = { from: start, to: Math.max(start, Math.min(end, cutoff)) };
+  const source = candleIdentity(policy.cacheSource, input.timeframe, input.session);
   const series = { symbol: input.symbol, timeframe: input.timeframe, source };
   const warnings: string[] = [];
   if (range.to < input.range.to) warnings.push(`History through ${new Date(cutoff * 1000).toISOString()}; 15-minute cache batches behind the ${policy.delaySeconds}s configured provider delay.`);
-  const read = async () => { const at = performance.now(); try { return await readCompactCandles(series, range, input.limit); } finally { timings.cacheReadMs += performance.now() - at; } };
-  const fetchRange = async (window: CandleRange, background: boolean) => { const at = performance.now(); try { return await fetchCompactCandles(input.symbol, input.timeframe, window, policy.credentials!, background); } finally { timings.providerFetchMs += performance.now() - at; } };
+  const read = async () => { const at = performance.now(); try {
+    const snapshot = await readCompactCandles(series, range, input.limit);
+    if (derived && snapshot.cache.missing.length) snapshot.candles = [...new Map([...await readRegularHours(input.symbol, range, policy, cutoff), ...snapshot.candles].map(c => [c.time, c])).values()].sort((a,b) => a.time-b.time).slice(0, input.limit);
+    return snapshot;
+  } finally { timings.cacheReadMs += performance.now() - at; } };
+  const fetchRange = async (window: CandleRange, background: boolean) => { const at = performance.now(); try { return derived ? await fetchRegularHours(input.symbol, window, policy, cutoff, background) : await fetchCompactCandles(input.symbol, input.timeframe, window, policy.credentials!, background); } finally { timings.providerFetchMs += performance.now() - at; } };
   let snapshot = await read();
   if (input.tradeWindow) await protectTradeCache(series, range);
   let fetched = false;
   const makeResult = (): WorkstationCandles => ({ symbol: input.symbol,
     candles: input.session === "regular" && !["1d", "1wk"].includes(input.timeframe) ? snapshot.candles.filter(c => isRegularUsSession(c.time)) : snapshot.candles,
-    source: "alpaca", cacheKind: "native", cache: { ...snapshot.cache, timings },
-    session: { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" },
+    source: "alpaca", cacheKind: derived ? "derived-5m" : "native", cache: { ...snapshot.cache, timings },
+    session: derived ? regularHourSession : { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" },
     provider: { identity: source, provider: "alpaca", feed: policy.credentials!.feed, adjustment: "raw", delaySeconds: policy.delaySeconds, cached: !fetched, fallback: false },
-    warnings: [...warnings, ...(snapshot.corrupt ? ["Damaged cache data was excluded and will be fetched again."] : [])] });
+    warnings: [...(derived ? ["Hourly candles aggregated from Alpaca 5m bars, aligned to the regular-session open."] : []), ...warnings, ...(snapshot.corrupt ? ["Damaged cache data was excluded and will be fetched again."] : [])] });
   if (range.to <= range.from || input.mode === "cache") return makeResult();
   const requested = input.mode === "refresh" ? [range] : unionRanges([...snapshot.cache.missing, ...snapshot.cache.refresh]);
   if (!requested.length) return makeResult();
@@ -47,7 +57,7 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
     // Another request may have completed between our initial read and lease acquisition.
     snapshot = await read();
     const gaps = input.mode === "refresh" ? [range] : unionRanges([...snapshot.cache.missing, ...snapshot.cache.refresh]);
-    const windows = gaps.flatMap(r => boundedCacheRanges(r, input.timeframe));
+    const windows = gaps.flatMap(r => boundedCacheRanges(r, derived ? "5m" : input.timeframe));
     const limit = input.mode === "fill" || input.background ? 1 : 8;
     const deadline = Date.now() + 65_000;
     for (const window of windows.slice(0, limit)) {

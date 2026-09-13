@@ -3,7 +3,7 @@ import { preparationEnabled } from "./workstation-cache-store";
 
 /** Invoked after successful materialization only. Neither registration nor execution may alter import outcomes. */
 export function prepareCandlesAfterResponse() {
-  if (!preparationEnabled()) return;
+  if (!preparationEnabled() && process.env.TRADES_WORKSTATION_ENABLED !== "1") return;
   try {
     after(async () => {
       try { const { recoverCandlePreparation } = await import("./workstation-cache-jobs"); await recoverCandlePreparation(); }

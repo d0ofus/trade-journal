@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { AccountTimestampSettings } from "./account-timestamp-settings";
 import type { InterpretationRow } from "@/lib/server/execution-time-interpretation";
 type Batch = { id: string; filename: string; importedAt: string; _count: { executions: number }; timeInterpretation: { active: boolean; revision: number; timezone: string } | null };
 type Preview = { batchId: string; timezone: string; fingerprint: string; revision: number; total: number; eligible: number; rows: InterpretationRow[] };
@@ -19,9 +20,10 @@ export function TimestampInterpretationSettings() {
     window.dispatchEvent(new Event("workstation-time-interpretation"));
   }); }
   return <section className="space-y-4 text-sm" aria-label="Timestamp interpretation">
+    <AccountTimestampSettings />
     <p>Confirm the timezone of an archived broker report to interpret its execution times in the workstation. Charts, replay and review exports use the interpreted UTC time. Accounting records and import automation stay unchanged.</p>
     <label className="flex flex-wrap items-center gap-3">Source timezone <select className="rounded border border-slate-300 bg-white p-2 text-slate-900" aria-label="Source timezone" value={timezone} disabled={busy} onChange={e => { setTimezone(e.target.value); setPreview(null); }}><option value="America/New_York">US Eastern — America/New_York (EDT / EST)</option><option value="UTC">UTC</option></select></label>
-    <p className="text-slate-500">Confirmation applies to one batch. New batches remain unverified. Explicit timestamp offsets are preserved; ambiguous or unsupported timestamps are left unresolved.</p>
+    <p className="text-slate-500">The controls below apply to one report and override the account default. Disabling a report is an explicit exception. Without an account default, new reports remain unverified. Explicit offsets are preserved; ambiguous or unsupported timestamps remain unresolved.</p>
     {error && <p role="alert" className="text-red-700">{error}</p>}{notice && <p role="status" className="text-emerald-700">{notice}</p>}
     <div className="max-h-72 overflow-auto rounded border border-slate-200">
       {!batches.length && <p className="p-3">No execution batches available.</p>}

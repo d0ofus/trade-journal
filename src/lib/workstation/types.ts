@@ -24,7 +24,7 @@ export type Execution = {
   price: number;
   commission: number;
   fees: number;
-  provenance?: { timezoneStatus: "verified" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null; storedTime?: number; brokerWallTime?: string; confirmationBasis?: string; interpretationStatus?: "applied" | "stale" | "unresolved"; interpretationVersion?: string };
+  provenance?: { timezoneStatus: "verified" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null; storedTime?: number; brokerWallTime?: string; confirmationBasis?: string; interpretationStatus?: "applied" | "stale" | "unresolved" | "pending"; interpretationVersion?: string };
 };
 export type Trade = {
   brokerTradeDate?: string;
@@ -151,7 +151,7 @@ export type CandleResult = {
   provider?: { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
   session?: CandleSession;
 };
-export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown" };
+export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown"; aggregation?: string };
 export interface WorkstationAdapter {
   loadView?(id: string): Promise<import("./trade-view").SavedTradeView>;
   saveView?(id: string, view: import("./trade-view").TradeView, expectedRevision: number): Promise<import("./trade-view").SavedTradeView>;

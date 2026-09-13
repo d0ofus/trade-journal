@@ -1,7 +1,7 @@
 import { authorizeDemoSeedEnvironment, SHARED_DEMO_SEED_CONFIRMATION } from "@/lib/demo-seed-safety";
 
 function isolatedEnvironment(overrides: Record<string, string | undefined> = {}) {
-  const databaseUrl = "postgresql://user:password@db.example/trades?schema=trade_journal_phase16_test";
+  const databaseUrl = "postgresql://user:password@127.0.0.1/trades?schema=trade_journal_phase16_test";
   return {
     ALLOW_TEST_DATABASE_MUTATIONS: "1",
     DATABASE_URL: databaseUrl,

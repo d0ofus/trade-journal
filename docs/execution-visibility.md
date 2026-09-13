@@ -1,0 +1,15 @@
+# Execution visibility across chart timeframes
+
+Matching archived IBKR reports can use a user-confirmed America/New_York account default under Settings / Trade data / Timestamp interpretation. Preparation is resumable and independent of import success. The default preserves explicit offsets, report-specific interpretations and disabled report exceptions. Missing archives, unsupported parser versions, ambiguous timestamps and changed source fingerprints remain unresolved. Disabling a default restores the original workstation interpretation without rewriting imported rows or accounting.
+
+AccountExecutionTimePolicy stores the source, timezone, confirmation basis and revision. Immutable ExecutionTimePolicyApplication rows record each account/report application, source fingerprint, execution references and interpreted times. Both tables are included in application backups. Daily recovery prepares pending interpretation records before queuing chart history. A bounded runner can prepare selected reports first for rollout validation.
+
+Regular-session Alpaca 1h candles use 09:30 Eastern buckets, with the final bar clipped to the exchange close. They aggregate verified native 5m bars and use the independent `session-open-5m-v1` identity in caches and preparation jobs. Previously cached native hours are retained. Extended-hours hourly charts remain native. Source 5m data fetched solely for aggregation is transient; only the hourly result is persisted. Existing independently requested 5m data is reused.
+
+The per-chart fills button distinguishes visible, outside-view, session-excluded, unloaded, unavailable, unresolved-time and off-price-scale executions. Show execution preserves independent date ranges and opens the corresponding execution details. It never moves a fill onto an unrelated candle. Fit trade explicitly requests the full holding period and enough context for coarse candles. Labels, marker hit targets and exported images share the same visibility calculation; replay excludes future executions from both counts and lists.
+
+## Verification
+
+The NVDA regression uses the reviewed seven fills with frozen cached Alpaca candles in the isolated browser preview. The saved August 12-13 five-minute view contains five fills; Fit trade exposes all seven in 5m, 10m, 15m, 1h, 1d and 1wk. The previous eight-fill MU case remains covered by the frozen provider fixture and timestamp persistence tests. Additional tests cover early closes, DST, missing bars, policy exceptions/rollback, future imports, cache reuse, temporary storage limits, replay, themes, fullscreen and image exports.
+
+Production rollout applies the additive migration after a verified backup, prepares the NVDA/MU report subset first, verifies markers, then resumes eligible account reports and supersedes pending native regular-hour preparation jobs. No ingestion, accounting, journal or drawing migration is involved. Rollback can disable the account default in Settings; original candle identities and application records remain available.

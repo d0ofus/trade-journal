@@ -41,6 +41,8 @@ const RESTORE_KEYS: KeySpec[] = [
   { table: "importBatches", fields: ["id"] },
   { table: "importRowErrors", fields: ["id"] },
   { table: "executionTimeInterpretations", fields: ["id"] },
+  { table: "accountExecutionTimePolicies", fields: ["id"] },
+  { table: "executionTimePolicyApplications", fields: ["key"] },
   { table: "executions", fields: ["id"] },
   { table: "positions", fields: ["id"] },
   { table: "positionSnapshots", fields: ["id"] },
@@ -82,6 +84,9 @@ const FOREIGN_KEYS: ForeignKeySpec[] = [
   { table: "importBatches", field: "accountId", targetTable: "accounts", optional: true },
   { table: "importBatches", field: "rawStorageKey", targetTable: "importArtifacts", targetField: "storageKey", optional: true },
   { table: "executionTimeInterpretations", field: "importBatchId", targetTable: "importBatches" },
+  { table: "accountExecutionTimePolicies", field: "accountId", targetTable: "accounts" },
+  { table: "executionTimePolicyApplications", field: "policyId", targetTable: "accountExecutionTimePolicies" },
+  { table: "executionTimePolicyApplications", field: "importBatchId", targetTable: "importBatches" },
   { table: "importRowErrors", field: "importBatchId", targetTable: "importBatches" },
   { table: "executions", field: "accountId", targetTable: "accounts" },
   { table: "executions", field: "instrumentId", targetTable: "instruments" },
@@ -577,6 +582,7 @@ function validateUniqueDomainKeys(payload: JsonRecord) {
   });
   const specs: Array<{ table: BackupTableKey; fields: string[]; label: string }> = [
     { table: "executionTimeInterpretations", fields: ["importBatchId"], label: "timestamp interpretation batch" },
+    { table: "accountExecutionTimePolicies", fields: ["accountId", "source"], label: "account timestamp policy" },
     { table: "closedTradeNotes", fields: ["groupKey"], label: "closed-trade note groupKey" },
     { table: "closedTradeLayouts", fields: ["closedTradeGroupKey"], label: "closed-trade chart layout groupKey" },
   ];
@@ -615,6 +621,15 @@ function parseJsonField(value: unknown) {
 
 function validateJsonStateFields(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
+  const policies = tableRows(payload, "accountExecutionTimePolicies").filter(isRecord);
+  policies.forEach((row, index) => {
+    if (row.source !== "IBKR_EXECUTIONS" || row.timezone !== "America/New_York" || row.basis !== "user-confirmed" || row.normalizerVersion !== 1 || !Number.isInteger(row.revision) || Number(row.revision) < 1 || typeof row.active !== "boolean") errors.push(issue("INVALID_TIME_POLICY", "Unsupported account timestamp policy.", `accountExecutionTimePolicies.${index}`));
+  });
+  tableRows(payload, "executionTimePolicyApplications").forEach((row, index) => {
+    if (!isRecord(row)) return;
+    const policy = policies.find(p => p.id === row.policyId);
+    if (!Number.isInteger(row.policyRevision) || Number(row.policyRevision) < 1 || (policy && Number(row.policyRevision) > Number(policy.revision)) || !["ready", "unresolved", "exception"].includes(String(row.status))) errors.push(issue("INVALID_TIME_POLICY_APPLICATION", "Invalid timestamp application revision or status.", `executionTimePolicyApplications.${index}`));
+  });
   const evidence = workstationEvidenceManifest(tableRows(payload, "closedTradeNotes").filter(isRecord));
   if (evidence.invalid.length) errors.push(issue("INVALID_WORKSTATION_EVIDENCE", "Workstation review JSON or inline screenshot is invalid.", "closedTradeNotes"));
   if (isRecord(payload.assets) && payload.assets.workstationEvidence !== undefined && JSON.stringify(payload.assets.workstationEvidence) !== JSON.stringify(evidence.entries)) errors.push(issue("WORKSTATION_EVIDENCE_MISMATCH", "Workstation screenshot checksums do not match the manifest.", "assets.workstationEvidence"));
@@ -623,6 +638,7 @@ function validateJsonStateFields(payload: JsonRecord) {
   });
   const specs: Array<{ table: BackupTableKey; field: string; shape: "array" | "object" }> = [
     { table: "executionTimeInterpretations", field: "rowsJson", shape: "array" },
+    { table: "executionTimePolicyApplications", field: "rowsJson", shape: "array" },
     { table: "closedTradeLayouts", field: "panelsJson", shape: "array" },
     { table: "closedTradeAnnotations", field: "pointsJson", shape: "array" },
     { table: "closedTradeAnnotations", field: "styleJson", shape: "object" },

@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "incremental": false },
+  "compilerOptions": {
+    "incremental": false
+  },
   "include": [
     "src/**/*.d.ts",
     "src/lib/server/workstation-cache.test.ts",
@@ -16,7 +18,11 @@
     "src/lib/server/trade-workstation.test.ts",
     "src/lib/server/backup-restore.test.ts",
     "tests/workstation-auth/**/*.ts",
-    "playwright.workstation-auth.config.ts"
+    "playwright.workstation-auth.config.ts",
+    "src/lib/workstation/execution-visibility.test.ts",
+    "scripts/seed-execution-visibility-preview.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

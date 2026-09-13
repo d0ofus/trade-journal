@@ -38,8 +38,8 @@ export const REPOSITORY_SAFETY_ALLOWLIST = Object.freeze([
   {
     ruleId: "database-url",
     path: "src/lib/demo-seed-safety.test.ts",
-    fileSha256: "2a2f98f5760b5c625e4e98cf5579b7c2f1baa731821a22e994927a61b5c85796",
-    reason: "Reviewed reserved-host isolated-schema test URLs.",
+    fileSha256: "562a5d355f010c342bf7b723a9e52ee5f5b5759d2552f7f49cc95222bbec57fa",
+    reason: "Reviewed synthetic reserved-host and loopback test URLs; local-only test target.",
   },
   {
     ruleId: "database-url",

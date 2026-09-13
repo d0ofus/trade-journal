@@ -6,6 +6,12 @@ export const MAX_HISTORY_CANDLES = 100_000;
 const DAY = 86400;
 const pageDays: Record<Interval, number> = { "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 };
 
+/** Fit includes complete coarse candles and the full holding period, even across weekends. */
+export function fitTradeHistoryRange(trade: Trade, interval: Interval): HistoryRange {
+  const padding = Math.max(DAY, seconds[interval] * 10, (trade.closeTime - trade.openTime) * .35);
+  return { from: Math.max(1, Math.floor(trade.openTime - padding)), to: Math.ceil(trade.closeTime + padding) };
+}
+
 export function initialHistoryRange(trade: Trade, interval: Interval, context?: HistoryRange | null): HistoryRange {
   const span = pageDays[interval] * DAY;
   const padding = Math.max(seconds[interval] * 60, DAY);
@@ -38,6 +44,7 @@ export function preserveHistoryViewport(previous: Candle[], next: Candle[], rang
 }
 
 export type HistoryState = {
+  interval?: Interval;
   result: CandleResult;
   loading: "initial" | HistoryDirection | null;
   error: string;
@@ -63,7 +70,7 @@ export class CandleHistory {
     private changed: (state: HistoryState) => void,
     private now = () => Math.floor(Date.now() / 1000),
   ) {
-    this.state = { result: { candles: [], warning: "", source: "" }, loading: null, error: "", failed: null, messages: { older: "", newer: "" }, range };
+    this.state = { interval, result: { candles: [], warning: "", source: "" }, loading: null, error: "", failed: null, messages: { older: "", newer: "" }, range };
   }
 
   dispose() { this.controller.abort(); }

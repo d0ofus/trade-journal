@@ -22,6 +22,8 @@ export const BACKUP_TABLES = [
   { key: "importBatches", prismaModel: "ImportBatch", dependencies: ["accounts", "importArtifacts"], restoreOrder: 70, canonicalRows: true },
   { key: "importRowErrors", prismaModel: "ImportRowError", dependencies: ["importBatches"], restoreOrder: 80, canonicalRows: true },
   { key: "executionTimeInterpretations", prismaModel: "ExecutionTimeInterpretation", dependencies: ["importBatches"], restoreOrder: 85, canonicalRows: true, optionalInLegacy: true },
+  { key: "accountExecutionTimePolicies", prismaModel: "AccountExecutionTimePolicy", dependencies: ["accounts"], restoreOrder: 86, canonicalRows: true, optionalInLegacy: true },
+  { key: "executionTimePolicyApplications", prismaModel: "ExecutionTimePolicyApplication", dependencies: ["accountExecutionTimePolicies", "importBatches"], restoreOrder: 87, canonicalRows: true, optionalInLegacy: true },
   { key: "executions", prismaModel: "Execution", dependencies: ["accounts", "instruments", "importBatches"], restoreOrder: 90, canonicalRows: true },
   { key: "positions", prismaModel: "Position", dependencies: ["accounts", "instruments"], restoreOrder: 100, canonicalRows: true },
   { key: "positionSnapshots", prismaModel: "PositionSnapshot", dependencies: ["accounts", "instruments"], restoreOrder: 110, canonicalRows: true },

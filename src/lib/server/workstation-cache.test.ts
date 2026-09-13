@@ -194,3 +194,27 @@ describe("compact candle cache on isolated PostgreSQL", () => {
     expect(await cacheBudgetAvailable(reader(10_000_000, 399_000_000))).toBe(false);
   });
 });
+
+describe("separate market-open hourly cache", () => {
+  const day = Date.parse("2024-09-03Z") / 1000, open = day + 13.5 * 3600, close = day + 20 * 3600;
+  const request = { symbol: series.symbol, timeframe: "1h" as const, range: { from: day, to: day + 86400 - .001 }, limit: 30000, session: "regular" as const };
+  async function saveSource(range: { from: number; to: number }, bars: Candle[]) {
+    const lease = (await claimCacheLease(`series:${seriesKey(series)}`))!; await persistCompactCandles(series, range, bars, lease, true); await releaseCacheLease(lease);
+  }
+  it("reuses cached 5m coverage, persists independent hourly chunks and revisits with zero provider requests", async () => {
+    const bars = [candle(open), candle(open + 300), candle(close - 300)]; await saveSource({ from: open, to: close }, bars);
+    const partial = await loadWorkstationCandles({ ...request, mode: "cache" }); expect(partial.candles).toHaveLength(2); expect(fetch).not.toHaveBeenCalled();
+    const result = await loadWorkstationCandles(request); expect(result.candles).toHaveLength(2); expect(result.cache?.missing).toEqual([]); expect(result.session?.aggregation).toBe("session-open-5m-v1"); expect(fetch).not.toHaveBeenCalled();
+    expect((await loadWorkstationCandles(request)).candles).toEqual(result.candles); expect(fetch).not.toHaveBeenCalled();
+    expect(await prisma.workstationCandleChunk.count({ where: { timeframe: "1h", source: { endsWith: "session-open-5m-v1" } } })).toBe(1);
+  });
+  it("fetches only missing source, does not retain additional 5m, and handles a mid-hour request", async () => {
+    await saveSource({ from: open, to: open + 3600 }, [candle(open)]);
+    vi.mocked(fetch).mockImplementation(async () => api([candle(open + 3600), candle(close - 300)]));
+    const result = await loadWorkstationCandles({ ...request, range: { from: open + 1500, to: close - 100 } });
+    expect(result.candles[0].time).toBe(open); expect(result.candles).toHaveLength(3);
+    expect(fetch).toHaveBeenCalledTimes(1); const url = new URL(String(vi.mocked(fetch).mock.calls[0][0])); expect(Date.parse(url.searchParams.get("start")!) / 1000).toBe(open + 3600);
+    const sourceBars = await readCompactCandles(series, { from: day, to: day + 86400 }, 30000); expect(sourceBars.candles).toHaveLength(1);
+    expect(sourceBars.cache.covered).toEqual([{ from: open, to: open + 3600 }]);
+  });
+});

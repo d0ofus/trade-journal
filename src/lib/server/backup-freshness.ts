@@ -16,6 +16,8 @@ export const BACKUP_RELEVANT_TIMESTAMP_SOURCES = [
   { key: "accounts", prismaModel: "Account", timestampFields: ["createdAt", "updatedAt"] },
   { key: "importBatches", prismaModel: "ImportBatch", timestampFields: ["importedAt"] },
   { key: "executionTimeInterpretations", prismaModel: "ExecutionTimeInterpretation", timestampFields: ["confirmedAt", "updatedAt"] },
+  { key: "accountExecutionTimePolicies", prismaModel: "AccountExecutionTimePolicy", timestampFields: ["confirmedAt", "updatedAt"] },
+  { key: "executionTimePolicyApplications", prismaModel: "ExecutionTimePolicyApplication", timestampFields: ["createdAt"] },
   { key: "importRowErrors", prismaModel: "ImportRowError", timestampFields: ["createdAt"] },
   { key: "importArtifacts", prismaModel: "ImportArtifact", timestampFields: ["createdAt"] },
   { key: "materializationWatermarks", prismaModel: "MaterializationWatermark", timestampFields: ["refreshedAt", "createdAt", "updatedAt"] },

@@ -37,6 +37,7 @@ import {
   HistoryRange,
   HistoryState,
   initialHistoryRange,
+  fitTradeHistoryRange,
   preserveHistoryViewport,
 } from "@/lib/workstation/history";
 import { Hit, hitAt, PaintOptions, paintChart } from "./chart-paint";
@@ -85,6 +86,7 @@ type Props = {
   onViewChange?: (range: HistoryRange) => void;
 };
 import { diagnoseExecution, executionDiagnosticSummary } from "@/lib/workstation/execution-diagnostics";
+import { executionVisibility, visibilityLabels, visibilitySummary, type ExecutionVisibility } from "@/lib/workstation/execution-visibility";
 import { ExecutionDetails } from "./execution-details";
 
 const asTime = (time: number) => time as UTCTimestamp;
@@ -109,9 +111,13 @@ export function TradeChart(props: Props) {
     warning: "",
     source: "",
   };
-  const loading = (!historyState || historyState.loading === "initial") && !result.candles.length;
+  const loading = (!!historyState?.interval && historyState.interval !== props.panel.interval) || ((!historyState || historyState.loading === "initial") && !result.candles.length);
   const failure = historyState?.failed === "initial" && !result.candles.length ? historyState.error : "";
   const [reload, setReload] = useState(0);
+  const [visibility, setVisibility] = useState<ExecutionVisibility[]>([]);
+  const visibilityKey = useRef("");
+  const ownHandle = useRef<ChartHandle | null>(null);
+  const [fillsOpen, setFillsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const historyResult = useRef(result); historyResult.current = result;
@@ -172,6 +178,7 @@ export function TradeChart(props: Props) {
     result.candles,
     props.panel.interval,
     props.replay,
+    result.session,
   );
   bars.current = data;
 
@@ -241,6 +248,7 @@ export function TradeChart(props: Props) {
       const started = await session.start();
       if (started && requested?.range) await session.cover(requested.range);
       if (disposed) return;
+      if (requested?.fit && session.state.result.candles.length) { destination.current = requested; }
       dataReady.current = session.state.result.candles.length > 0 || session.state.failed !== "initial";
       setHistoryState(session.state);
       if (session.state.result.candles.length) latest.current.onHistoryReady?.(props.trade.id);
@@ -323,10 +331,11 @@ export function TradeChart(props: Props) {
         const lowTime =
             typeof range?.from === "number" ? range.from : -Infinity,
           highTime = typeof range?.to === "number" ? range.to : Infinity;
-        for (const e of latest.current.trade.executions)
+        for (const e of latest.current.trade.executions) {
+          const markerTime = executionBar(e, bars.current, latest.current.panel.interval, historyResult.current.session)?.time;
           if (
-            e.time >= lowTime &&
-            e.time <= highTime &&
+            markerTime !== undefined && markerTime >= lowTime &&
+            markerTime <= highTime &&
             (latest.current.replay === null || e.time <= latest.current.replay)
           ) {
             info.priceRange.minValue = Math.min(
@@ -338,6 +347,7 @@ export function TradeChart(props: Props) {
               e.price,
             );
           }
+        }
         return info;
       },
     });
@@ -400,6 +410,8 @@ export function TradeChart(props: Props) {
       interval: latest.current.panel.interval,
       labels: latest.current.preferences.labels,
       session: historyResult.current.session,
+      covered: historyResult.current.cache?.covered,
+      visibleRange: api.timeScale().getVisibleRange() as HistoryRange | null,
       selected: latest.current.selected,
       selectedExecution: latest.current.selectedExecution,
       light,
@@ -426,7 +438,13 @@ export function TradeChart(props: Props) {
         }
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
         ctx.clearRect(0, 0, width, height);
-        if (dataReady.current) hits.current = paintChart(ctx, options());
+        if (dataReady.current) {
+          const o = options();
+          hits.current = paintChart(ctx, o);
+          const rows = executionVisibility({ ...o, executions: o.trade.executions });
+          const key = JSON.stringify([latest.current.trade.id, latest.current.trade.timeInterpretationVersion, rows.map(r => [r.diagnostic.execution.id, r.reason, r.diagnostic.status, r.diagnostic.candle?.time])]);
+          if (key !== visibilityKey.current) { visibilityKey.current = key; setVisibility(rows); }
+        }
       });
     };
     paintRef.current = paint;
@@ -583,6 +601,7 @@ export function TradeChart(props: Props) {
       setReload((n) => n + 1);
     };
     requestFit.current = () => {
+      focusedWindow.current = null; focusedTarget.current = null;
       const p = latest.current;
       if (
         p.replay === null &&
@@ -590,14 +609,16 @@ export function TradeChart(props: Props) {
           { time: p.trade.openTime } as never,
           bars.current,
           p.panel.interval,
+          historyResult.current.session,
         ) ||
           !executionBar(
             { time: p.trade.closeTime } as never,
             bars.current,
             p.panel.interval,
+            historyResult.current.session,
           ))
       )
-        navigate((p.trade.openTime + p.trade.closeTime) / 2, true);
+        navigate((p.trade.openTime + p.trade.closeTime) / 2, true, fitTradeHistoryRange(p.trade, p.panel.interval));
       else fit();
     };
     const targetAnchor = (target: ChartDateTarget) =>
@@ -617,6 +638,7 @@ export function TradeChart(props: Props) {
         { time } as never,
         bars.current,
         latest.current.panel.interval,
+        historyResult.current.session,
       );
       let index = containing
         ? bars.current.indexOf(containing)
@@ -628,7 +650,7 @@ export function TradeChart(props: Props) {
       });
       paint();
     };
-    p.register(p.panel.id, {
+    const handle: ChartHandle = {
       inspect: (id) => setInspectedId(id),
       focus: () => container.current?.focus({ preventScroll: true }),
       cancel: () => {
@@ -795,7 +817,8 @@ export function TradeChart(props: Props) {
           ctx.save();
           ctx.translate(0, header * scale);
           ctx.scale(scale, scale);
-          paintChart(ctx, { ...frozen, width, height, plotWidth: clone.timeScale().width() / scale, plotHeight: height - clone.timeScale().height() / scale, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / scale; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / scale; } });
+          const exportOptions: PaintOptions = { ...frozen, width, height, plotWidth: clone.timeScale().width() / scale, plotHeight: height - clone.timeScale().height() / scale, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / scale; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / scale; } };
+          paintChart(ctx, exportOptions);
           ctx.restore();
           ctx.scale(scale, scale);
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
@@ -809,10 +832,10 @@ export function TradeChart(props: Props) {
           ctx.font = "10px system-ui";
           const comparisons = frozenTrade.executions.filter(e => frozen.replay === null || e.time <= frozen.replay).map(e => diagnoseExecution(e, snapshotBars, frozenInterval, frozenHistory.session));
           const lines = [
-            'Fills: ' + comparisons.filter(d => d.status === 'missing').length + ' missing / ' + comparisons.filter(d => d.status === 'price-outside').length + ' price mismatch',
+            visibilitySummary(executionVisibility({ ...exportOptions, executions: frozenTrade.executions })),
             !comparisons.length ? 'No visible executions / UTC display' : comparisons.some(d => d.timezoneUnverified || d.periodUnverified) ? 'Source or candle time basis unverified / UTC display' : 'Execution source timezone verified / UTC display',
             (frozenHistory.provider?.provider ?? frozenHistory.source) + ' / adjustment: ' + (frozenHistory.provider?.adjustment ?? 'unverified'),
-            'Session: ' + (frozenHistory.session?.marketHours ?? 'unknown') + ' / ' + (comparisons.some(d => d.execution.provenance?.interpretationStatus === 'applied') ? 'User-confirmed source to UTC' : 'Original time basis'),
+            'Session: ' + (frozenHistory.session?.marketHours ?? 'unknown') + ' / ' + (frozenHistory.session?.aggregation ?? 'provider-native'),
             'TradingView Lightweight Charts / tradingview.com',
           ];
           lines.forEach((line, i) => ctx.fillText(line, 8, height + header + 12 + i * 13, width - 16));
@@ -822,8 +845,11 @@ export function TradeChart(props: Props) {
           container.remove();
         }
       },
-    });
+    };
+    ownHandle.current = handle;
+    p.register(p.panel.id, handle);
     return () => {
+      ownHandle.current = null;
       p.register(p.panel.id, null);
       resize.disconnect();
       cancelAnimationFrame(frame);
@@ -1186,6 +1212,7 @@ export function TradeChart(props: Props) {
     (e) => props.replay === null || e.time <= props.replay,
   );
   const diagnostics = loading ? [] : visibleExecutions.map(e => diagnoseExecution(e, data, props.panel.interval, result.session));
+  const currentVisibility = visibility.filter(r => visibleExecutions.some(e => e.id === r.diagnostic.execution.id));
   const missing = diagnostics.filter(d => d.status === "missing").length;
   const outside = diagnostics.filter(d => d.status === "price-outside").length;
   const inspected = diagnostics.find(d => d.execution.id === inspectedId);
@@ -1214,6 +1241,8 @@ export function TradeChart(props: Props) {
       data-visible-from={visibleWindow?.from}
       data-visible-to={visibleWindow?.to}
       data-visible-bars={visibleBars}
+      data-history-interval={historyState?.interval}
+      data-visible-executions={loading ? 0 : currentVisibility.filter(r => r.reason === "visible").length}
     >
       <div className="ws-chart-heading" onClick={props.onActive}>
         <div className="ws-chart-symbol">
@@ -1233,6 +1262,9 @@ export function TradeChart(props: Props) {
           </span>
         </div>
         <div className="ws-chart-actions">
+          <button className="ws-fill-toggle" aria-label={`Execution visibility ${props.panel.id}`} aria-expanded={fillsOpen} title={loading ? "Loading execution visibility" : visibilitySummary(currentVisibility)} onClick={() => setFillsOpen(v => !v)}>
+            {loading ? "?" : `${currentVisibility.filter(r => r.reason === "visible").length}/${visibleExecutions.length}`} fills
+          </button>
           {props.fullscreen && <button aria-label={props.preferences.labels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={props.preferences.labels === "labels"} title="Toggle labels across all charts; markers remain visible" onClick={props.onToggleLabels}>{props.preferences.labels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}</button>}
           <button
             className={`ws-history-toggle ${historyWarning ? "ws-history-warning" : ""}`}
@@ -1351,6 +1383,15 @@ export function TradeChart(props: Props) {
         )}
       </div>
       {props.fullscreen && <a className="ws-fullscreen-credit" href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>}
+      {fillsOpen && <div className="ws-history-popover ws-fill-popover" role="dialog" aria-label={`Execution visibility details ${props.panel.id}`} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); setFillsOpen(false); } }}>
+        <div className="ws-history-popover-heading"><strong>Execution visibility</strong><button autoFocus aria-label="Close execution visibility" onClick={() => setFillsOpen(false)}><X size={14} /></button></div>
+        <p>{loading ? "Loading candles?" : visibilitySummary(currentVisibility)}</p>
+        <div className="ws-diagnostic-list">{visibility.filter(r => visibleExecutions.some(e => e.id === r.diagnostic.execution.id)).map(r => <div key={r.diagnostic.execution.id} className="ws-fill-row">
+          <button onClick={() => { setInspectedId(r.diagnostic.execution.id); props.onExecution(r.diagnostic.execution.id); setFillsOpen(false); }}>{r.index + 1}. {r.diagnostic.execution.side} {r.diagnostic.execution.quantity} @ {r.diagnostic.execution.price.toFixed(2)}<span>{visibilityLabels[r.reason]}{r.diagnostic.timezoneUnverified ? " ? timing unverified" : ""}</span></button>
+          <button aria-label={`Show execution ${r.index + 1}`} onClick={() => { const target: ChartDateTarget = { time: r.diagnostic.execution.time }; ownHandle.current?.reveal(target); props.onDateClick(target); if (r.reason === "outside-price-scale") series.current?.priceScale().applyOptions({ autoScale: true }); props.onExecution(r.diagnostic.execution.id); setInspectedId(r.diagnostic.execution.id); setFillsOpen(false); paintRef.current(); }}>Show execution</button>
+        </div>)}</div>
+        <p>Independent chart ranges are preserved. Fit trade shows the full holding period. Session exclusions and unresolved timestamps require their respective settings; navigation never moves a fill onto a different candle.</p>
+      </div>}
       {inspected && <ExecutionDetails diagnostic={inspected} history={result} onClose={() => setInspectedId(null)} />}
       {historyOpen && (
         <div

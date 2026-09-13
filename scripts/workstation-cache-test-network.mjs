@@ -4,6 +4,7 @@ const target = new URL(process.env.DATABASE_URL ?? "http://invalid");
 if (process.env.ALLOW_TEST_DATABASE_MUTATIONS !== "1" || target.hostname !== "127.0.0.1" || target.port !== "55439" || target.pathname !== "/trades_workstation_auth_test" || process.env.TRADES_ALPACA_API_KEY_ID !== "isolated-dummy-key") throw new Error("Cache browser network double requires the isolated local database and dummy credentials.");
 const original = globalThis.fetch;
 const fixture = JSON.parse(readFileSync(process.env.WORKSTATION_TEST_CANDLES_FILE, "utf8"));
+const nvda = process.env.WORKSTATION_TEST_NVDA_FILE ? JSON.parse(readFileSync(process.env.WORKSTATION_TEST_NVDA_FILE, "utf8")) : null;
 const steps = { "5Min": 300, "10Min": 600, "15Min": 900, "1Hour": 3600, "1Day": 86400, "1Week": 604800 };
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -15,8 +16,8 @@ globalThis.fetch = async (input, init) => {
   if (existsSync(process.env.WORKSTATION_TEST_PROVIDER_LOG + ".offline")) return Response.json({}, { status: 503 });
   const from = Date.parse(url.searchParams.get("start")) / 1000, to = Date.parse(url.searchParams.get("end")) / 1000;
   const buckets = new Map();
-  if (symbol === "MU") {
-    for (const c of fixture.candles) {
+  if (symbol === "MU" || (symbol === "NVDA" && nvda)) {
+    for (const c of (symbol === "NVDA" ? nvda : fixture).candles) {
       // This frozen September fixture is EDT. Coarse test bars use its provider session date.
       const origin = step === 86400 ? 4 * 3600 : step === 604800 ? 4 * 86400 + 4 * 3600 : 0;
       const time = Math.floor((c.time - origin) / step) * step + origin, prior = buckets.get(time);

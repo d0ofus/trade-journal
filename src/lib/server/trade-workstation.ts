@@ -5,7 +5,7 @@ import { Drawing, Trade, TradeDocument, emptyDocument } from "@/lib/workstation/
 import { lockClosedTradeForReview } from "./closed-trade-review-lock";
 import { buildClosedTradeWhere, TradeFilters } from "./closed-trade-filters";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "@/lib/workstation/payload";
-import { applyTimeInterpretation } from "./execution-time-interpretation";
+import { applyAccountTimePolicy } from "./execution-time-policy";
 type Reader = Prisma.TransactionClient;
 export class WorkstationError extends Error { constructor(message: string, public status = 409) { super(message); } }
 
@@ -14,12 +14,17 @@ export async function listWorkstationTrades(filters: TradeFilters = {}, selected
   const where = buildClosedTradeWhere(filters);
   const groups = await prisma.closedTrade.findMany({ where: selectedId && includeSelectedOutsideFilters ? { OR: [{ groupKey: selectedId }, where] } : where, include: { account: { select: { ibkrAccount: true } }, instrument: { select: { currency: true } }, executions: { orderBy: { sortOrder: "asc" }, include: { execution: { select: { executedAt: true, importBatch: { select: { id: true, parserVersion: true, sourceSection: true, rawSha256: true, rawArtifact: { select: { rawSha256: true } } } } } } } } }, orderBy: [{ isStale: "asc" }, { closeTime: "desc" }, { groupKey: "asc" }] });
   const batchIds = [...new Set(groups.flatMap(g => g.executions.flatMap(e => e.execution.importBatch ? [e.execution.importBatch.id] : [])))];
-  const interpretations = batchIds.length ? await prisma.executionTimeInterpretation.findMany({ where: { importBatchId: { in: batchIds }, active: true } }) : [];
+  const interpretations = batchIds.length ? await prisma.executionTimeInterpretation.findMany({ where: { importBatchId: { in: batchIds } } }) : [];
+  const policies = await prisma.accountExecutionTimePolicy.findMany({ where: { accountId: { in: [...new Set(groups.map(g => g.accountId))] }, active: true } });
+  const applications = policies.length ? await prisma.executionTimePolicyApplication.findMany({ where: { policyId: { in: policies.map(p => p.id) }, importBatchId: { in: batchIds } }, orderBy: { createdAt: "desc" } }) : [];
+  const policyByAccount = new Map(policies.map(p => [p.accountId, p]));
+  const applicationByBatch = new Map<string, (typeof applications)[number]>();
+  for (const app of applications) if (policies.some(p => p.id === app.policyId && p.revision === app.policyRevision) && !applicationByBatch.has(`${app.policyId}:${app.importBatchId}`)) applicationByBatch.set(`${app.policyId}:${app.importBatchId}`, app);
   const byBatch = new Map(interpretations.map(row => [row.importBatchId, row]));
   // openingQuantity/closingQuantity are signed account-position baselines, not trade size.
   // Materialized ClosedTrade rows represent completed cycles, even when a separate carry position remains.
   return groups.map(g => {
-    const executions = g.executions.map(e => applyTimeInterpretation({ id: e.executionId, time: e.executedAt.getTime() / 1000, side: e.side === "BUY" ? "BUY" : "SELL", quantity: e.quantity, price: e.price, commission: e.commission, fees: e.fees, provenance: { timezoneStatus: "unverified", timezone: null, source: e.execution.importBatch?.sourceSection === "trades" ? "Imported broker execution" : "Stored execution", parserVersion: e.execution.importBatch?.parserVersion ?? null } }, e.execution.executedAt.getTime() === e.executedAt.getTime() && e.execution.importBatch ? { ...e.execution.importBatch, timeInterpretation: byBatch.get(e.execution.importBatch.id) ?? null } : null));
+    const executions = g.executions.map(e => applyAccountTimePolicy({ id: e.executionId, time: e.executedAt.getTime() / 1000, side: e.side === "BUY" ? "BUY" : "SELL", quantity: e.quantity, price: e.price, commission: e.commission, fees: e.fees, provenance: { timezoneStatus: "unverified", timezone: null, source: e.execution.importBatch?.sourceSection === "trades" ? "Imported broker execution" : "Stored execution", parserVersion: e.execution.importBatch?.parserVersion ?? null } }, e.execution.executedAt.getTime() === e.executedAt.getTime() && e.execution.importBatch ? { ...e.execution.importBatch, timeInterpretation: byBatch.get(e.execution.importBatch.id) ?? null } : null, policyByAccount.get(g.accountId), applicationByBatch.get(`${policyByAccount.get(g.accountId)?.id}:${e.execution.importBatch?.id}`)));
     const boundary = (time: Date) => { const index = g.executions.findIndex(e => e.executedAt.getTime() === time.getTime()); return index >= 0 ? executions[index].time : time.getTime() / 1000; };
     return { id: g.groupKey, symbol: g.symbol, name: g.symbol, account: g.account.ibkrAccount, currency: g.instrument.currency ?? "", direction: g.direction === "SHORT" ? "SHORT" as const : "LONG" as const, openTime: boundary(g.openTime), closeTime: boundary(g.closeTime), brokerTradeDate: g.tradeDate.toISOString().slice(0, 10), timeInterpretationVersion: createHash("sha256").update(executions.map(e => `${e.id}:${e.time}:${e.provenance?.interpretationStatus ?? "original"}:${e.provenance?.interpretationVersion ?? "0"}`).join("|")).digest("hex"), entry: g.avgEntryPrice, exit: g.avgExitPrice, pnl: g.realizedPnl, fees: g.totalCommission, quantity: g.totalQuantity, openQuantity: 0, stale: g.isStale, executions };
   });

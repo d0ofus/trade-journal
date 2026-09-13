@@ -3,7 +3,7 @@ import { buildBackupTableManifest } from "@/lib/server/backup-contract";
 
 const mocks = vi.hoisted(() => {
   const modelNames = [
-    "account",
+    "account", "accountExecutionTimePolicy", "executionTimePolicyApplication",
     "instrument",
     "position",
     "positionSnapshot",
