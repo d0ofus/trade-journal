@@ -1,5 +1,6 @@
 import type { AlpacaCandleCredentials, Candle, CandleTimeframe } from "./market-candles";
-import type { CandleRange } from "@/lib/workstation/candle-ranges";
+import type { CandleRange, CandleTimings } from "@/lib/workstation/candle-ranges";
+import { waitForHistory } from "@/lib/workstation/shared-requests";
 import { AlpacaCandleError } from "./alpaca-candle-error";
 import { validateCandles } from "./workstation-cache-codec";
 import { deferProviderRequests, takeProviderSlot } from "./workstation-cache-store";
@@ -10,19 +11,32 @@ export class CacheProviderError extends AlpacaCandleError {
   constructor(status: number, readonly retryAfterSeconds: number) { super("http", status); }
 }
 /** Workstation fetch only: no writes to the legacy candle cache. A 200 empty result is meaningful coverage. */
-export async function fetchCompactCandles(symbol: string, timeframe: CandleTimeframe, range: CandleRange, credentials: AlpacaCandleCredentials, background = false, coordinate = true): Promise<Candle[]> {
+export type ProviderRequestContext = { signal?: AbortSignal; timings?: CandleTimings };
+export async function fetchCompactCandles(symbol: string, timeframe: CandleTimeframe, range: CandleRange, credentials: AlpacaCandleCredentials, background = false, coordinate = true, context: ProviderRequestContext = {}): Promise<Candle[]> {
   const rows: Candle[] = []; let token: string | null = null; const seen = new Set<string>();
   const deadline = Date.now() + 45_000;
   do {
-    while (coordinate && !(await takeProviderSlot(background))) {
+    context.signal?.throwIfAborted();
+    const queuedAt = performance.now();
+    try { while (coordinate && !(await takeProviderSlot(background))) {
+      context.signal?.throwIfAborted();
       if (Date.now() > deadline) throw new CacheBusyError();
-      await new Promise(resolve => setTimeout(resolve, background ? 1050 : 525));
-    }
+      await waitForHistory(background ? 1050 : 525, context.signal);
+    } } finally { if (context.timings) context.timings.queueWaitMs = (context.timings.queueWaitMs ?? 0) + performance.now() - queuedAt; }
     if (Date.now() > deadline) throw new CacheBusyError();
     const url = new URL(`${credentials.baseUrl}/v2/stocks/bars`);
     for (const [key, value] of Object.entries({ symbols: symbol, timeframe: intervals[timeframe], start: new Date(range.from * 1000).toISOString(), end: new Date(range.to * 1000 - 1).toISOString(), limit: "10000", feed: credentials.feed, adjustment: credentials.adjustment, sort: "asc" })) url.searchParams.set(key, value);
     if (token) url.searchParams.set("page_token", token);
-    const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(25_000), headers: { "APCA-API-KEY-ID": credentials.keyId, "APCA-API-SECRET-KEY": credentials.secretKey } });
+    context.signal?.throwIfAborted();
+    if (context.timings) context.timings.providerRequestCount = (context.timings.providerRequestCount ?? 0) + 1;
+    const fetchStarted = performance.now();
+    const signals = [AbortSignal.timeout(25_000), ...(context.signal ? [context.signal] : [])];
+    const { response, body } = await (async () => {
+      const response = await fetch(url, { cache: "no-store", signal: AbortSignal.any(signals), headers: { "APCA-API-KEY-ID": credentials.keyId, "APCA-API-SECRET-KEY": credentials.secretKey } });
+      return { response, body: response.ok ? await response.json() : null };
+    })().finally(() => {
+      if (context.timings) context.timings.providerFetchMs += performance.now() - fetchStarted;
+    });
     if (!response.ok) {
       const retry = response.headers.get("retry-after");
       const seconds = retry && /^\d+$/.test(retry) ? Number(retry) : retry ? Math.ceil((Date.parse(retry) - Date.now()) / 1000) : 0;
@@ -30,7 +44,7 @@ export async function fetchCompactCandles(symbol: string, timeframe: CandleTimef
       if (response.status === 429 && coordinate) await deferProviderRequests(Math.max(60, retrySeconds));
       throw new CacheProviderError(response.status, retrySeconds);
     }
-    const body = await response.json();
+    context.signal?.throwIfAborted();
     if (!body || typeof body !== "object" || !Object.hasOwn(body, "bars") || (body.bars !== null && (typeof body.bars !== "object" || Array.isArray(body.bars)))) throw new Error("Invalid provider response.");
     const values = body.bars?.[symbol] ?? [];
     if (!Array.isArray(values)) throw new Error("Invalid provider bars.");

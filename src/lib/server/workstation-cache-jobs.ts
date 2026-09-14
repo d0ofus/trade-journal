@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { WorkstationCandleJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Trade, Interval } from "@/lib/workstation/types";
-import { initialHistoryRange } from "@/lib/workstation/history";
+import { preloadHistoryRange } from "@/lib/workstation/history";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { unionRanges, type CandleRange } from "@/lib/workstation/candle-ranges";
 import { listWorkstationTrades } from "./trade-workstation";
@@ -22,7 +22,7 @@ export function planCandlePreparation(trades: Trade[], now = Date.now() / 1000):
   const groups = new Map<string, { symbol: string; timeframe: Interval; session: "regular" | "extended"; ranges: CandleRange[] }>();
   for (const trade of trades) for (const timeframe of preparationIntervals) {
     const session = tradeChartSession(trade), key = `${trade.symbol}:${timeframe}:${session}`;
-    const initial = initialHistoryRange(trade, timeframe);
+    const initial = preloadHistoryRange(trade, timeframe);
     const range = { from: Math.max(1, Math.floor(Math.min(initial.from, trade.openTime - 86400) / 86400) * 86400), to: Math.min(Math.ceil(now / 86400) * 86400, Math.ceil(Math.max(initial.to, trade.closeTime + 86400) / 86400) * 86400) };
     if (range.to <= range.from) continue;
     const group = groups.get(key) ?? { symbol: trade.symbol, timeframe, session, ranges: [] };
@@ -56,7 +56,7 @@ export async function queueCandlePreparation(pilot = false) {
 async function claimJob(pilot: boolean): Promise<WorkstationCandleJob | null> {
   const token = randomUUID();
   const rows = await prisma.$queryRaw<WorkstationCandleJob[]>`
-    UPDATE "WorkstationCandleJob" SET "status"='running', "leaseToken"=${token}, "leaseUntil"=(clock_timestamp() AT TIME ZONE 'UTC')+interval '180 seconds', "attempts"="attempts"+1, "updatedAt"=(clock_timestamp() AT TIME ZONE 'UTC')
+    UPDATE "WorkstationCandleJob" SET "status"='running', "leaseToken"=${token}, "leaseUntil"=(clock_timestamp() AT TIME ZONE 'UTC')+interval '180 seconds', "updatedAt"=(clock_timestamp() AT TIME ZONE 'UTC')
     WHERE "key"=(SELECT "key" FROM "WorkstationCandleJob" WHERE
       "timeframe" IN ('5m', '1h', '1d') AND (NOT ${pilot} OR "priority"=0) AND (("status"='pending' AND "availableAt"<=(clock_timestamp() AT TIME ZONE 'UTC')) OR ("status"='running' AND "leaseUntil"<(clock_timestamp() AT TIME ZONE 'UTC')))
       ORDER BY "priority" ASC, "availableAt" ASC FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`;
@@ -77,16 +77,18 @@ export async function runCandlePreparation(durationMs = 200_000, pilot = false) 
     while (Date.now() < deadline && (pilot ? cacheEnabled() : preparationEnabled())) {
       if (!(await cacheBudgetAvailable())) return { processed, paused: "Storage budget reached. Existing candles remain available." };
       const job = await claimJob(pilot); if (!job) break;
-      const update = (data: { status: string; lastError?: string | null; availableAt?: Date }) => prisma.workstationCandleJob.updateMany({ where: { key: job.key, leaseToken: job.leaseToken }, data: { ...data, leaseToken: null, leaseUntil: null } });
+      const update = (data: { status: string; lastError?: string | null; availableAt?: Date; attempts?: number }) => prisma.workstationCandleJob.updateMany({ where: { key: job.key, leaseToken: job.leaseToken }, data: { ...data, leaseToken: null, leaseUntil: null } });
       if (job.source !== candleIdentity(policy.cacheSource, job.timeframe as Interval, job.session)) { await update({ status: "skipped", lastError: "Provider identity changed; run preparation again with the current settings." }); continue; }
       try {
         const result = await loadCompactWorkstationCandles({ symbol: job.symbol, timeframe: job.timeframe as Interval, range: { from: job.start.getTime() / 1000, to: job.end.getTime() / 1000 - 0.001 }, session: job.session as "regular" | "extended", limit: 30000, background: true, tradeWindow: true, mode: "fill" }, policy);
-        if (result.cache?.missing.length || result.cache?.refresh.length) await update({ status: "pending", availableAt: new Date(Date.now() + Math.max(2000, result.cache.retryAfterMs ?? 0)), lastError: "Waiting for uncovered history or an active chart request." });
-        else { await update({ status: "done", lastError: result.candles.length ? null : "Provider query succeeded with no eligible bars in this period." }); processed++; }
+        if (result.cache?.missing.length || result.cache?.refresh.length) await update({ status: "pending", ...(result.cache.progressed ? { attempts: 0 } : {}), availableAt: new Date(Date.now() + (result.cache.retryAfterMs ?? (result.cache.progressed ? 0 : 1000))), lastError: result.cache.progressed ? null : "Waiting for uncovered history or an active chart request." });
+        else { await update({ status: "done", attempts: 0, lastError: result.candles.length ? null : "Provider query succeeded with no eligible bars in this period." }); processed++; }
+        if (result.cache?.persistencePaused) return { processed, paused: "Storage budget reached. Existing candles remain available." };
       } catch (error) {
-        const status = error instanceof CacheProviderError && [400, 404, 422].includes(error.status ?? 0) ? "unavailable" : job.attempts >= 5 ? "failed" : "pending";
-        const seconds = Math.min(86400, Math.max(30 * 2 ** Math.min(job.attempts, 10), error instanceof CacheProviderError ? error.retryAfterSeconds : 0));
-        await update({ status, availableAt: new Date(Date.now() + seconds * 1000), lastError: `Alpaca: ${alpacaFailureSummary(error)}. Imported trades are unchanged.` });
+        const attempts = job.attempts + 1;
+        const status = error instanceof CacheProviderError && [400, 404, 422].includes(error.status ?? 0) ? "unavailable" : attempts >= 5 ? "failed" : "pending";
+        const seconds = Math.min(86400, Math.max(30 * 2 ** Math.min(attempts, 10), error instanceof CacheProviderError ? error.retryAfterSeconds : 0));
+        await update({ status, attempts, availableAt: new Date(Date.now() + seconds * 1000), lastError: `Alpaca: ${alpacaFailureSummary(error)}. Imported trades are unchanged.` });
       }
     }
     return { processed, paused: null };

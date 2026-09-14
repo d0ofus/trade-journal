@@ -4,9 +4,10 @@ import path from "node:path";
 import { prisma } from "../../src/lib/prisma";
 import { listWorkstationTrades } from "../../src/lib/server/trade-workstation";
 import { confirmBatchTimestamps, inspectBatchTimestamps } from "../../src/lib/server/execution-time-interpretation";
-import { initialHistoryRange } from "../../src/lib/workstation/history";
+import { initialHistoryRange, preloadHistoryRange } from "../../src/lib/workstation/history";
 import { defaultPreferences } from "../../src/lib/workstation/types";
 import { refreshMaterializedClosedTrades } from "../../src/lib/server/closed-trades-materialized";
+import { observePngExport } from "../workstation-png";
 
 const providerLog = path.join(process.env.TEMP!, "trade-workstation-phase2", "cache-provider.log");
 const providerCalls = () => existsSync(providerLog) ? readFileSync(providerLog, "utf8").trim().split("\n").filter(Boolean).length : 0;
@@ -34,7 +35,8 @@ test("cache paints before gap fill; reload, resize and Fit make zero upstream re
   await login(context);
   const trade = (await listWorkstationTrades({ account: "DEMO-WORKSTATION" })).find(t => t.id === previewId)!;
   const range = initialHistoryRange(trade, "5m");
-  await prisma.workstationTradeView.deleteMany({ where: { groupKey: previewId } });
+  const demoIds = (await listWorkstationTrades({ account: "DEMO-WORKSTATION" })).map(t => t.id);
+  await prisma.workstationTradeView.deleteMany({ where: { groupKey: { in: demoIds } } });
   await prisma.workstationCandleChunk.deleteMany({ where: { symbol: "MU", timeframe: "5m" } });
   const partial = new URLSearchParams({ symbol: "MU", timeframe: "5m", from: String(range.from), to: String(Math.floor((range.from + range.to) / 2)), session: "extended", mode: "fill" });
   expect((await context.request.get(`/api/workstation/candles?${partial}`)).ok()).toBe(true);
@@ -94,9 +96,12 @@ test("cache-only prefetch and covered endpoint reads never call the provider; of
   } finally { unlinkSync(providerLog + ".offline"); }
 });
 test("market-data settings and endpoints stay authenticated and explain preparation state", async ({ page, context, browser }) => {
+  test.setTimeout(90000); // Branch-wide storage accounting can be slow on local PostgreSQL.
   const anonymous = await browser.newContext();
   expect((await anonymous.request.get("http://127.0.0.1:3101/api/workstation/market-data")).status()).toBe(401); await anonymous.close();
-  await login(context); await page.goto("/settings#market-data");
+  await login(context);
+  const status = page.waitForResponse(response => new URL(response.url()).pathname === "/api/workstation/market-data", { timeout: 60000 });
+  await page.goto("/settings#market-data"); expect((await status).ok()).toBe(true);
   const card = page.locator("#market-data"); await expect(card.getByText(/^Cache:/)).toBeVisible();
   await expect(card.getByRole("button", { name: "Queue all trade windows" })).toBeDisabled();
   const forbidden = await context.request.post("/api/workstation/market-data", { headers: { Origin: "https://other.example" }, data: { action: "run" } }); expect(forbidden.status()).toBe(403);
@@ -104,11 +109,12 @@ test("market-data settings and endpoints stay authenticated and explain preparat
 });
 
 test("cached multichart resizing, fullscreen, replay and PNG export preserve chart data without downloads", async ({ page, context }) => {
+  test.setTimeout(120000); // Three cold fixture intervals are seeded before exercising the UI.
   await login(context);
   const trade = (await listWorkstationTrades({ account: "DEMO-WORKSTATION" })).find(t => t.id === previewId)!;
   await prisma.workstationTradeView.deleteMany({ where: { groupKey: previewId } });
   for (const interval of ["5m", "1h", "1d"] as const) {
-    const range = initialHistoryRange(trade, interval);
+    const range = preloadHistoryRange(trade, interval);
     // Preparation may include a stale recent segment and a new 15-minute tail.
     // Complete mode fills both; the UI deliberately uses progressive single-window fills.
     const params = new URLSearchParams({ symbol: "MU", timeframe: interval, from: String(range.from), to: String(range.to), session: "extended", mode: "complete" });
@@ -123,17 +129,26 @@ test("cached multichart resizing, fullscreen, replay and PNG export preserve cha
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
   await expect(page.locator('[data-chart-id="chart-1"]')).toHaveClass(/ws-chart-fullscreen/);
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
+  // Let the ordinary navigation save settle before measuring a label-only change.
+  await page.waitForTimeout(1500);
+  const labelRequests: string[] = [];
+  page.on("request", request => { if (request.url().includes("/api/workstation/candles?") || (request.method() !== "GET" && request.url().includes("/workstation"))) labelRequests.push(request.url()); });
   await page.getByRole("button", { name: "Hide execution labels", exact: true }).click();
-  for (const chart of await charts.all()) await expect(chart).toHaveAttribute("data-label-mode", "compact");
+  await expect(charts.first()).toHaveAttribute("data-label-mode", "compact");
+  for (const chart of (await charts.all()).slice(1)) await expect(chart).toHaveAttribute("data-label-mode", "labels");
   await page.getByRole("button", { name: "Show execution labels", exact: true }).click();
+  await page.waitForTimeout(1200);
+  expect(labelRequests).toEqual([]);
   await page.getByRole("button", { name: "Replay trade", exact: true }).click();
   await page.screenshot({ path: "screenshots/cache-first-history/multichart-replay.png" });
   await page.getByRole("button", { name: "Exit replay", exact: true }).click();
   await page.screenshot({ path: "screenshots/cache-first-history/desktop-multichart-dark.png" });
+  const exportedPng = await observePngExport(page);
   await page.getByRole("button", { name: "Export", exact: true }).click();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "All charts PNG", exact: true }).click();
-  const file = await download; await file.saveAs("screenshots/cache-first-history/multichart-export.png");
-  expect(readFileSync("screenshots/cache-first-history/multichart-export.png").subarray(1, 4).toString()).toBe("PNG");
+  expect((await download).suggestedFilename()).toMatch(/\.png$/);
+  const png = await exportedPng(); expect(png.subarray(1, 4).toString()).toBe("PNG");
+  writeFileSync("screenshots/cache-first-history/multichart-export.png", png);
   expect(providerCalls()).toBe(count);
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await page.getByTitle("Appearance", { exact: true }).click();

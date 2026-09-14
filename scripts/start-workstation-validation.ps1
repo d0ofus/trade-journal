@@ -1,8 +1,8 @@
-param([Parameter(Mandatory = $true)][string]$NodePath, [switch]$Cache)
+param([Parameter(Mandatory = $true)][string]$NodePath, [switch]$Cache, [switch]$Baseline)
 $ErrorActionPreference = 'Stop'
 # This launches only the prepared, disposable production-build copy. It never loads .env.local.
 $phaseRoot = Join-Path $env:TEMP 'trade-workstation-phase2'
-$buildDirectory = Join-Path $phaseRoot 'build'
+$buildDirectory = Join-Path $phaseRoot $(if ($Baseline) { 'baseline-build' } else { 'build' })
 if (!(Test-Path -LiteralPath (Join-Path $buildDirectory '.next\BUILD_ID'))) {
     throw 'Prepare and verify the isolated phase-two production build first.'
 }

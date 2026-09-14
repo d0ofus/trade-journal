@@ -39,7 +39,12 @@ export async function GET(request: NextRequest) {
       metadata.warnings.push("This large or queued history request is incomplete. Coverage metadata identifies the remaining ranges.");
     }
     const session = await workstationCandleSession(loaded).catch(() => ({ timezone: null, calendar: "unknown", marketHours: "unknown" }));
-    return NextResponse.json({ symbol, timeframe, candles, source: loaded.source, provider: loaded.provider, metadata: { ...metadata, session, cache: loaded.cache, coverage: loaded.coverage ?? null, warnings: [...new Set([...metadata.warnings, ...(loaded.warnings ?? [])])] } }, { headers: { "Server-Timing": `history;dur=${(performance.now() - started).toFixed(1)}`, "Cache-Control": "private, no-store" } });
+    const timings = loaded.cache?.timings;
+    const serverTiming = [`history;dur=${(performance.now() - started).toFixed(1)}`];
+    if (timings) for (const [name, value] of Object.entries({ cache: timings.cacheReadMs, queue: timings.queueWaitMs, provider: timings.providerFetchMs, persist: timings.persistenceMs, storage: timings.storageCheckMs })) {
+      if (typeof value === "number" && Number.isFinite(value)) serverTiming.push(`${name};dur=${value.toFixed(1)}`);
+    }
+    return NextResponse.json({ symbol, timeframe, candles, source: loaded.source, provider: loaded.provider, metadata: { ...metadata, session, cache: loaded.cache, coverage: loaded.coverage ?? null, warnings: [...new Set([...metadata.warnings, ...(loaded.warnings ?? [])])] } }, { headers: { "Server-Timing": serverTiming.join(", "), "Cache-Control": "private, no-store" } });
   } catch (error) {
     if (isCandleRequestAbort(error, request.signal)) throw error;
     // Only controlled configuration/provider messages reach the client; never raw fetch errors or credentials.

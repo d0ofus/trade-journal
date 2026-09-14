@@ -1,4 +1,5 @@
 import { Candle, CandleResult, Interval, Trade, WorkstationAdapter, seconds } from "./types";
+import { waitForHistory } from "./shared-requests";
 
 export type HistoryRange = { from: number; to: number };
 export type HistoryDirection = "older" | "newer";
@@ -19,6 +20,17 @@ export function initialHistoryRange(trade: Trade, interval: Interval, context?: 
   const duration = context ? context.to - context.from : trade.closeTime - trade.openTime;
   const width = Math.min(span, Math.max(duration + padding * 2, seconds[interval] * 240));
   return { from: Math.max(1, Math.floor(center - width / 2)), to: Math.floor(center + width / 2) };
+}
+
+/** Cached context is independent of the visible range and never shrinks a holding. */
+export function preloadHistoryRange(trade: Trade, interval: Interval): HistoryRange {
+  const initial = initialHistoryRange(trade, interval);
+  const executions = trade.executions.map(e => e.time).filter(t => Number.isFinite(t) && t > 0);
+  const last = executions.length ? executions.reduce((latest, time) => Math.max(latest, time)) : trade.closeTime;
+  return {
+    from: Math.max(1, Math.floor(Math.min(initial.from, trade.openTime - DAY, interval === "1h" ? last - 30 * DAY : initial.from))),
+    to: Math.ceil(Math.max(initial.to, trade.closeTime + DAY)),
+  };
 }
 
 export function mergeHistory(current: Candle[], incoming: Candle[], range?: HistoryRange): Candle[] {
@@ -60,6 +72,7 @@ export class CandleHistory {
   private paused = new Set<HistoryDirection>();
   private sources = new Set<string>();
   private warnings = new Set<string>();
+  private preloading: { controller: AbortController; task: Promise<void> } | null = null;
   state: HistoryState;
 
   constructor(
@@ -80,9 +93,36 @@ export class CandleHistory {
     this.changed(this.state);
   }
   async start() { return this.load(this.state.range, "initial"); }
-  async refresh(context?: HistoryRange | null) { return this.load(initialHistoryRange(this.trade, this.interval, context), "initial", true); }
+  async refresh(context?: HistoryRange | null) { await this.cancelPreload(); return this.load(initialHistoryRange(this.trade, this.interval, context), "initial", true); }
+  async cancelPreload() {
+    const preload = this.preloading;
+    if (!preload) return;
+    preload.controller.abort();
+    await preload.task;
+  }
+  /** Only default hourly initialization calls this, after the visible context paints. */
+  preload(range: HistoryRange): Promise<void> {
+    if (this.preloading) return this.preloading.task;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, this.controller.signal]);
+    const run = async () => {
+      while (!signal.aborted && !this.busy && !this.state.failed && !this.state.result.cache?.persistencePaused) {
+        const current = this.state.range, end = Math.min(range.to, this.now());
+        const direction = current.from > range.from ? "older" : current.to < end ? "newer" : null;
+        if (!direction) return;
+        const width = Math.min(14, pageDays[this.interval]) * DAY;
+        const window = direction === "older" ? { from: Math.max(range.from, current.from - width), to: current.from }
+          : { from: current.to, to: Math.min(end, current.to + width) };
+        if (!(await this.load(window, direction, false, signal))) return;
+      }
+    };
+    const task = Promise.resolve().then(run).finally(() => { if (this.preloading?.controller === controller) this.preloading = null; });
+    this.preloading = { controller, task };
+    return task;
+  }
   /** Fill an explicitly requested calendar window in bounded, cancellable pages. */
   async cover(range: HistoryRange): Promise<void> {
+    await this.cancelPreload();
     const end = Math.min(range.to, this.now());
     while (!this.controller.signal.aborted && !this.state.failed) {
       const direction = this.state.range.from > range.from ? "older" : this.state.range.to < end ? "newer" : null;
@@ -96,6 +136,7 @@ export class CandleHistory {
     return false;
   }
   async extend(direction: HistoryDirection, manual = false, visibleBars?: number): Promise<boolean> {
+    await this.cancelPreload();
     if (this.busy || this.controller.signal.aborted || this.state.failed === "initial" || (!manual && this.paused.has(direction))) return false;
     if (this.state.result.candles.length >= MAX_HISTORY_CANDLES) {
       this.publish({ messages: { ...this.state.messages, [direction]: "Chart memory limit reached (100,000 bars). Switch timeframe or reopen the chart to browse another period." } });
@@ -113,7 +154,7 @@ export class CandleHistory {
     }
     return this.load(range, direction);
   }
-  private async load(range: HistoryRange, direction: "initial" | HistoryDirection, refresh = false): Promise<boolean> {
+  private async load(range: HistoryRange, direction: "initial" | HistoryDirection, refresh = false, signal = this.controller.signal): Promise<boolean> {
     if (this.busy || this.controller.signal.aborted) return false;
     this.busy = true;
     this.publish({ loading: direction, error: "", failed: null });
@@ -126,7 +167,8 @@ export class CandleHistory {
         if (candles.length > MAX_HISTORY_CANDLES) throw new Error("Chart memory limit reached (100,000 bars). Use a larger timeframe.");
         this.publish({ result: { ...value, candles, identity: this.state.result.candles.length ? this.state.result.identity : value.identity } });
       };
-      let response = await this.adapter.cachedCandles?.(this.trade, this.interval, this.controller.signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
+      let response = await this.adapter.cachedCandles?.(this.trade, this.interval, signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
+      signal.throwIfAborted();
       if (response?.cache?.enabled && !response.truncated) publishCached(response);
       const deadline = Date.now() + 90_000;
       let attempts = 0;
@@ -135,15 +177,12 @@ export class CandleHistory {
         if (attempts && response?.cache?.retryAfterMs) {
           const wait = response.cache.retryAfterMs;
           if (wait > 5000) throw new Error(response.warning || "History preparation is paused. Cached candles remain available.");
-          await new Promise<void>((resolve, reject) => {
-            const abort = () => { clearTimeout(timer); reject(new Error("History cancelled")); };
-            const timer = setTimeout(() => { this.controller.signal.removeEventListener("abort", abort); resolve(); }, wait);
-            this.controller.signal.addEventListener("abort", abort, { once: true });
-          });
+          await waitForHistory(wait, signal);
         }
-        this.controller.signal.throwIfAborted();
+        signal.throwIfAborted();
         const fetch = refresh ? this.adapter.refreshCandles ?? this.adapter.candles : this.adapter.candles;
-        response = await fetch(this.trade, this.interval, this.controller.signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
+        response = await fetch(this.trade, this.interval, signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
+        signal.throwIfAborted();
         refresh = false;
         attempts++;
         if (response.cache?.enabled) publishCached(response);
@@ -152,7 +191,7 @@ export class CandleHistory {
         if (response.cache?.persistencePaused) break;
       }
       if (!response) throw new Error("History response unavailable.");
-      if (this.controller.signal.aborted) return false;
+      if (signal.aborted) return false;
       // Advancing past a truncated response could silently skip unreturned history.
       if (response.truncated) throw new Error("History response was truncated. Existing candles are preserved; retry this range before continuing.");
       if (this.state.result.candles.length && this.state.result.identity && response.candles.length && response.identity !== this.state.result.identity) {
@@ -180,7 +219,7 @@ export class CandleHistory {
       });
       return true;
     } catch (error) {
-      if (this.controller.signal.aborted) return false;
+      if (signal.aborted) return false;
       if (direction !== "initial") this.paused.add(direction);
       this.publish({ error: error instanceof Error ? error.message : "History request failed. Existing candles are preserved.", failed: direction });
       return false;

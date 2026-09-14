@@ -10,6 +10,13 @@ async function login(context: BrowserContext) {
   const csrf = await (await context.request.get("/api/auth/csrf")).json();
   expect((await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true", callbackUrl: "http://127.0.0.1:3101/trades" } })).ok()).toBe(true);
 }
+async function panChart(page: import("@playwright/test").Page, chart: import("@playwright/test").Locator) {
+  const rect = (await chart.boundingBox())!;
+  await page.mouse.move(rect.x + rect.width * .7, rect.y + 160);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.width * .35, rect.y + 160, { steps: 8 });
+  await page.mouse.up();
+}
 test.beforeAll(async () => { id = (await listWorkstationTrades({ account: "DEMO-WORKSTATION", symbol: "MU" }))[0].id; mkdirSync("screenshots/neon-personal-retention", { recursive: true }); });
 test.afterAll(async () => { await prisma.$disconnect(); });
 test("panned views survive reload independently of reviews; replay does not rewrite them", async ({ page, context }) => {
@@ -19,7 +26,7 @@ test("panned views survive reload independently of reviews; replay does not rewr
   await page.goto(url()); const chart = page.getByRole("region", { name: "MU 5m chart", exact: true });
   await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/);
   const original = await chart.getAttribute("data-visible-from");
-  const rect = await chart.boundingBox(); await page.mouse.move(rect!.x + rect!.width * .5, rect!.y + 140); await page.mouse.wheel(0, -450);
+  await panChart(page, chart);
   await expect(chart).not.toHaveAttribute("data-visible-from", original!);
   await page.waitForTimeout(1600);
   const saved = await (await context.request.get(endpoint())).json();
@@ -40,7 +47,7 @@ test("stale tab views are retained locally and never overwrite a newer revision"
   await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/); await page.waitForTimeout(1400);
   const old = await (await context.request.get(endpoint())).json();
   const newer = await context.request.patch(endpoint(), { data: { expectedRevision: old.revision, view: { ...old.view, arrangement: "top" } } }); expect(newer.ok()).toBe(true);
-  const rect = await chart.boundingBox(); await page.mouse.move(rect!.x + rect!.width * .5, rect!.y + 140); await page.mouse.wheel(0, -300);
+  await panChart(page, chart);
   await expect(page.getByRole("button", { name: "Use saved chart view" })).toBeVisible();
   const saved = await (await context.request.get(endpoint())).json(); expect(saved.view.arrangement).toBe("top"); expect(saved.revision).toBe(old.revision + 1);
   expect(await page.evaluate(key => !!localStorage.getItem(key), `execution-lab:trade-view:application:${id}:v1`)).toBe(true);

@@ -37,6 +37,7 @@ import {
   HistoryRange,
   HistoryState,
   initialHistoryRange,
+  preloadHistoryRange,
   fitTradeHistoryRange,
   preserveHistoryViewport,
 } from "@/lib/workstation/history";
@@ -61,6 +62,7 @@ type Props = {
   trade: Trade;
   adapter: WorkstationAdapter;
   preferences: WorkspacePreferences;
+  labelMode: WorkspacePreferences["labels"];
   drawings: Drawing[];
   selected: string | null;
   selectedExecution: string | null;
@@ -252,6 +254,9 @@ export function TradeChart(props: Props) {
       dataReady.current = session.state.result.candles.length > 0 || session.state.failed !== "initial";
       setHistoryState(session.state);
       if (session.state.result.candles.length) latest.current.onHistoryReady?.(props.trade.id);
+      if (started && !requested && !context && props.panel.interval === "1h") {
+        void session.preload(preloadHistoryRange(props.trade, props.panel.interval));
+      }
     })();
     return () => {
       disposed = true;
@@ -408,7 +413,7 @@ export function TradeChart(props: Props) {
       trade: latest.current.trade,
       candles: bars.current,
       interval: latest.current.panel.interval,
-      labels: latest.current.preferences.labels,
+      labels: latest.current.labelMode,
       session: historyResult.current.session,
       covered: historyResult.current.cache?.covered,
       visibleRange: api.timeScale().getVisibleRange() as HistoryRange | null,
@@ -1029,7 +1034,7 @@ export function TradeChart(props: Props) {
     props.drawings,
     props.selected,
     props.selectedExecution,
-    props.preferences.labels,
+    props.labelMode,
     props.replay,
   ]);
   useEffect(() => {
@@ -1230,7 +1235,7 @@ export function TradeChart(props: Props) {
       tabIndex={0}
       data-chart-id={props.panel.id}
       style={props.fullscreen ? undefined : props.style}
-      data-label-mode={props.preferences.labels}
+      data-label-mode={props.labelMode}
       onFocusCapture={props.onActive}
       onPointerDownCapture={(event) => {
         props.onActive();
@@ -1265,7 +1270,7 @@ export function TradeChart(props: Props) {
           <button className="ws-fill-toggle" aria-label={`Execution visibility ${props.panel.id}`} aria-expanded={fillsOpen} title={loading ? "Loading execution visibility" : visibilitySummary(currentVisibility)} onClick={() => setFillsOpen(v => !v)}>
             {loading ? "?" : `${currentVisibility.filter(r => r.reason === "visible").length}/${visibleExecutions.length}`} fills
           </button>
-          {props.fullscreen && <button aria-label={props.preferences.labels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={props.preferences.labels === "labels"} title="Toggle labels across all charts; markers remain visible" onClick={props.onToggleLabels}>{props.preferences.labels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}</button>}
+          <button aria-label={`${props.labelMode === "labels" ? "Hide" : "Show"} execution labels ${props.panel.id}`} aria-pressed={props.labelMode === "labels"} title="Toggle labels on this chart; markers remain visible" onClick={props.onToggleLabels}>{props.labelMode === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}</button>
           <button
             className={`ws-history-toggle ${historyWarning ? "ws-history-warning" : ""}`}
             aria-label={`Chart history ${props.panel.id}`}

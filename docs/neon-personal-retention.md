@@ -6,6 +6,8 @@ The cache warns at 80 MB or 350 MB across databases on the Neon branch. Its exis
 
 ## Chart views
 
+Hourly preparation now includes at least 30 calendar days before each trade's final interpreted execution, while default zoom and saved view ranges remain independent. Labels are remembered per chart slot on the current device. See [candle-loading configuration and measurements](candle-loading-performance.md) for the ranges, cancellation behavior and validation procedure.
+
 Migration `20260915000000_workstation_trade_views` adds `WorkstationTradeView`. Stable trade keys have independent revisions; no cascading materialization dependency or accounting changes are introduced. The authenticated `/api/closed-trades/[groupKey]/workstation/view` endpoint accepts small, versioned view documents. Navigation saves after one second of inactivity and flushes on trade/navigation changes. Failed and conflicting changes remain in browser storage. **Use saved chart view** explicitly resolves them by returning to the server copy.
 
 Each view stores panel intervals, session mode, UTC ranges, arrangement and sizing. Replay does not overwrite the normal view. Saved ranges are restored without expanding the requested history window; **Fit trade** resets the context. Explicit date requests take precedence over restoration. Demo views are stored separately in the browser.

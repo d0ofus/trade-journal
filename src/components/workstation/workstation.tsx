@@ -1,5 +1,6 @@
 "use client";
 import { initialHistoryRange } from "@/lib/workstation/history";
+import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import {
   createContext,
@@ -465,6 +466,7 @@ export function TradesWorkstation({
         setPreferences({
           ...defaultPreferences(),
           ...parsed,
+          chartLabels: restoreChartLabels(parsed.chartLabels, parsed.labels),
           dateLink: restoredDateLink(parsed.dateLink),
           chartSizing: restoreChartSizing(parsed.chartSizing),
           chartSession: ["auto", "regular", "extended"].includes(parsed.chartSession) ? parsed.chartSession : "auto",
@@ -953,7 +955,11 @@ export function TradesWorkstation({
     preferences.panels.find((p) => p.id === activeChart) ??
     preferences.panels[0];
   const dayPnl = filtered.reduce((sum, t) => sum + t.pnl, 0);
-  const toggleLabels = () => changePreferences({ labels: preferences.labels === "labels" ? "compact" : "labels" });
+  const activeLabels = chartLabelMode(preferences, currentPanel.id);
+  const setChartLabels = (id: string, mode: LabelMode) => setPreferences(value => ({
+    ...value, chartLabels: { ...restoreChartLabels(value.chartLabels, value.labels), [id as ChartSlot]: mode },
+  }));
+  const toggleLabels = (id = currentPanel.id) => setChartLabels(id, chartLabelMode(preferences, id) === "labels" ? "compact" : "labels");
   const chartContent = (
     <div className="ws-chart-workspace">
       <div className="ws-chart-toolbar">
@@ -992,7 +998,7 @@ export function TradesWorkstation({
           <Maximize2 size={13} />
           <span>Fit trade</span>
         </button>
-        <button className={`ws-tool-button ${preferences.labels === "labels" ? "active" : ""}`} aria-label={preferences.labels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={preferences.labels === "labels"} title="Toggle labels across all charts; markers remain visible" onClick={toggleLabels}>{preferences.labels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
+        <button className={`ws-tool-button ${activeLabels === "labels" ? "active" : ""}`} aria-label={activeLabels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={activeLabels === "labels"} title={`Toggle labels on active chart (${currentPanel.id}); markers remain visible`} onClick={() => toggleLabels()}>{activeLabels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
         <select className="ws-session-select" aria-label="Chart session" value={preferences.chartSession ?? "auto"} onChange={event => changePreferences({ chartSession: event.target.value as "auto" | "regular" | "extended" })}><option value="auto">Session: Auto ({trade.chartSession})</option><option value="regular">Regular hours</option><option value="extended">Extended hours</option></select>
         <span className="ws-flex-spacer" />
         <details className="ws-date-control">
@@ -1134,7 +1140,8 @@ export function TradesWorkstation({
                 saveView();
               }}
               style={styles[index]}
-              onToggleLabels={toggleLabels}
+              onToggleLabels={() => toggleLabels(panel.id)}
+              labelMode={chartLabelMode(preferences, panel.id)}
               onHistoryReady={prefetchNext}
               panel={panel}
               trade={trade}
@@ -1445,12 +1452,11 @@ export function TradesWorkstation({
             <ChevronRight size={14} />
           </button>
           <select
-            aria-label="Execution label mode"
-            value={preferences.labels}
+            aria-label="Execution label mode for active chart"
+            title={`Execution labels for ${currentPanel.id}`}
+            value={activeLabels}
             onChange={(e) =>
-              changePreferences({
-                labels: e.target.value as WorkspacePreferences["labels"],
-              })
+              setChartLabels(currentPanel.id, e.target.value as LabelMode)
             }
           >
             <option value="labels">Labels on chart</option>
@@ -2257,13 +2263,11 @@ export function TradesWorkstation({
               </select>
             </label>
             <label>
-              <span>Execution markers</span>
+              <span>Execution markers — active chart ({currentPanel.id})</span>
               <select
-                value={preferences.labels}
+                value={activeLabels}
                 onChange={(e) =>
-                  changePreferences({
-                    labels: e.target.value as WorkspacePreferences["labels"],
-                  })
+                  setChartLabels(currentPanel.id, e.target.value as LabelMode)
                 }
               >
                 <option value="labels">Full labels</option>

@@ -1,12 +1,76 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CandleHistory, HistoryRange, HistoryState, initialHistoryRange, mergeHistory, preserveHistoryViewport } from "./history";
+import { CandleHistory, HistoryRange, HistoryState, initialHistoryRange, preloadHistoryRange, mergeHistory, preserveHistoryViewport } from "./history";
 import { createDemoAdapter, demoCandles, demoTrades, initialDemoDocument } from "./demo";
 import { Candle, CandleResult, WorkstationAdapter, intervals } from "./types";
 import { createApplicationAdapter } from "./application-adapter";
 import { executionBar } from "./math";
 import { CandleMemory } from "./candle-memory";
 import { missingRanges } from "./candle-ranges";
+import { SharedRequests } from "./shared-requests";
+
+test("hourly preload follows the final interpreted fill for 30 calendar days and preserves holdings", () => {
+  for (const day of ["2024-03-11T14:00:00Z", "2024-11-04T15:00:00Z", "2024-09-09T13:30:00Z"]) {
+    const last = Date.parse(day) / 1000;
+    const value = { ...demoTrades[0], openTime: last - 3600, closeTime: last, executions: [{ ...demoTrades[0].executions[0], time: last + 7200 }] };
+    const initial = initialHistoryRange(value, "1h"), preload = preloadHistoryRange(value, "1h");
+    assert.equal(preload.from, last + 7200 - 30 * 86400);
+    assert.equal(preload.to, initial.to);
+    assert.equal(preloadHistoryRange({ ...value, executions: [] }, "1h").from, last - 30 * 86400);
+    assert.ok(preloadHistoryRange({ ...value, openTime: last - 120 * 86400 }, "1h").from <= last - 121 * 86400);
+    for (const interval of ["5m", "1d"] as const) {
+      const before = initialHistoryRange(value, interval), after = preloadHistoryRange(value, interval);
+      assert.equal(after.from, Math.floor(Math.min(before.from, value.openTime - 86400)));
+      assert.equal(after.to, Math.ceil(Math.max(before.to, value.closeTime + 86400)));
+    }
+  }
+});
+
+test("context preload is bounded to its exact target and cancelled for explicit navigation", async () => {
+  const initial = initialHistoryRange(demoTrades[0], "1h"), wanted = preloadHistoryRange(demoTrades[0], "1h");
+  const requests: HistoryRange[] = [];
+  let slow = false, cancelled = false;
+  const adapter: WorkstationAdapter = { ...createDemoAdapter(), candles: async (_trade, _interval, signal, requested) => {
+    requests.push(requested!);
+    if (slow) {
+      slow = false;
+      await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => { cancelled = true; reject(signal!.reason); }, { once: true }));
+    }
+    return result([bar(requested!.from + 300), bar(requested!.to - 300)]);
+  } };
+  const history = new CandleHistory(adapter, demoTrades[0], "1h", initial, () => {});
+  await history.start();
+  await history.preload(wanted);
+  assert.equal(history.state.range.from, wanted.from);
+  assert.ok(requests.slice(1).every(r => r.to - r.from <= 14 * 86400 && r.from >= wanted.from));
+  const before = history.state.range.from;
+  slow = true;
+  const preload = history.preload({ from: before - 86400, to: initial.to });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(await history.extend("older", true, 10), true);
+  await preload;
+  assert.equal(cancelled, true);
+  assert.equal(history.state.failed, null);
+  assert.equal(history.state.error, "");
+  history.dispose();
+});
+
+test("shared transports retain live consumers and evict abandoned work", async () => {
+  const requests = new SharedRequests<number>();
+  const one = new AbortController(), two = new AbortController();
+  let transport!: AbortSignal, finish!: (value: number) => void, calls = 0;
+  const work = (signal: AbortSignal) => { calls++; transport = signal; return new Promise<number>((resolve, reject) => { finish = resolve; signal.addEventListener("abort", () => reject(signal.reason), { once: true }); }); };
+  const first = requests.run("same", one.signal, work), second = requests.run("same", two.signal, work);
+  const rejected = assert.rejects(first, { name: "AbortError" });
+  await Promise.resolve(); one.abort(); await rejected;
+  assert.equal(calls, 1); assert.equal(transport.aborted, false);
+  finish(42); assert.equal(await second, 42);
+  const departed = new AbortController(), pending = requests.run("abandoned", departed.signal, work);
+  const cancelled = assert.rejects(pending, { name: "AbortError" });
+  await Promise.resolve(); departed.abort(); await cancelled;
+  assert.equal(transport.aborted, true);
+  assert.equal(await requests.run("abandoned", undefined, async () => 7), 7);
+});
 
 const trade = demoTrades[0];
 const bar = (time: number, close = 101): Candle => ({ time, open: 100, high: 105, low: 95, close, volume: 500 });
@@ -41,6 +105,27 @@ test("fully covered cache including empty periods never invokes the fill adapter
   for (const candles of [[], [bar(trade.openTime)]]) {
     const history = new CandleHistory({ ...createDemoAdapter(), cachedCandles: async () => cachedResult(candles), candles: async () => { calls++; return result([]); } }, trade, "5m", range, () => {});
     assert.equal(await history.start(), true); assert.equal(calls, 0);
+  }
+});
+
+test("progressive fills continue without timers, while contention backs off", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  for (const contended of [false, true]) {
+    let calls = 0;
+    const partial = cachedResult([bar(trade.openTime)], [{ from: range.from, to: trade.openTime + 1 }]);
+    if (contended) partial.cache!.retryAfterMs = 1000;
+    const history = new CandleHistory({ ...createDemoAdapter(), cachedCandles: async () => cachedResult([], []), candles: async () => ++calls === 1 ? partial : cachedResult([bar(trade.openTime), bar(trade.closeTime)]) }, trade, "5m", range, () => {});
+    const pending = history.start();
+    await flush();
+    assert.equal(calls, contended ? 1 : 2);
+    if (contended) {
+      t.mock.timers.tick(999); await flush(); assert.equal(calls, 1);
+      t.mock.timers.tick(1);
+    }
+    assert.equal(await pending, true);
+    assert.equal(calls, 2);
+    history.dispose();
   }
 });
 test("overlapping browser ranges keep provider identities isolated and expire without discarding verification semantics", () => {

@@ -1,10 +1,11 @@
 import { candleIdentity, isRegularHour, regularHourSession } from "@/lib/workstation/regular-hours";
-import { fetchRegularHours, readRegularHours } from "./workstation-regular-hours";
+import { fetchRegularHours, readRegularHours, type RegularHourContext } from "./workstation-regular-hours";
 import type { CandleTimeframe } from "./market-candles";
 import type { WorkstationCandles } from "./workstation-candles";
 import type { WorkstationCandlePolicy } from "./workstation-candle-policy";
 import { isRegularUsSession } from "@/lib/workstation/chart-session";
-import { unionRanges, type CandleRange } from "@/lib/workstation/candle-ranges";
+import { missingRanges, unionRanges, type CandleRange, type CandleTimings } from "@/lib/workstation/candle-ranges";
+import { validateCandles } from "./workstation-cache-codec";
 import { CacheBudgetError, cacheBudgetAvailable, claimCacheLease, markForegroundRequest, persistCompactCandles, protectTradeCache, readCompactCandles, releaseCacheLease, seriesKey } from "./workstation-cache-store";
 import { CacheBusyError, CacheProviderError, fetchCompactCandles } from "./workstation-cache-provider";
 import { alpacaFailureSummary } from "./alpaca-candle-error";
@@ -17,7 +18,8 @@ export function boundedCacheRanges(range: CandleRange, timeframe: CandleTimefram
   return result;
 }
 export async function loadCompactWorkstationCandles(input: CompactInput, policy: WorkstationCandlePolicy): Promise<WorkstationCandles> {
-  const timings = { cacheReadMs: 0, providerFetchMs: 0, persistenceMs: 0 };
+  const timings: CandleTimings = { cacheReadMs: 0, providerFetchMs: 0, persistenceMs: 0, queueWaitMs: 0, storageCheckMs: 0, providerRequestCount: 0 };
+  const context: RegularHourContext = { signal: input.signal, timings };
   const now = Math.floor(Date.now() / 1000);
   // A moving endpoint must not create a one-second cache miss on every trade selection.
   // Recent history advances in 15-minute batches, behind the configured SIP delay.
@@ -32,14 +34,17 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
   const series = { symbol: input.symbol, timeframe: input.timeframe, source };
   const warnings: string[] = [];
   if (range.to < input.range.to) warnings.push(`History through ${new Date(cutoff * 1000).toISOString()}; 15-minute cache batches behind the ${policy.delaySeconds}s configured provider delay.`);
-  const read = async () => { const at = performance.now(); try {
-    const snapshot = await readCompactCandles(series, range, input.limit);
-    if (derived && snapshot.cache.missing.length) snapshot.candles = [...new Map([...await readRegularHours(input.symbol, range, policy, cutoff), ...snapshot.candles].map(c => [c.time, c])).values()].sort((a,b) => a.time-b.time).slice(0, input.limit);
-    return snapshot;
-  } finally { timings.cacheReadMs += performance.now() - at; } };
-  const fetchRange = async (window: CandleRange, background: boolean) => { const at = performance.now(); try { return derived ? await fetchRegularHours(input.symbol, window, policy, cutoff, background) : await fetchCompactCandles(input.symbol, input.timeframe, window, policy.credentials!, background); } finally { timings.providerFetchMs += performance.now() - at; } };
-  let snapshot = await read();
-  if (input.tradeWindow) await protectTradeCache(series, range);
+  const read = async () => {
+    input.signal?.throwIfAborted();
+    const at = performance.now();
+    const value = await readCompactCandles(series, range, input.limit).finally(() => { timings.cacheReadMs += performance.now() - at; });
+    if (derived && value.cache.missing.length) value.candles = validateCandles([...await readRegularHours(input.symbol, range, policy, cutoff, context), ...value.candles]).slice(0, input.limit);
+    return value;
+  };
+  const fetchRange = (window: CandleRange, background: boolean) => derived
+    ? fetchRegularHours(input.symbol, window, policy, cutoff, background, true, context)
+    : fetchCompactCandles(input.symbol, input.timeframe, window, policy.credentials!, background, true, context);
+  let snapshot!: Awaited<ReturnType<typeof read>>;
   let fetched = false;
   const makeResult = (): WorkstationCandles => ({ symbol: input.symbol,
     candles: input.session === "regular" && !["1d", "1wk"].includes(input.timeframe) ? snapshot.candles.filter(c => isRegularUsSession(c.time)) : snapshot.candles,
@@ -47,23 +52,27 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
     session: derived ? regularHourSession : { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" },
     provider: { identity: source, provider: "alpaca", feed: policy.credentials!.feed, adjustment: "raw", delaySeconds: policy.delaySeconds, cached: !fetched, fallback: false },
     warnings: [...(derived ? ["Hourly candles aggregated from Alpaca 5m bars, aligned to the regular-session open."] : []), ...warnings, ...(snapshot.corrupt ? ["Damaged cache data was excluded and will be fetched again."] : [])] });
-  if (range.to <= range.from || input.mode === "cache") return makeResult();
-  const requested = input.mode === "refresh" ? [range] : unionRanges([...snapshot.cache.missing, ...snapshot.cache.refresh]);
-  if (!requested.length) return makeResult();
-  if (!input.background) await markForegroundRequest();
-  const lease = await claimCacheLease(`series:${seriesKey(series)}`, 120_000);
-  if (!lease) { snapshot.cache.retryAfterMs = 1000; return makeResult(); }
+  const readOnly = range.to <= range.from || input.mode === "cache";
+  input.signal?.throwIfAborted();
+  const lease = readOnly ? null : await claimCacheLease(`series:${seriesKey(series)}`, 120_000);
   try {
-    // Another request may have completed between our initial read and lease acquisition.
+    // One authoritative read after acquiring ownership; cache probes never take a lease.
     snapshot = await read();
+    if (input.tradeWindow) await protectTradeCache(series, range);
+    if (readOnly) return makeResult();
     const gaps = input.mode === "refresh" ? [range] : unionRanges([...snapshot.cache.missing, ...snapshot.cache.refresh]);
+    if (!gaps.length) return makeResult();
+    if (!lease) { snapshot.cache.retryAfterMs = 1000; return makeResult(); }
+    if (!input.background) await markForegroundRequest();
     const windows = gaps.flatMap(r => boundedCacheRanges(r, derived ? "5m" : input.timeframe));
     const limit = input.mode === "fill" || input.background ? 1 : 8;
     const deadline = Date.now() + 65_000;
     for (const window of windows.slice(0, limit)) {
       if (Date.now() > deadline) break;
       input.signal?.throwIfAborted();
-      if (!(await cacheBudgetAvailable())) {
+      const budgetStarted = performance.now();
+      const available = await cacheBudgetAvailable().finally(() => { timings.storageCheckMs! += performance.now() - budgetStarted; });
+      if (!available) {
         warnings.push("Storage limit reached—this history was not saved. Saved candles are preserved; automatic preparation is paused.");
         snapshot.cache.persistencePaused = true;
         // Foreground browsing remains possible without growing the database.
@@ -75,6 +84,7 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
         return makeResult();
       }
       const incoming = await fetchRange(window, !!input.background);
+      input.signal?.throwIfAborted();
       const persistStarted = performance.now();
       try { await persistCompactCandles(series, window, incoming, lease, !!input.tradeWindow); }
       catch (error) {
@@ -84,19 +94,28 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
         snapshot.cache.persistencePaused = true;
         snapshot.cache.temporary = [window]; fetched = true; return makeResult();
       }
-      timings.persistenceMs += performance.now() - persistStarted;
+      finally { timings.persistenceMs += performance.now() - persistStarted; }
       fetched = true;
+      // Only a committed, fenced write establishes coverage, including empty periods.
+      snapshot.candles = validateCandles([...snapshot.candles.filter(c => c.time < window.from || c.time >= window.to), ...incoming])
+        .filter(c => c.time >= range.from && c.time < range.to).slice(0, input.limit);
+      snapshot.cache.covered = unionRanges([...snapshot.cache.covered, window]);
+      snapshot.cache.missing = missingRanges(range, snapshot.cache.covered);
+      snapshot.cache.refresh = snapshot.cache.refresh.flatMap(r => missingRanges(r, [window]));
+      snapshot.cache.status = snapshot.cache.missing.length ? snapshot.candles.length ? "partial" : "miss" : snapshot.cache.refresh.length ? "refreshing" : "hit";
+      snapshot.cache.progressed = true;
+      if (!snapshot.cache.missing.length) snapshot.corrupt = false;
     }
-    snapshot = await read();
-    if (snapshot.cache.missing.length || snapshot.cache.refresh.length) snapshot.cache.retryAfterMs = 1000;
+    // Successful progress continues immediately; only contention/failure should back off.
+    if (!fetched && (snapshot.cache.missing.length || snapshot.cache.refresh.length)) snapshot.cache.retryAfterMs = 1000;
     return makeResult();
   } catch (error) {
-    if (error instanceof CacheBusyError) { snapshot.cache.retryAfterMs = 1000; return makeResult(); }
     if (input.signal?.aborted) throw error;
-    snapshot = await read();
+    if (!snapshot) throw error;
+    if (error instanceof CacheBusyError) { snapshot.cache.retryAfterMs = 1000; return makeResult(); }
     if (input.background || !snapshot.candles.length) throw error;
     warnings.push(`Alpaca unavailable (${alpacaFailureSummary(error)}); cached candles are preserved.`);
     snapshot.cache.retryAfterMs = error instanceof CacheProviderError ? Math.max(5000, error.retryAfterSeconds * 1000) : 5000;
     return makeResult();
-  } finally { await releaseCacheLease(lease); }
+  } finally { if (lease) await releaseCacheLease(lease); }
 }

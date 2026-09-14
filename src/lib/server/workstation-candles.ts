@@ -82,7 +82,7 @@ export async function loadWorkstationCandles(input: Input): Promise<WorkstationC
   if (range.to <= range.from) return { symbol: input.symbol, candles: [], source: "alpaca", provider, warnings };
   if (isRegularHour(input.timeframe, input.session)) {
     try {
-      const candles = await fetchRegularHours(input.symbol, { from: range.from, to: range.to + .001 }, policy, range.to, false, false);
+      const candles = await fetchRegularHours(input.symbol, { from: range.from, to: range.to + .001 }, policy, range.to, false, false, { signal: input.signal });
       return { symbol: input.symbol, candles: candles.slice(-input.limit), source: "alpaca", provider, session: regularHourSession, warnings: [...warnings, "Hourly candles aggregated from Alpaca 5m bars at the regular-session open."] };
     } catch (error) { if (isCandleRequestAbort(error, input.signal) || !policy.fallback) throw error; return yahoo(input, ["Alpaca unavailable; separate Yahoo session-open hourly fallback."], true); }
   }

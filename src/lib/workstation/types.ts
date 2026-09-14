@@ -120,6 +120,7 @@ export type WorkspacePreferences = {
   theme: "dark" | "light";
   panels: ChartPanel[];
   labels: "labels" | "compact" | "hidden";
+  chartLabels?: import("./chart-labels").ChartLabels;
   linked: boolean;
   volume: boolean;
   averages: number[];

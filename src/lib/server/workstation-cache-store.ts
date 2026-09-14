@@ -55,7 +55,16 @@ export async function protectTradeCache(series: CacheSeries, range: CandleRange)
   await prisma.workstationCandleChunk.updateMany({ where: { ...series, tradeWindow: false, start: { lt: new Date(range.to * 1000) }, end: { gt: new Date(range.from * 1000) } }, data: { tradeWindow: true } });
 }
 export async function readCompactCandles(series: CacheSeries, range: CandleRange, limit: number, now = Date.now() / 1000) {
-  const records = await prisma.workstationCandleChunk.findMany({ where: { symbol: series.symbol, timeframe: series.timeframe, source: series.source, start: { lt: new Date(range.to * 1000) }, end: { gt: new Date(range.from * 1000) } }, include: { coverage: true }, orderBy: { start: "asc" } });
+  return (await readCompactSeries([series], range, limit, now))[0];
+}
+
+/** Compatible source identities share one DB read; their coverage stays independent. */
+export async function readCompactSeries(seriesList: CacheSeries[], range: CandleRange, limit: number, now = Date.now() / 1000, verifiedOnly = false) {
+  const allRecords = await prisma.workstationCandleChunk.findMany({ where: { OR: seriesList, start: { lt: new Date(range.to * 1000) }, end: { gt: new Date(range.from * 1000) } }, include: { coverage: true }, orderBy: { start: "asc" } });
+  const touch = allRecords.filter(r => now - r.accessedAt.getTime() / 1000 > 3600).map(r => r.key);
+  if (touch.length) await prisma.workstationCandleChunk.updateMany({ where: { key: { in: touch } }, data: { accessedAt: new Date(now * 1000) } });
+  return Promise.all(seriesList.map(async series => {
+  const records = allRecords.filter(r => r.symbol === series.symbol && r.timeframe === series.timeframe && r.source === series.source);
   let candles: Candle[] = []; const segments: CacheSegment[] = []; let corrupt = false;
   for (const row of records) {
     try {
@@ -65,13 +74,10 @@ export async function readCompactCandles(series: CacheSeries, range: CandleRange
       candles.push(...decoded); segments.push(...verified);
     } catch { corrupt = true; }
   }
-  // Throttle access bookkeeping so repeated pans do not turn reads into heavy writes.
-  const touch = records.filter(r => now - r.accessedAt.getTime() / 1000 > 3600).map(r => r.key);
-  if (touch.length) await prisma.workstationCandleChunk.updateMany({ where: { key: { in: touch } }, data: { accessedAt: new Date(now * 1000) } });
   const covered = unionRanges(segments.map(s => intersectRange(s, range)).filter((s): s is CandleRange => !!s));
   const missing = missingRanges(range, covered);
   // Legacy rows are usable partial data, never proof that a sparse window was completely fetched.
-  if (missing.length) {
+  if (missing.length && !verifiedOnly) {
     const old = await readCachedCandlesWithRetry({ ...series, sources: [series.source], range: { from: range.from, to: range.to - 0.001 }, limit }).catch(() => []);
     candles = validateCandles([...old, ...candles]);
   } else candles = validateCandles(candles);
@@ -79,6 +85,7 @@ export async function readCompactCandles(series: CacheSeries, range: CandleRange
   const refresh = unionRanges(segments.filter(s => now - s.at >= 900).map(s => intersectRange(s, range)).filter((s): s is CandleRange => !!s).map(s => intersectRange(s, recent)).filter((s): s is CandleRange => !!s));
   const metadata: CandleCacheMetadata = { enabled: true, status: missing.length ? candles.length ? "partial" : "miss" : refresh.length ? "refreshing" : "hit", covered, missing, refresh, effectiveRange: range };
   return { candles: candles.filter(c => c.time >= range.from && c.time < range.to).slice(0, limit), cache: metadata, corrupt };
+  }));
 }
 
 export async function persistCompactCandles(series: CacheSeries, range: CandleRange, incoming: Candle[], lease: CacheLease, tradeWindow: boolean) {

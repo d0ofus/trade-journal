@@ -12,6 +12,7 @@ import { workstationCandlePolicy } from "./workstation-candle-policy";
 import muFixture from "../../../fixtures/workstation-alpaca-mu-bars.json";
 import { timingDemoTrade } from "@/lib/workstation/timing-demo";
 import { diagnoseExecution } from "@/lib/workstation/execution-diagnostics";
+import { candleIdentity } from "@/lib/workstation/regular-hours";
 import type { CandleSession } from "@/lib/workstation/types";
 import * as workstationRead from "./trade-workstation";
 
@@ -201,6 +202,56 @@ describe("separate market-open hourly cache", () => {
   async function saveSource(range: { from: number; to: number }, bars: Candle[]) {
     const lease = (await claimCacheLease(`series:${seriesKey(series)}`))!; await persistCompactCandles(series, range, bars, lease, true); await releaseCacheLease(lease);
   }
+  it("successful background progress clears failure attempts and is immediately eligible", async () => {
+    await prisma.workstationCandleJob.create({ data: { key: "partial-job", symbol: series.symbol, timeframe: "1h", source: candleIdentity(workstationCandlePolicy().cacheSource, "1h", "regular"), session: "regular", start: new Date(day * 1000), end: new Date((day + 30 * 86400) * 1000), attempts: 4 } });
+    await runCandlePreparation(1000);
+    const job = await prisma.workstationCandleJob.findUniqueOrThrow({ where: { key: "partial-job" } });
+    expect(job.status).toBe("pending");
+    expect(job.attempts).toBe(0);
+    expect(job.lastError).toBeNull();
+    expect(job.availableAt.getTime() - job.updatedAt.getTime()).toBeLessThan(100);
+    expect(fetch).toHaveBeenCalled();
+  });
+  it("fills one bounded hourly window without retry delay or duplicate source-cache reads", async () => {
+    const reads = vi.spyOn(prisma.workstationCandleChunk, "findMany");
+    vi.mocked(fetch).mockImplementation(async () => api([candle(open)]));
+    const result = await loadWorkstationCandles({ ...request, range: { from: day, to: day + 30 * 86400 - 1 }, mode: "fill" });
+    expect(result.cache?.progressed).toBe(true);
+    expect(result.cache?.missing.length).toBeGreaterThan(0);
+    expect(result.cache?.retryAfterMs).toBeUndefined();
+    expect(result.cache?.timings?.providerRequestCount).toBe(1);
+    // One hourly snapshot plus three batched 14-day reads, shared with aggregation.
+    expect(reads).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("cancels a provider wait without marking any missing bars covered", async () => {
+    const controller = new AbortController();
+    await prisma.workstationCandleLease.create({ data: { key: "rate:cooldown", token: "test", expiresAt: new Date(Date.now() + 60_000) } });
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const pending = fetchCompactCandles(series.symbol, "5m", range, workstationCandlePolicy().credentials!, false, true, { signal: controller.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(timers).toHaveBeenCalledWith(expect.any(Function), 525));
+    controller.abort();
+    await rejected;
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await prisma.workstationCandleCoverage.count()).toBe(0);
+  });
+  it("cancels an in-flight provider download without certifying coverage", async () => {
+    const controller = new AbortController();
+    vi.mocked(fetch).mockImplementation((_url, init) => new Promise((_resolve, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true })));
+    const pending = fetchCompactCandles(series.symbol, "5m", range, workstationCandlePolicy().credentials!, false, false, { signal: controller.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    controller.abort(); await rejected;
+    expect(await prisma.workstationCandleCoverage.count()).toBe(0);
+  });
+  it("plans 30 days before the final interpreted fill without shrinking older entry coverage", () => {
+    const close = day + 40 * 86400;
+    const trade = { ...demoTrades[0], openTime: close - 3600, closeTime: close, executions: [{ ...demoTrades[0].executions[0], time: close + 3600 }] };
+    const planned = planCandlePreparation([trade, trade], close + 10 * 86400).filter(p => p.timeframe === "1h");
+    expect(missingRanges({ from: close + 3600 - 30 * 86400, to: close + 3600 }, planned.map(p => p.range))).toEqual([]);
+    expect(planned.every(p => p.range.to <= close + 10 * 86400)).toBe(true);
+  });
   it("reuses cached 5m coverage, persists independent hourly chunks and revisits with zero provider requests", async () => {
     const bars = [candle(open), candle(open + 300), candle(close - 300)]; await saveSource({ from: open, to: close }, bars);
     const partial = await loadWorkstationCandles({ ...request, mode: "cache" }); expect(partial.candles).toHaveLength(2); expect(fetch).not.toHaveBeenCalled();

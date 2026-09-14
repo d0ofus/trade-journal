@@ -1,8 +1,15 @@
 // Explicitly offline provider double for the loopback cache browser suite. Never use in deployment.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { PrismaClient } from "@prisma/client";
+import { setTimeout as wait } from "node:timers/promises";
 const target = new URL(process.env.DATABASE_URL ?? "http://invalid");
 if (process.env.ALLOW_TEST_DATABASE_MUTATIONS !== "1" || target.hostname !== "127.0.0.1" || target.port !== "55439" || target.pathname !== "/trades_workstation_auth_test" || process.env.TRADES_ALPACA_API_KEY_ID !== "isolated-dummy-key") throw new Error("Cache browser network double requires the isolated local database and dummy credentials.");
 const original = globalThis.fetch;
+if (process.env.WORKSTATION_TEST_QUERY_LOG) {
+  const prisma = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
+  prisma.$on("query", event => appendFileSync(process.env.WORKSTATION_TEST_QUERY_LOG, JSON.stringify({ durationMs: event.duration }) + "\n"));
+  globalThis.prisma = prisma;
+}
 const fixture = JSON.parse(readFileSync(process.env.WORKSTATION_TEST_CANDLES_FILE, "utf8"));
 const nvda = process.env.WORKSTATION_TEST_NVDA_FILE ? JSON.parse(readFileSync(process.env.WORKSTATION_TEST_NVDA_FILE, "utf8")) : null;
 const steps = { "5Min": 300, "10Min": 600, "15Min": 900, "1Hour": 3600, "1Day": 86400, "1Week": 604800 };
@@ -12,7 +19,7 @@ globalThis.fetch = async (input, init) => {
   if (url.hostname !== "data.alpaca.markets" || url.pathname !== "/v2/stocks/bars") throw new Error("External network disabled in isolated cache validation.");
   const symbol = url.searchParams.get("symbols"), timeframe = url.searchParams.get("timeframe"), step = steps[timeframe];
   appendFileSync(process.env.WORKSTATION_TEST_PROVIDER_LOG, JSON.stringify({ symbol, timeframe, from: url.searchParams.get("start"), to: url.searchParams.get("end") }) + "\n");
-  await new Promise(resolve => setTimeout(resolve, 1200));
+  await wait(1200, undefined, { signal: init?.signal });
   if (existsSync(process.env.WORKSTATION_TEST_PROVIDER_LOG + ".offline")) return Response.json({}, { status: 503 });
   const from = Date.parse(url.searchParams.get("start")) / 1000, to = Date.parse(url.searchParams.get("end")) / 1000;
   const buckets = new Map();
