@@ -1,4 +1,5 @@
 import { accountTimePolicyStatus, previewAccountTimePolicy, saveAccountTimePolicy, prepareAccountTimePolicies } from "@/lib/server/execution-time-policy";
+import { timePolicyModes } from "@/lib/workstation/execution-time-provenance";
 import { prepareCandlesAfterResponse } from "@/lib/server/workstation-cache-after";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -14,7 +15,11 @@ export async function GET(request: NextRequest) {
   try {
     if (request.nextUrl.searchParams.has("accounts")) return NextResponse.json({ accounts: await accountTimePolicyStatus() });
     const accountId = request.nextUrl.searchParams.get("accountId");
-    if (accountId) return NextResponse.json(await previewAccountTimePolicy(accountId));
+    if (accountId) {
+      const mode = z.enum(timePolicyModes).optional().safeParse(request.nextUrl.searchParams.get("mode") ?? undefined);
+      if (!mode.success) return NextResponse.json({ error: "Invalid account timestamp mode." }, { status: 400 });
+      return NextResponse.json(await previewAccountTimePolicy(accountId, prisma, mode.data));
+    }
     const id = request.nextUrl.searchParams.get("batchId");
     if (id) { const result = await inspectBatchTimestamps(id, request.nextUrl.searchParams.get("timezone") ?? "America/New_York"); return NextResponse.json({ ...result, rows: result.rows.slice(0, 200), total: result.rows.length, eligible: result.rows.filter(r => r.interpretedTime !== null).length }); }
     const cursor = request.nextUrl.searchParams.get("cursor");
@@ -34,14 +39,14 @@ export async function PATCH(request: NextRequest) {
   }
   try {
     const raw = await request.json().catch(() => null);
-    const account = z.object({ action: z.enum(["confirm-account", "disable-account", "prepare-account"]), accountId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict().safeParse(raw);
+    const account = z.object({ action: z.enum(["confirm-account", "disable-account", "prepare-account"]), accountId: z.string().min(1).max(160), expectedRevision: z.number().int().nonnegative(), fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(), mode: z.enum(timePolicyModes).optional() }).strict().safeParse(raw);
     if (account.success) {
       const a = account.data;
       if (a.action === "prepare-account") {
         const current = await prisma.accountExecutionTimePolicy.findUnique({ where: { accountId_source: { accountId: a.accountId, source: "IBKR_EXECUTIONS" } } });
         if (!current?.active || current.revision !== a.expectedRevision) throw new TimestampInterpretationError("Account policy changed. Refresh its status before resuming.");
         const result = await prepareAccountTimePolicies(100, a.accountId); prepareCandlesAfterResponse(); return NextResponse.json(result); }
-      const saved = await saveAccountTimePolicy(a.accountId, a.expectedRevision, a.action === "confirm-account", a.fingerprint);
+      const saved = await saveAccountTimePolicy(a.accountId, a.expectedRevision, a.action === "confirm-account", a.fingerprint, a.mode);
       prepareCandlesAfterResponse();
       return NextResponse.json({ id: saved.id, active: saved.active, revision: saved.revision });
     }

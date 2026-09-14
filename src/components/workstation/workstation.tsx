@@ -2,6 +2,7 @@
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
+import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
 import {
   createContext,
   ReactNode,
@@ -1496,7 +1497,7 @@ export function TradesWorkstation({
                       {i + 1}
                     </button>
                   </td>
-                  <td title={e.provenance?.timezoneStatus === "verified" ? "Verified source timezone" : "Source timezone unverified; stored time displayed as UTC"}>{new Date(e.time * 1000).toISOString().slice(0, 19).replace("T", " ")}{e.provenance?.timezoneStatus !== "verified" && <span className="ws-diagnostic-warning"> *</span>}</td>
+                  <td title={executionTimezoneLabel(e)}>{new Date(e.time * 1000).toISOString().slice(0, 19).replace("T", " ")}{!executionTimeResolved(e) && <span className="ws-diagnostic-warning"> *</span>}</td>
                   <td>
                     <span className={`ws-side ${e.side.toLowerCase()}`}>
                       {e.side === "BUY" ? "↗ Buy" : "↘ Sell"}

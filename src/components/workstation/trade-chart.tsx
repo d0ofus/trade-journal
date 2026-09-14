@@ -204,7 +204,8 @@ export function TradeChart(props: Props) {
             trade: props.trade.id,
           }
         : null;
-    const requested: typeof navigation.current = changedTimeBasis ? { time: props.trade.openTime, trade: props.trade.id, fit: true } :
+    // A timezone confirmation changes markers and auto session, while a saved viewport stays put.
+    const requested: typeof navigation.current = changedTimeBasis && !latest.current.initialRange ? { time: props.trade.openTime, trade: props.trade.id, fit: true } :
       navigation.current?.trade === props.trade.id
         ? navigation.current
         : intervalContext ?? (latest.current.initialRange ? { time: (latest.current.initialRange.from + latest.current.initialRange.to) / 2, trade: props.trade.id, fit: false, range: latest.current.initialRange } : null);

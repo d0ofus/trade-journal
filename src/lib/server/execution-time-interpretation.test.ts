@@ -96,6 +96,85 @@ describe("isolated, reversible execution-time interpretation", () => {
 });
 
 describe("user-confirmed account defaults", () => {
+  const mode = "confirmed-flex-new-york" as const;
+  async function legacyFixture() {
+    const f = await fixture();
+    await prisma.importBatch.update({ where: { id: f.batch.id }, data: { rawSha256: null, rawStorageKey: null, parserVersion: null } });
+    return f;
+  }
+  it("confirms legacy Flex clocks without archives, preserves records and does not double-convert", async () => {
+    const f = await legacyFixture(), accountId = f.batch.accountId!;
+    const original = await prisma.closedTrade.findUniqueOrThrow({ where: { groupKey: f.groupKey } }), doc = await readWorkstationDocument(f.groupKey);
+    const preview = await previewAccountTimePolicy(accountId, prisma, mode);
+    expect(preview.reports[0]).toMatchObject({ status: "user-confirmed", eligible: 8 });
+    const wrongMode = await previewAccountTimePolicy(accountId, prisma, "verified-reports");
+    await expect(saveAccountTimePolicy(accountId, 0, true, wrongMode.fingerprint, mode)).rejects.toThrow("changed");
+    await saveAccountTimePolicy(accountId, 0, true, preview.fingerprint, mode);
+    expect((await prepareAccountTimePolicies(1, accountId)).prepared).toBe(1);
+    const trade = (await listWorkstationTrades({ account: f.code }))[0];
+    expect(trade.executions[4]).toMatchObject({ time: Date.parse("2026-09-08T19:09:25Z") / 1000, provenance: { interpretationStatus: "applied", timezoneStatus: "user-confirmed", storedTime: f.fills[4].executedAt.getTime() / 1000 } });
+    expect(trade.executions[4].provenance?.brokerWallTime).toBeUndefined();
+    expect(tradeChartSession(trade)).toBe("extended");
+    await prepareAccountTimePolicies(1, accountId);
+    expect((await listWorkstationTrades({ account: f.code }))[0]).toEqual(trade);
+    expect(await prisma.execution.findMany({ where: { importBatchId: f.batch.id }, orderBy: { executedAt: "asc" } })).toEqual(f.fills);
+    expect(await prisma.closedTrade.findUniqueOrThrow({ where: { groupKey: f.groupKey } })).toEqual(original);
+    expect(await readWorkstationDocument(f.groupKey)).toEqual(doc);
+    await prisma.closedTradeExecution.updateMany({ where: { executionId: f.fills[4].id }, data: { price: f.fills[4].price + 1 } });
+    expect((await listWorkstationTrades({ account: f.code }))[0].executions[4].provenance?.interpretationStatus).toBe("stale");
+  });
+  it("applies the confirmed mode to future legacy imports", async () => {
+    const f = await fixture(async id => { const p = await previewAccountTimePolicy(id, prisma, mode); await saveAccountTimePolicy(id, 0, true, p.fingerprint, mode); });
+    await prisma.importBatch.update({ where: { id: f.batch.id }, data: { rawSha256: null, rawStorageKey: null, parserVersion: null } });
+    await prepareAccountTimePolicies(1, f.batch.accountId!);
+    expect((await listWorkstationTrades({ account: f.code }))[0].executions[0].provenance?.timezoneStatus).toBe("user-confirmed");
+  });
+  it("uses surviving archive evidence when an old import lacks its own fingerprint", async () => {
+    const f = await fixture();
+    await prisma.importBatch.update({ where: { id: f.batch.id }, data: { rawSha256: null } });
+    const preview = await previewAccountTimePolicy(f.batch.accountId!, prisma, mode);
+    await saveAccountTimePolicy(f.batch.accountId!, 0, true, preview.fingerprint, mode);
+    await prepareAccountTimePolicies(1, f.batch.accountId!);
+    expect((await listWorkstationTrades({ account: f.code }))[0].executions[4]).toMatchObject({ time: Date.parse("2026-09-08T19:09:25Z") / 1000, provenance: { timezoneStatus: "user-confirmed", interpretationStatus: "applied" } });
+  });
+  it.each([
+    ["2026-09-04T08:28:27Z", "2026-09-04T12:28:27Z"],
+    ["2026-09-04T09:32:47Z", "2026-09-04T13:32:47Z"],
+    ["2026-09-04T09:32:48Z", "2026-09-04T13:32:48Z"],
+    ["2026-01-05T09:32:47Z", "2026-01-05T14:32:47Z"],
+    ["2026-03-08T02:30:00Z", null], ["2026-11-01T01:30:00Z", null],
+  ])("confirms stored %s with the same timezone rules as MU", async (stored, expected) => {
+    const f = await legacyFixture(), e = f.fills[0], date = new Date(stored!);
+    await prisma.execution.update({ where: { id: e.id }, data: { executedAt: date } });
+    await prisma.closedTradeExecution.updateMany({ where: { executionId: e.id }, data: { executedAt: date } });
+    const p = await previewAccountTimePolicy(f.batch.accountId!, prisma, mode);
+    await saveAccountTimePolicy(f.batch.accountId!, 0, true, p.fingerprint, mode); await prepareAccountTimePolicies(1, f.batch.accountId!);
+    const value = (await listWorkstationTrades({ account: f.code }))[0].executions.find(fill => fill.id === e.id)!;
+    if (expected) expect(value).toMatchObject({ time: Date.parse(expected) / 1000, provenance: { timezoneStatus: "user-confirmed" } });
+    else { expect(value.time).toBe(date.getTime() / 1000); expect(value.provenance?.interpretationStatus).toBe("unresolved"); expect(value.provenance?.interpretationReason).toMatch(/ambiguous|invalid/); }
+  });
+  it("preserves explicit offsets in older archived reports and refuses fingerprint conflicts", async () => {
+    const f = await fixture(), artifact = await prisma.importArtifact.findUniqueOrThrow({ where: { storageKey: f.batch.rawStorageKey! } });
+    const raw = timingFills[0][0], stamp = f.fills[0].executedAt.toISOString().replace('.000Z', 'Z');
+    const content = artifact.content.replace(raw, stamp), digest = hash(content);
+    await prisma.importArtifact.update({ where: { storageKey: artifact.storageKey }, data: { content, rawSha256: digest } });
+    await prisma.importBatch.update({ where: { id: f.batch.id }, data: { rawSha256: digest } });
+    const p = await previewAccountTimePolicy(f.batch.accountId!, prisma, mode);
+    await saveAccountTimePolicy(f.batch.accountId!, 0, true, p.fingerprint, mode); await prepareAccountTimePolicies(1, f.batch.accountId!);
+    const value = (await listWorkstationTrades({ account: f.code }))[0].executions[0];
+    expect(value.time).toBe(f.fills[0].executedAt.getTime() / 1000); expect(value.provenance?.timezone).toBe("Explicit offset");
+    await prisma.importBatch.update({ where: { id: f.batch.id }, data: { rawSha256: "conflicting-fingerprint" } });
+    expect((await previewAccountTimePolicy(f.batch.accountId!, prisma, mode)).reports[0].reason).toContain("conflicts");
+  });
+  it("accepts the mode through the authenticated API and rejects invalid modes", async () => {
+    const f = await legacyFixture(); vi.stubEnv("TRADES_WORKSTATION_ENABLED", "1");
+    const url = `http://localhost/api/workstation/timestamp-interpretations?accountId=${f.batch.accountId}`;
+    expect((await GET(new NextRequest(`${url}&mode=invalid`))).status).toBe(400);
+    const preview = await (await GET(new NextRequest(`${url}&mode=${mode}`))).json();
+    const response = await PATCH(new NextRequest(url, { method: "PATCH", body: JSON.stringify({ action: "confirm-account", accountId: f.batch.accountId, expectedRevision: 0, mode, fingerprint: preview.fingerprint }) }));
+    expect(response.status).toBe(200);
+    expect((await prisma.accountExecutionTimePolicy.findFirstOrThrow({ where: { accountId: f.batch.accountId! } })).basis).toBe(mode);
+  });
   async function eligibleFixture() { const f = await fixture(); await prisma.importBatch.update({ where: { id: f.batch.id }, data: { parserVersion: "2026-06-25-workstation-uplift" } }); return f; }
   it("prepares resumably, applies once to all fills, preserves accounting/reviews, and reverses", async () => {
     const f = await eligibleFixture(), accountId = f.batch.accountId!, before = await listWorkstationTrades({ account: f.code }), doc = await readWorkstationDocument(f.groupKey);

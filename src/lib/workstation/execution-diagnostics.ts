@@ -1,4 +1,5 @@
 import { priceDistanceFromCandle } from "../charts/execution-marker-alignment";
+import { executionTimeResolved } from "./execution-time-provenance";
 import { usEquitiesTradingSession } from "../server/market-session-calendar";
 import { seconds, type Candle, type CandleSession, type Execution, type Interval } from "./types";
 
@@ -47,7 +48,7 @@ export function diagnoseExecution(execution: Execution, candles: Candle[], inter
   const candle = containingExecutionCandle(execution.time, candles, interval, session), period = candle && candlePeriod(candle.time, interval, session);
   if (period && candle && interval !== "1d" && interval !== "1wk") { let lo = 0, hi = candles.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (candles[mid].time <= candle.time) lo = mid + 1; else hi = mid; } if (candles[lo]) period.end = Math.min(period.end, candles[lo].time); }
   const distance = candle ? priceDistanceFromCandle(execution.price, candle) : 0;
-  return { execution, candle, period, status: !candle ? "missing" : distance ? "price-outside" : "matching", distance, timezoneUnverified: execution.provenance?.timezoneStatus !== "verified", periodUnverified: !!period && !period.verified };
+  return { execution, candle, period, status: !candle ? "missing" : distance ? "price-outside" : "matching", distance, timezoneUnverified: !executionTimeResolved(execution), periodUnverified: !!period && !period.verified };
 }
 export function executionDiagnosticSummary(rows: ExecutionDiagnostic[]) {
   if (!rows.length) return "No executions at this replay time";

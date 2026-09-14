@@ -2,8 +2,10 @@ import { expect, test, type BrowserContext } from "@playwright/test";
 import { prisma } from "../../src/lib/prisma";
 import { defaultPreferences } from "../../src/lib/workstation/types";
 import { previewAccountTimePolicy, saveAccountTimePolicy, prepareAccountTimePolicies } from "../../src/lib/server/execution-time-policy";
-import { mkdirSync } from "node:fs";
-const id = "DEMO-NVDA-TIMING-V2", url = `/trades?account=DEMO-WORKSTATION&symbol=NVDA&groupKey=${id}`;
+import { mkdirSync, writeFileSync } from "node:fs";
+import { observePngExport } from "../workstation-png";
+let id: string;
+const url = () => `/trades?account=DEMO-WORKSTATION&symbol=NVDA&groupKey=${encodeURIComponent(id)}`;
 const sec = (s: string) => Date.parse(s) / 1000;
 async function login(context: BrowserContext) { const csrf = await (await context.request.get("/api/auth/csrf")).json(); await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true", callbackUrl: "http://127.0.0.1:3101/trades" } }); }
 test.beforeAll(async () => {
@@ -13,6 +15,9 @@ test.beforeAll(async () => {
 });
 test.beforeEach(async ({ page, context }) => {
   await login(context); const prefs = { ...defaultPreferences(), list: false, journal: false, heading: false, bottomCollapsed: true };
+  // The trades route reconciles synthetic seeded cycles; target its current materialized ID.
+  await context.request.get("/trades?account=DEMO-WORKSTATION&symbol=NVDA");
+  id = (await prisma.closedTrade.findFirstOrThrow({ where: { symbol: "NVDA", isStale: false, account: { ibkrAccount: "DEMO-WORKSTATION" } }, orderBy: { closeTime: "desc" } })).groupKey;
   const view = { version: 1, arrangement: "left", panels: prefs.panels.map((p, i) => ({ ...p, session: "regular", range: i === 0 ? { from: sec("2026-08-12T15:45Z"), to: sec("2026-08-13T17:10Z") } : i === 1 ? { from: sec("2026-08-11T16:00Z"), to: sec("2026-08-20T14:00Z") } : { from: sec("2026-07-31T04:00Z"), to: sec("2026-08-27T04:00Z") } })) };
   await prisma.workstationTradeView.upsert({ where: { groupKey: id }, create: { groupKey: id, version: 1, revision: 1, view }, update: { view, revision: { increment: 1 } } });
   await page.addInitScript(p => { localStorage.setItem("execution-lab:workstation:preferences:application:v1", JSON.stringify(p)); localStorage.setItem("execution-lab:backup-reminder:snoozed:v1", String(Date.now())); }, prefs);
@@ -20,7 +25,7 @@ test.beforeEach(async ({ page, context }) => {
 test.afterAll(async () => { await prisma.$disconnect(); });
 test("restored ranges show 5/7, 7/7 and 7/7; fit, intervals, labels, fullscreen and exports retain all fills", async ({ page }) => {
   test.setTimeout(150000); const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
-  await page.setViewportSize({ width: 1440, height: 900 }); await page.goto(url);
+  await page.setViewportSize({ width: 1440, height: 900 }); await page.goto(url());
   const charts = page.locator("[data-chart-id]");
   await expect(charts.nth(0)).toHaveAttribute("data-visible-executions", "5", { timeout: 30000 });
   await expect(charts.nth(1)).toHaveAttribute("data-visible-executions", "7", { timeout: 30000 }); await expect(charts.nth(2)).toHaveAttribute("data-visible-executions", "7");
@@ -41,12 +46,12 @@ test("restored ranges show 5/7, 7/7 and 7/7; fit, intervals, labels, fullscreen 
   await page.getByRole("button", { name: "Hide execution labels", exact: true }).click(); await expect(charts.nth(0)).toHaveAttribute("data-label-mode", "compact"); await expect(charts.nth(0)).toHaveAttribute("data-visible-executions", "7");
   await page.getByRole("button", { name: "Show execution labels", exact: true }).click();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click(); await expect(charts.nth(0)).toHaveClass(/ws-chart-fullscreen/); await expect(charts.nth(0)).toHaveAttribute("data-visible-executions", "7");
-  const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Export chart-1", exact: true }).click(); await page.getByRole("button", { name: "Active chart PNG", exact: true }).click(); await (await download).saveAs("screenshots/execution-markers-all-timeframes/nvda-chart-export.png");
+  const png = await observePngExport(page), download = page.waitForEvent("download"); await page.getByRole("button", { name: "Export chart-1", exact: true }).click(); await page.getByRole("button", { name: "Active chart PNG", exact: true }).click(); await download; const bytes = await png(); expect(bytes.length).toBeGreaterThan(10000); writeFileSync("screenshots/execution-markers-all-timeframes/nvda-chart-export.png", bytes);
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click(); await page.reload(); await expect(charts.nth(0)).toHaveAttribute("data-visible-executions", "7"); expect(errors).toEqual([]);
 });
 test("themes, mobile, resize and replay keep visibility diagnostics usable", async ({ page }) => {
-  test.setTimeout(90000); await page.goto(url); const charts = page.locator("[data-chart-id]"); await expect(charts.nth(0)).toHaveAttribute("data-visible-executions", "5");
+  test.setTimeout(90000); await page.goto(url()); const charts = page.locator("[data-chart-id]"); await expect(charts.nth(0)).toHaveAttribute("data-visible-executions", "5");
   for (const theme of ["dark", "light"]) {
     await page.evaluate(theme => { localStorage.setItem("execution-lab:appearance:application:v1", theme); window.dispatchEvent(new Event("execution-lab-appearance-change")); }, theme);
     for (const [size, width, height] of [["desktop",1920,1080],["laptop",1440,900],["mobile",390,844]] as const) {

@@ -24,9 +24,10 @@ export type Execution = {
   price: number;
   commission: number;
   fees: number;
-  provenance?: { timezoneStatus: "verified" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null; storedTime?: number; brokerWallTime?: string; confirmationBasis?: string; interpretationStatus?: "applied" | "stale" | "unresolved" | "pending"; interpretationVersion?: string };
+  provenance?: { timezoneStatus: "verified" | "user-confirmed" | "unverified"; timezone: string | null; source: string; parserVersion?: string | null; storedTime?: number; brokerWallTime?: string; confirmationBasis?: string; interpretationReason?: string; interpretationStatus?: "applied" | "stale" | "unresolved" | "pending"; interpretationVersion?: string };
 };
 export type Trade = {
+  assetType?: string;
   brokerTradeDate?: string;
   timeInterpretationVersion?: string;
   chartSession?: "regular" | "extended";

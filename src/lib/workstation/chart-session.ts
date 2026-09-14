@@ -1,4 +1,5 @@
 import type { Trade } from "./types";
+import { executionTimeResolved } from "./execution-time-provenance";
 import { usEquitiesTradingSession } from "../server/market-session-calendar";
 const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
 export function isRegularUsSession(time: number) {
@@ -8,5 +9,5 @@ export function isRegularUsSession(time: number) {
 }
 export function tradeChartSession(trade: Trade, preference: "auto" | "regular" | "extended" = "auto"): "regular" | "extended" {
   if (preference !== "auto") return preference;
-  return trade.executions.some(e => e.provenance?.timezoneStatus === "verified" && !isRegularUsSession(e.time)) ? "extended" : "regular";
+  return trade.executions.some(e => executionTimeResolved(e) && !isRegularUsSession(e.time)) ? "extended" : "regular";
 }

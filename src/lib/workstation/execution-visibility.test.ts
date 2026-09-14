@@ -11,6 +11,12 @@ const candle = (s: string, low = 224.13, high = 226.87): Candle => ({ time: utc(
 const fill = (s: string, price = 225.56): Execution => ({ id: s, time: utc(s), price, side: "BUY", quantity: 20, commission: 0, fees: 0, provenance: { timezoneStatus: "verified", timezone: "America/New_York", source: "test", interpretationStatus: "applied" } });
 const input = (): VisibilityInput => ({ executions: [fill("2026-08-13T13:30:05Z")], candles: [candle("2026-08-13T13:30Z")], interval: "5m", session: regularHourSession, labels: "labels", replay: null, plotWidth: 100, plotHeight: 100, x: () => 50, y: () => 50 });
 describe("shared execution visibility", () => {
+  it("uses user-confirmed timing for markers, hit targets and export without suppressing real gaps", () => {
+    const o = input(); o.executions[0].provenance!.timezoneStatus = "user-confirmed";
+    expect(executionVisibility(o)[0]).toMatchObject({ reason: "visible", diagnostic: { timezoneUnverified: false } });
+    expect(executionVisibility({ ...o, candles: [], covered: [{ from: o.executions[0].time - 5, to: o.executions[0].time + 5 }] })[0].reason).toBe("unavailable");
+    o.executions[0].price = 1; expect(executionVisibility(o)[0].diagnostic.status).toBe("price-outside");
+  });
   it("draws exact-price markers for both matching and outside-price candles", () => {
     const o = input(); expect(executionVisibility(o)[0].reason).toBe("visible");
     o.executions[0].price = 200; expect(executionVisibility(o)[0].reason).toBe("visible"); expect(executionVisibility(o)[0].diagnostic.status).toBe("price-outside");

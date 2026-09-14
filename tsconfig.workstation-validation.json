@@ -8,6 +8,7 @@
     "src/lib/server/workstation-cache.test.ts",
     "src/lib/server/workstation-cache-after.test.ts",
     "src/lib/workstation/history.test.ts",
+    "src/lib/workstation/preparation-eligibility.test.ts",
     "src/lib/workstation/chart-labels.test.ts",
     "tests/workstation-preview/chart-labels.spec.ts",
     "scripts/benchmark-workstation-history.ts",

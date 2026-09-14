@@ -4,7 +4,7 @@ import { cacheHash, candleChunks, decodeCandles, encodeCandles, replaceSegments 
 import { cacheBudgetAvailable, cacheUsage, claimCacheLease, persistCompactCandles, readCompactCandles, releaseCacheLease, seriesKey, takeProviderSlot } from "./workstation-cache-store";
 import { loadWorkstationCandles } from "./workstation-candles";
 import { fetchCompactCandles } from "./workstation-cache-provider";
-import { planCandlePreparation, queueCandlePreparation, runCandlePreparation } from "./workstation-cache-jobs";
+import { planCandlePreparation, queueCandlePreparation, runCandlePreparation, retryCandlePreparation } from "./workstation-cache-jobs";
 import { demoTrades } from "@/lib/workstation/demo";
 import { missingRanges, unionRanges } from "@/lib/workstation/candle-ranges";
 import type { Candle, CandleTimeframe } from "./market-candles";
@@ -166,6 +166,28 @@ describe("compact candle cache on isolated PostgreSQL", () => {
     expect(first.added).toBeGreaterThanOrEqual(3); expect(second.added).toBe(0); expect(fetch).not.toHaveBeenCalled();
     const jobs = await prisma.workstationCandleJob.findMany(); expect(new Set(jobs.map(j => j.timeframe)).size).toBe(3); expect(jobs.every(j => j.status === "pending")).toBe(true);
   });
+  it("excludes legacy options, retires obsolete pending work and rechecks completed jobs on request", async () => {
+    const option = { ...demoTrades[0], symbol: "ZS    250516C00250000", assetType: "OTHER" };
+    expect(planCandlePreparation([option])).toEqual([]);
+    vi.spyOn(workstationRead, "listWorkstationTrades").mockResolvedValue([demoTrades[0], option]);
+    await prisma.workstationCandleJob.create({ data: { key: "obsolete", ...series, session: "extended", start: new Date(from * 1000), end: new Date(range.to * 1000) } });
+    await queueCandlePreparation();
+    expect((await prisma.workstationCandleJob.findUniqueOrThrow({ where: { key: "obsolete" } })).status).toBe("skipped");
+    expect(await prisma.workstationCandleJob.count({ where: { symbol: option.symbol } })).toBe(0);
+    await prisma.workstationCandleJob.updateMany({ where: { status: "pending" }, data: { status: "done" } });
+    await queueCandlePreparation(false, true);
+    expect(await prisma.workstationCandleJob.count({ where: { status: "pending" } })).toBeGreaterThanOrEqual(3);
+    await prisma.workstationCandleJob.update({ where: { key: "obsolete" }, data: { status: "done", updatedAt: new Date(0), end: new Date() } });
+    await queueCandlePreparation(false, false, true);
+    expect((await prisma.workstationCandleJob.findUniqueOrThrow({ where: { key: "obsolete" } })).status).toBe("done");
+    const instrument = await prisma.instrument.create({ data: { symbol: option.symbol, assetType: "OTHER", exchange: "CACHE-OPTION-TEST" } });
+    try {
+      await prisma.workstationCandleJob.create({ data: { key: "option-failure", ...series, symbol: option.symbol, session: "extended", start: new Date(from * 1000), end: new Date(range.to * 1000), status: "unavailable" } });
+      await retryCandlePreparation();
+      expect((await prisma.workstationCandleJob.findUniqueOrThrow({ where: { key: "option-failure" } })).status).toBe("skipped");
+    } finally { await prisma.instrument.delete({ where: { id: instrument.id } }); }
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("resumes an expired job lease and protects its completed trade window", async () => {
     await prisma.workstationCandleJob.create({ data: { key: "expired-job", ...series, session: "extended", start: new Date(from * 1000), end: new Date(range.to * 1000), status: "running", leaseUntil: new Date(0), leaseToken: "old-worker" } });
     const result = await runCandlePreparation(1000); expect(result.processed).toBe(1);
@@ -204,7 +226,8 @@ describe("separate market-open hourly cache", () => {
   }
   it("successful background progress clears failure attempts and is immediately eligible", async () => {
     await prisma.workstationCandleJob.create({ data: { key: "partial-job", symbol: series.symbol, timeframe: "1h", source: candleIdentity(workstationCandlePolicy().cacheSource, "1h", "regular"), session: "regular", start: new Date(day * 1000), end: new Date((day + 30 * 86400) * 1000), attempts: 4 } });
-    await runCandlePreparation(1000);
+    const progress = await runCandlePreparation(1000);
+    expect(progress.advanced).toBeGreaterThan(0);
     const job = await prisma.workstationCandleJob.findUniqueOrThrow({ where: { key: "partial-job" } });
     expect(job.status).toBe("pending");
     expect(job.attempts).toBe(0);

@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs";
 let id: string;
 const url = () => `/trades?account=DEMO-WORKSTATION&symbol=MU&groupKey=${encodeURIComponent(id)}`;
 const endpoint = () => `/api/closed-trades/${encodeURIComponent(id)}/workstation/view`;
-async function login(context: BrowserContext) {
+async function login(context: Pick<BrowserContext, "request">) {
   const csrf = await (await context.request.get("/api/auth/csrf")).json();
   expect((await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true", callbackUrl: "http://127.0.0.1:3101/trades" } })).ok()).toBe(true);
 }
@@ -17,7 +17,12 @@ async function panChart(page: import("@playwright/test").Page, chart: import("@p
   await page.mouse.move(rect.x + rect.width * .35, rect.y + 160, { steps: 8 });
   await page.mouse.up();
 }
-test.beforeAll(async () => { id = (await listWorkstationTrades({ account: "DEMO-WORKSTATION", symbol: "MU" }))[0].id; mkdirSync("screenshots/neon-personal-retention", { recursive: true }); });
+test.beforeAll(async ({ request }) => {
+  await login({ request });
+  await request.get("/trades?account=DEMO-WORKSTATION&symbol=MU");
+  id = (await listWorkstationTrades({ account: "DEMO-WORKSTATION", symbol: "MU" }))[0].id;
+  mkdirSync("screenshots/neon-personal-retention", { recursive: true });
+});
 test.afterAll(async () => { await prisma.$disconnect(); });
 test("panned views survive reload independently of reviews; replay does not rewrite them", async ({ page, context }) => {
   await login(context); await prisma.workstationTradeView.deleteMany({ where: { groupKey: id } });
