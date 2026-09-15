@@ -3,6 +3,7 @@ import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
+import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
 import {
   createContext,
   ReactNode,
@@ -391,6 +392,10 @@ export function TradesWorkstation({
     if (handle) handles.current.set(id, handle);
     else handles.current.delete(id);
   }, []);
+  const peakCosts = useMemo(() => new Map(trades.map(t => {
+    const cost = peakPositionCost(t);
+    return [t.id, { ...cost, formatted: cost.value === null ? "—" : formatPeakPositionCost(cost.value, t.currency) }];
+  })), [trades]);
   const filtered = useMemo(
     () =>
       trades.filter(
@@ -1827,8 +1832,11 @@ export function TradesWorkstation({
                           </b>
                         </div>
                         <div className="ws-trade-card-bottom">
-                          <span>
-                            {t.executions.length} fills · {t.quantity} shares
+                          <span className="ws-trade-size">
+                            <span>{t.executions.length} fills · </span>
+                            <span>{t.quantity} shares · <span className="ws-peak-cost" title={replay !== null ? "Peak position cost is hidden during replay." : peakCosts.get(t.id)?.reason ?? peakCostDescription} aria-label={replay !== null ? "Peak position cost hidden during replay" : `${peakCostDescription} ${peakCosts.get(t.id)?.reason ?? peakCosts.get(t.id)?.formatted}`}>
+                              Max {replay !== null ? "—" : peakCosts.get(t.id)?.formatted}
+                            </span></span>
                           </span>
                           <i
                             className={

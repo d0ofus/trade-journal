@@ -14,10 +14,12 @@ if (target.host !== "127.0.0.1:55439" || target.database !== "trades_workstation
 const samples = Number(process.env.WORKSTATION_OHLC_SAMPLES ?? 10);
 if (!Number.isInteger(samples) || samples < 1 || samples > 30) throw new Error("Use 1–30 samples per scenario/build.");
 const coldCheck = process.env.WORKSTATION_OHLC_COLD_CHECK === "1";
+const chartSession = process.env.WORKSTATION_OHLC_SESSION ?? "regular";
+if (chartSession !== "regular" && chartSession !== "extended") throw new Error("Use regular or extended for WORKSTATION_OHLC_SESSION.");
 const providerLog = path.join(process.env.TEMP!, "trade-workstation-phase2", "cache-provider.log");
 const calls = () => existsSync(providerLog) ? readFileSync(providerLog, "utf8").trim().split("\n").filter(Boolean).length : 0;
-const output = path.resolve("artifacts/ohlc");
-const rows: { build: string; scenario: string; panels: number; sample: number; firstCandleMs: number; allCandlesMs: number; paintAfterResponseMs: number; httpRequests: number; providerCalls: number }[] = [];
+const output = path.resolve("artifacts/ohlc", process.env.WORKSTATION_OHLC_SESSION ? `display-${chartSession}` : ".");
+const rows: { build: string; scenario: string; panels: number; sample: number; firstCandleMs: number; allCandlesMs: number; paintAfterResponseMs: number; httpRequests: number; providerCalls: number; shadedPanels: number }[] = [];
 
 async function main() {
   const trade = (await listWorkstationTrades({ account: "DEMO-WORKSTATION", symbol: "DEMOC" }))[0];
@@ -39,7 +41,7 @@ async function main() {
             const intervals: Interval[] = count === 1 ? ["1h"] : ["5m", "1h", "1d", "1wk"];
             // Keep 5m within its 14-day page; longer overscroll can intentionally fetch
             // beyond the saved window and would not be a fully warm-cache scenario.
-            const panels = intervals.map((interval, i) => ({ id: `chart-${i + 1}`, interval, session: "regular" as const, range: { from: interval === "5m" ? to + 1 - 14 * 86400 : from, to } }));
+            const panels = intervals.map((interval, i) => ({ id: `chart-${i + 1}`, interval, session: chartSession, range: { from: interval === "5m" ? to + 1 - 14 * 86400 : from, to } }));
             await prisma.workstationCandleChunk.deleteMany({ where: { symbol: trade.symbol } });
             await prisma.workstationCandleLease.deleteMany();
             const view = { version: 1, panels, arrangement: "left" };
@@ -50,7 +52,7 @@ async function main() {
               await prisma.workstationCandleCoverage.createMany({ data: seed.coverage });
             } else if (scenario !== "cold") {
               for (const interval of intervals) {
-                const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, session: "regular", from: String(from), to: String(scenario === "warm" ? to : from + 14 * 86400 - 1), mode: "complete" });
+                const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, session: chartSession, from: String(from), to: String(scenario === "warm" ? to : from + 14 * 86400 - 1), mode: "complete" });
                 let ready = false;
                 for (let i = 0; i < 10 && !ready; i++) {
                   const response = await context.request.get(`${origin}/api/workstation/candles?${params}`, { timeout: 120000 });
@@ -68,9 +70,15 @@ async function main() {
             await page.addInitScript(prefs => {
               localStorage.setItem("execution-lab:workstation:preferences:application:v1", JSON.stringify(prefs));
               const painted: Record<string, number> = {};
+              const shaded: Record<string, boolean> = {};
+              (window as unknown as { benchmarkShadedPanels: Record<string, boolean> }).benchmarkShadedPanels = shaded;
               (window as unknown as { ohlcFirstPaints: Record<string, number> }).ohlcFirstPaints = painted;
               const fill = CanvasRenderingContext2D.prototype.fillRect;
               CanvasRenderingContext2D.prototype.fillRect = function(...args) {
+                if ((this.fillStyle === "#171e2b" || this.fillStyle === "#f2f5fa") && this.canvas.closest(".ws-chart-canvas")) {
+                  const id = this.canvas.closest(".ws-chart")?.getAttribute("data-chart-id");
+                  if (id) shaded[id] = true;
+                }
                 if ((this.fillStyle === "#38bfa6" || this.fillStyle === "#e47886") && this.canvas.closest(".ws-chart-canvas")) {
                   const id = this.canvas.closest(".ws-chart")?.getAttribute("data-chart-id");
                   if (id && !painted[id]) painted[id] = performance.now();
@@ -91,7 +99,9 @@ async function main() {
             const responseReady = await page.evaluate(({ first, symbol }) => Math.max(0, ...performance.getEntriesByType("resource")
               .filter((entry): entry is PerformanceResourceTiming => entry instanceof PerformanceResourceTiming && entry.name.includes("/api/workstation/candles?") && new URL(entry.name).searchParams.get("symbol") === symbol && entry.responseEnd <= first)
               .map(entry => entry.responseEnd)), { first: firstCandleMs, symbol: trade.symbol });
-            const row = { build, scenario, panels: count, sample, firstCandleMs, allCandlesMs: Math.max(...paints), paintAfterResponseMs: firstCandleMs - responseReady, httpRequests, providerCalls: calls() - providerBefore };
+            const shadedPanels = await page.evaluate(() => Object.keys((window as unknown as { benchmarkShadedPanels: object }).benchmarkShadedPanels).length);
+            if (chartSession === "extended" && build === "changed" && shadedPanels !== (count === 1 ? 1 : 2)) throw new Error("The extended-hours benchmark must paint shading in each intraday panel.");
+            const row = { build, scenario, panels: count, sample, firstCandleMs, allCandlesMs: Math.max(...paints), paintAfterResponseMs: firstCandleMs - responseReady, httpRequests, providerCalls: calls() - providerBefore, shadedPanels };
             if (scenario === "warm" && row.providerCalls !== 0) throw new Error(`Warm fixture unexpectedly contacted provider double: ${JSON.stringify(row)}`);
             if (sample >= 0) { rows.push(row); console.log(JSON.stringify(row)); }
           } finally { await context.close(); }

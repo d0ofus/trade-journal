@@ -503,6 +503,17 @@
 .ws-trade-card-bottom i.reviewed {
   background: var(--ws-green);
 }
+.ws-trade-size { display: flex; flex-wrap: wrap; gap: 0 3px; min-width: 0; }
+.ws-peak-cost { white-space: nowrap; }
+.ws-trade-card-bottom > i { flex-shrink: 0; }
+.ws-session-legend { display: inline-flex; align-items: center; gap: 4px; }
+.ws-session-legend i { width: 9px; height: 9px; background: #171e2b; border: 1px solid var(--ws-border); }
+.workstation.ws-light .ws-session-legend i { background: #f2f5fa; }
+.ws-execution-time { padding: 10px 0; border-block: 1px solid var(--ws-border); }
+.ws-execution-time dd { font-weight: 600; }
+.ws-execution-technical { margin-top: 12px; }
+.ws-execution-technical summary { cursor: pointer; color: var(--ws-muted); }
+.ws-execution-technical summary:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 3px; }
 .ws-list-bottom {
   height: 40px;
   min-height: 40px;

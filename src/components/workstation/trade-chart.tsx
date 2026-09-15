@@ -92,6 +92,7 @@ import { diagnoseExecution, executionDiagnosticSummary } from "@/lib/workstation
 import { executionVisibility, visibilityLabels, visibilitySummary, type ExecutionVisibility } from "@/lib/workstation/execution-visibility";
 import { ExecutionDetails } from "./execution-details";
 import { createOhlcLegend } from "./ohlc-legend";
+import { hasExtendedSession, SessionBackground } from "./session-background";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
@@ -100,6 +101,7 @@ export function TradeChart(props: Props) {
   const ohlcHost = useRef<HTMLDivElement>(null);
   const ohlcLegend = useRef<ReturnType<typeof createOhlcLegend> | null>(null);
   const ohlcContext = useRef("");
+  const sessionBackground = useRef<SessionBackground | null>(null);
   const host = useRef<HTMLDivElement>(null),
     overlay = useRef<HTMLCanvasElement>(null),
     chart = useRef<IChartApi | null>(null),
@@ -234,6 +236,7 @@ export function TradeChart(props: Props) {
         ? { from: visible.from, to: visible.to }
         : null;
     dataReady.current = false;
+    sessionBackground.current?.setData([], props.panel.interval, undefined, latest.current.preferences.theme === "light");
     const nextOhlcContext = JSON.stringify([props.trade.id, props.panel.interval, props.trade.chartSession, latest.current.preferences.chartSession ?? "auto", props.trade.timeInterpretationVersion]);
     if (ohlcContext.current !== nextOhlcContext) ohlcLegend.current?.reset();
     else ohlcLegend.current?.update(null);
@@ -530,6 +533,9 @@ export function TradeChart(props: Props) {
         checkHistory.current();
       }, 180);
     };
+    const background = new SessionBackground();
+    sessionBackground.current = background;
+    candles.attachPrimitive(background);
     api.timeScale().subscribeVisibleLogicalRangeChange(rangeChanged);
     let syncing = false;
     const crosshairMoved = (event: MouseEventParams) => {
@@ -771,6 +777,7 @@ export function TradeChart(props: Props) {
             barSpacing: api.timeScale().options().barSpacing * scale,
           },
         });
+        let detachExportBackground = () => {};
         try {
           const cs = clone.addSeries(CandlestickSeries, {
             upColor: "#38bfa6",
@@ -782,6 +789,10 @@ export function TradeChart(props: Props) {
             lastValueVisible: false,
           });
           cs.setData(snapshotBars.map((b) => ({ ...b, time: asTime(b.time) })));
+          const exportBackground = new SessionBackground();
+          exportBackground.setData(snapshotBars, frozenInterval, frozenHistory.session, light);
+          cs.attachPrimitive(exportBackground);
+          detachExportBackground = () => cs.detachPrimitive(exportBackground);
           if (prefs.volume) {
             const vs = clone.addSeries(HistogramSeries, {
               priceFormat: { type: "volume" },
@@ -862,6 +873,7 @@ export function TradeChart(props: Props) {
           lines.forEach((line, i) => ctx.fillText(line, 8, height + header + 12 + i * 13, width - 16));
           return output;
         } finally {
+          detachExportBackground();
           clone.remove();
           container.remove();
         }
@@ -877,6 +889,8 @@ export function TradeChart(props: Props) {
       clearTimeout(historyTimer);
       window.removeEventListener("workstation-crosshair", sync);
       api.unsubscribeCrosshairMove(crosshairMoved);
+      candles.detachPrimitive(background);
+      sessionBackground.current = null;
       ohlcLegend.current?.reset();
       ohlcLegend.current = null;
       api.remove();
@@ -913,6 +927,7 @@ export function TradeChart(props: Props) {
     if (props.replay === null) beforeReplay.current = null;
     changingData.current = true;
     cs.setData(data.map((b) => ({ ...b, time: asTime(b.time) })));
+    sessionBackground.current?.setData(data, props.panel.interval, result.session, props.preferences.theme === "light");
     const volume = api.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
@@ -1037,6 +1052,7 @@ export function TradeChart(props: Props) {
   }, [result.candles, props.panel.interval, props.replay, visibleWindow, loading, failure]);
   useEffect(() => {
     const light = props.preferences.theme === "light";
+    sessionBackground.current?.setTheme(light);
     chart.current?.applyOptions({
       layout: {
         background: {
@@ -1339,6 +1355,7 @@ export function TradeChart(props: Props) {
         <span hidden>L <b data-ohlc="low" /></span>
         <span hidden>C <b data-ohlc="close" /></span>
         <span data-ohlc-empty>No completed candles</span>
+        {!loading && data.length > 0 && hasExtendedSession(props.panel.interval, result.session) && <span className="ws-session-legend"><i aria-hidden="true" />Extended hours</span>}
         <span className="ws-indicator-legend">
           {props.preferences.averages.map((n, i) => (
             <span
