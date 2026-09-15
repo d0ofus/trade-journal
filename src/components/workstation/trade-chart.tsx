@@ -9,6 +9,7 @@ import {
   IChartApi,
   ISeriesApi,
   LineSeries,
+  type MouseEventParams,
   UTCTimestamp,
 } from "lightweight-charts";
 import { Crosshair, Download, Maximize2, Minimize2, Info, X, Eye, EyeOff } from "lucide-react";
@@ -90,11 +91,15 @@ type Props = {
 import { diagnoseExecution, executionDiagnosticSummary } from "@/lib/workstation/execution-diagnostics";
 import { executionVisibility, visibilityLabels, visibilitySummary, type ExecutionVisibility } from "@/lib/workstation/execution-visibility";
 import { ExecutionDetails } from "./execution-details";
+import { createOhlcLegend } from "./ohlc-legend";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
 export function TradeChart(props: Props) {
   const container = useRef<HTMLElement>(null);
+  const ohlcHost = useRef<HTMLDivElement>(null);
+  const ohlcLegend = useRef<ReturnType<typeof createOhlcLegend> | null>(null);
+  const ohlcContext = useRef("");
   const host = useRef<HTMLDivElement>(null),
     overlay = useRef<HTMLCanvasElement>(null),
     chart = useRef<IChartApi | null>(null),
@@ -229,6 +234,10 @@ export function TradeChart(props: Props) {
         ? { from: visible.from, to: visible.to }
         : null;
     dataReady.current = false;
+    const nextOhlcContext = JSON.stringify([props.trade.id, props.panel.interval, props.trade.chartSession, latest.current.preferences.chartSession ?? "auto", props.trade.timeInterpretationVersion]);
+    if (ohlcContext.current !== nextOhlcContext) ohlcLegend.current?.reset();
+    else ohlcLegend.current?.update(null);
+    ohlcContext.current = nextOhlcContext;
     pending.current = null;
     draft.current = null;
     autoPages.current = 0;
@@ -287,7 +296,8 @@ export function TradeChart(props: Props) {
   }, [historyOpen]);
 
   useEffect(() => {
-    if (!host.current || !overlay.current) return;
+    if (!host.current || !overlay.current || !ohlcHost.current) return;
+    ohlcLegend.current = createOhlcLegend(ohlcHost.current);
     const p = latest.current;
     const api = createChart(host.current, {
       autoSize: false,
@@ -522,23 +532,26 @@ export function TradeChart(props: Props) {
     };
     api.timeScale().subscribeVisibleLogicalRangeChange(rangeChanged);
     let syncing = false;
-    api.subscribeCrosshairMove((event) => {
+    const crosshairMoved = (event: MouseEventParams) => {
       paint();
       if (
         syncing ||
         changingData.current ||
+        !dataReady.current ||
         !event.sourceEvent ||
-        !latest.current.preferences.linked ||
         !event.point ||
         typeof event.time !== "number"
       )
         return;
+      ohlcLegend.current?.inspect(event.seriesData.get(candles));
+      if (!latest.current.preferences.linked) return;
       window.dispatchEvent(
         new CustomEvent("workstation-crosshair", {
           detail: { source: p.panel.id, time: event.time },
         }),
       );
-    });
+    };
+    api.subscribeCrosshairMove(crosshairMoved);
     const sync = (event: Event) => {
       const detail = (event as CustomEvent<{ source: string; time: number }>)
         .detail;
@@ -561,9 +574,11 @@ export function TradeChart(props: Props) {
           bar &&
           api.timeScale().timeToCoordinate(asTime(bar.time)) !== null &&
           candles.priceToCoordinate(bar.close) !== null
-        )
+        ) {
           api.setCrosshairPosition(bar.close, asTime(bar.time), candles);
-        else api.clearCrosshairPosition();
+          // Lightweight Charts does not emit crosshair events for synthetic positions.
+          ohlcLegend.current?.inspect(bar);
+        } else api.clearCrosshairPosition();
       } finally {
         syncing = false;
       }
@@ -861,6 +876,9 @@ export function TradeChart(props: Props) {
       cancelAnimationFrame(frame);
       clearTimeout(historyTimer);
       window.removeEventListener("workstation-crosshair", sync);
+      api.unsubscribeCrosshairMove(crosshairMoved);
+      ohlcLegend.current?.reset();
+      ohlcLegend.current = null;
       api.remove();
       chart.current = null;
       series.current = null;
@@ -1012,6 +1030,11 @@ export function TradeChart(props: Props) {
     loading,
     failure,
   ]);
+  useEffect(() => {
+    if (loading || failure || changingData.current) return;
+    // Reconcile after setData; hover itself never enters React or the data effects.
+    ohlcLegend.current?.reconcile(renderedData.current, visibleWindow?.to);
+  }, [result.candles, props.panel.interval, props.replay, visibleWindow, loading, failure]);
   useEffect(() => {
     const light = props.preferences.theme === "light";
     chart.current?.applyOptions({
@@ -1222,9 +1245,6 @@ export function TradeChart(props: Props) {
   const missing = diagnostics.filter(d => d.status === "missing").length;
   const outside = diagnostics.filter(d => d.status === "price-outside").length;
   const inspected = diagnostics.find(d => d.execution.id === inspectedId);
-  const last =
-    (visibleWindow && data.findLast((bar) => bar.time <= visibleWindow.to)) ||
-    data[data.length - 1];
   const coverageLabel = loading ? "Loading execution comparison" : executionDiagnosticSummary(diagnostics);
   const historyWarning =
     !!historyState?.error ||
@@ -1312,28 +1332,13 @@ export function TradeChart(props: Props) {
           </button>
         </div>
       </div>
-      <div className="ws-ohlc">
-        {last ? (
-          <>
-            <span>
-              O <b>{last.open.toFixed(2)}</b>
-            </span>
-            <span>
-              H <b>{last.high.toFixed(2)}</b>
-            </span>
-            <span>
-              L <b>{last.low.toFixed(2)}</b>
-            </span>
-            <span>
-              C{" "}
-              <b className={last.close >= last.open ? "positive" : "negative"}>
-                {last.close.toFixed(2)}
-              </b>
-            </span>
-          </>
-        ) : (
-          <span>No completed candles</span>
-        )}
+      <div className="ws-ohlc" ref={ohlcHost}>
+        {/* The legend controller owns these text slots, classes and hidden flags. */}
+        <span hidden>O <b data-ohlc="open" /></span>
+        <span hidden>H <b data-ohlc="high" /></span>
+        <span hidden>L <b data-ohlc="low" /></span>
+        <span hidden>C <b data-ohlc="close" /></span>
+        <span data-ohlc-empty>No completed candles</span>
         <span className="ws-indicator-legend">
           {props.preferences.averages.map((n, i) => (
             <span

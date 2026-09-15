@@ -73,7 +73,8 @@ test("all arrangements resize independently, keyboard limits and reset work, and
 test("label toggle keeps selectable markers, works in fullscreen, and removes plot logos", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: "Hide execution labels", exact: true }).click();
-  for (const chart of await page.locator(".ws-chart").all()) await expect(chart).toHaveAttribute("data-label-mode", "compact");
+  await expect(page.locator(".ws-chart").first()).toHaveAttribute("data-label-mode", "compact");
+  for (const chart of (await page.locator(".ws-chart").all()).slice(1)) await expect(chart).toHaveAttribute("data-label-mode", "labels");
   const overlay = page.locator(".ws-chart-overlay").first();
   await page.waitForTimeout(250);
   const point = await overlay.evaluate((el: HTMLCanvasElement) => {
@@ -87,7 +88,7 @@ test("label toggle keeps selectable markers, works in fullscreen, and removes pl
   await page.getByLabel("Close execution details").click();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
   await expect(page.locator(".ws-fullscreen-credit")).toBeVisible();
-  await page.locator(".ws-chart-fullscreen").getByRole("button", { name: "Show execution labels", exact: true }).click();
+  await page.locator(".ws-chart-fullscreen").getByRole("button", { name: "Show execution labels chart-1", exact: true }).click();
   await expect(page.locator(".ws-chart-fullscreen")).toHaveAttribute("data-label-mode", "labels");
   await expect(page.locator(".ws-chart-canvas a")).toHaveCount(0);
 });
