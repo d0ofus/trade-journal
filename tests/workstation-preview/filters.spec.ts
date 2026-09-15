@@ -1,3 +1,4 @@
+import { showTakeaways } from "./review-helpers";
 import { expect, test, type Page } from "@playwright/test";
 
 async function open(page: Page, query = "") {
@@ -24,10 +25,11 @@ test("filter drafts survive collapse and Apply changes the selected chart and re
   await expect(page.locator(".ws-trade-title h2")).toContainText("TSLA");
   expect(new URL(page.url()).searchParams.get("groupKey")).toBe("demo-tsla");
   await expect(page.locator(".ws-trade-card")).toHaveCount(1);
-  await page.getByPlaceholder("What will you repeat or change?").fill("TSLA filtered review");
+  await showTakeaways(page);
+  await page.getByRole("textbox", { name: "Takeaways", exact: true }).fill("TSLA filtered review");
   await expect(page.locator(".ws-journal-save")).toContainText("Saved on this device");
-  await page.reload();
-  await expect(page.getByPlaceholder("What will you repeat or change?")).toHaveValue("TSLA filtered review");
+  await page.reload(); await showTakeaways(page);
+  await expect(page.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveText("TSLA filtered review");
   await expect(page.locator(".ws-filter-expansion")).toBeVisible();
 });
 
@@ -74,7 +76,7 @@ test("theme and rail preferences preserve chart ranges and provide bounded filte
   await expect(page.locator(".workstation")).toHaveClass(/ws-light/);
   await expect(page.locator(".application-shell")).toHaveAttribute("data-theme", "light");
   await page.screenshot({ path: "screenshots/workstation-shell-filters/desktop-light-filters.png" });
-  await page.reload();
+  await page.reload(); await showTakeaways(page);
   await expect(page.locator(".workstation")).toHaveClass(/ws-light/);
   await expect(page.locator(".app-navigation")).toHaveClass(/is-expanded/);
   await page.getByTitle("Appearance", { exact: true }).click();

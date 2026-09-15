@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   AutoscaleInfo,
   CandlestickSeries,
@@ -72,6 +72,7 @@ type Props = {
   active: boolean;
   onActive: () => void;
   onInterval: (interval: Interval) => void;
+  onPanel?: (patch: Partial<ChartPanel>) => void;
   onDrawing: (drawing: Drawing) => void;
   onSelect: (id: string | null) => void;
   onExecution: (id: string) => void;
@@ -94,6 +95,11 @@ import { ExecutionDetails } from "./execution-details";
 import { createOhlcLegend } from "./ohlc-legend";
 import { hasExtendedSession, SessionBackground } from "./session-background";
 
+import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "@/lib/workstation/before-entry";
+import { executionColors } from "@/lib/workstation/comparison";
+import { createBenchmarkLayer, benchmarkStyle } from "./benchmark-layer";
+import { useBenchmark } from "./use-benchmark";
+
 const asTime = (time: number) => time as UTCTimestamp;
 
 export function TradeChart(props: Props) {
@@ -101,6 +107,10 @@ export function TradeChart(props: Props) {
   const ohlcHost = useRef<HTMLDivElement>(null);
   const ohlcLegend = useRef<ReturnType<typeof createOhlcLegend> | null>(null);
   const ohlcContext = useRef("");
+  const benchmarkHost = useRef<HTMLDivElement>(null);
+  const benchmarkLayer = useRef<ReturnType<typeof createBenchmarkLayer> | null>(null);
+  const beforeEntryView = useRef<{ range: { from: number; to: number }; candles: Candle[]; interval: Interval; context: string } | null>(null);
+  const wasBeforeEntry = useRef(false);
   const sessionBackground = useRef<SessionBackground | null>(null);
   const host = useRef<HTMLDivElement>(null),
     overlay = useRef<HTMLCanvasElement>(null),
@@ -183,12 +193,13 @@ export function TradeChart(props: Props) {
   } | null>(null);
   const fitRef = useRef<() => void>(() => {}),
     dataReady = useRef(false);
-  const data = completedCandles(
-    result.candles,
-    props.panel.interval,
-    props.replay,
-    result.session,
-  );
+  const entryBoundary = beforeEntryBoundary(props.trade, props.panel.interval, result.session);
+  const beforeEntry = !!props.panel.beforeEntry && entryBoundary !== null;
+  const beforeEntryActive = useRef(beforeEntry); beforeEntryActive.current = beforeEntry;
+  const data = useMemo(() => {
+    const completed = completedCandles(result.candles, props.panel.interval, props.replay, result.session);
+    return beforeEntry ? beforeEntryCandles(completed, props.trade, props.panel.interval, result.session) : completed;
+  }, [result.candles, result.session, props.panel.interval, props.replay, props.trade, beforeEntry]);
   bars.current = data;
 
   useEffect(() => {
@@ -252,7 +263,7 @@ export function TradeChart(props: Props) {
       props.panel.interval,
       // Restore the saved viewport itself. Recentring default context here would
       // expand a fully cached view and fetch an unnecessary new edge on reload.
-      requested?.range ? { from: requested.range.from, to: Math.min(requested.range.to, requested.range.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(props.trade, props.panel.interval, context),
+      requested?.range && !(intervalContext && beforeEntryActive.current) ? { from: requested.range.from, to: Math.min(requested.range.to, requested.range.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(props.trade, props.panel.interval, context),
       (state) => {
         setHistoryState(state);
         dataReady.current = state.result.candles.length > 0 || (!state.loading && !state.failed);
@@ -376,6 +387,7 @@ export function TradeChart(props: Props) {
     });
     chart.current = api;
     series.current = candles;
+    if (benchmarkHost.current) benchmarkLayer.current = createBenchmarkLayer(api, benchmarkHost.current);
     const x = (time: number) => {
       const list = bars.current;
       if (!list.length) return null;
@@ -418,13 +430,15 @@ export function TradeChart(props: Props) {
       y: (price) => candles.priceToCoordinate(price),
       drawings: [
         ...visibleDrawings(
-          latest.current.drawings,
+          beforeEntryActive.current ? beforeEntryDrawings(latest.current.drawings, bars.current, latest.current.panel.interval, historyResult.current.session) : latest.current.drawings,
           p.panel.id,
           latest.current.replay,
         ).filter((d) => d.id !== draft.current?.id),
-        ...(draft.current ? [draft.current] : []),
+        ...(draft.current ? beforeEntryActive.current ? beforeEntryDrawings([draft.current], bars.current, latest.current.panel.interval, historyResult.current.session) : [draft.current] : []),
       ],
-      trade: latest.current.trade,
+      trade: beforeEntryActive.current ? { ...latest.current.trade, executions: [] } : latest.current.trade,
+      executionColors: executionColors(latest.current.preferences.executionColors),
+      beforeEntry: beforeEntryActive.current,
       candles: bars.current,
       interval: latest.current.panel.interval,
       labels: latest.current.labelMode,
@@ -500,7 +514,7 @@ export function TradeChart(props: Props) {
       const direction =
         range.from < threshold && !session.state.messages.older
           ? "older"
-          : latest.current.replay === null &&
+          : !beforeEntryActive.current && latest.current.replay === null &&
               range.to > bars.current.length - 1 - threshold &&
               !session.state.messages.newer
             ? "newer"
@@ -511,12 +525,13 @@ export function TradeChart(props: Props) {
       }
     };
     const rangeChanged = () => {
+      if (!changingData.current) benchmarkLayer.current?.refresh();
       paint();
       clearTimeout(historyTimer);
       historyTimer = setTimeout(() => {
         const range = api.timeScale().getVisibleRange();
         const logical = api.timeScale().getVisibleLogicalRange();
-        if (logical) setVisibleBars(logical.to - logical.from);
+        setVisibleBars(logical ? logical.to - logical.from : 0);
         if (
           range &&
           typeof range.from === "number" &&
@@ -530,6 +545,7 @@ export function TradeChart(props: Props) {
               : window,
           );
         }
+        if (!range) setVisibleWindow(null);
         checkHistory.current();
       }, 180);
     };
@@ -550,6 +566,7 @@ export function TradeChart(props: Props) {
       )
         return;
       ohlcLegend.current?.inspect(event.seriesData.get(candles));
+      benchmarkLayer.current?.inspect(event.time);
       if (!latest.current.preferences.linked) return;
       window.dispatchEvent(
         new CustomEvent("workstation-crosshair", {
@@ -584,6 +601,7 @@ export function TradeChart(props: Props) {
           api.setCrosshairPosition(bar.close, asTime(bar.time), candles);
           // Lightweight Charts does not emit crosshair events for synthetic positions.
           ohlcLegend.current?.inspect(bar);
+          benchmarkLayer.current?.inspect(bar.time);
         } else api.clearCrosshairPosition();
       } finally {
         syncing = false;
@@ -628,6 +646,11 @@ export function TradeChart(props: Props) {
       setReload((n) => n + 1);
     };
     requestFit.current = () => {
+      if (beforeEntryActive.current) {
+        const size = api.timeScale().getVisibleLogicalRange();
+        api.timeScale().setVisibleLogicalRange({ from: bars.current.length - Math.max(30, size ? size.to - size.from : 120), to: bars.current.length + 2 });
+        return;
+      }
       focusedWindow.current = null; focusedTarget.current = null;
       const p = latest.current;
       if (
@@ -743,9 +766,11 @@ export function TradeChart(props: Props) {
         const frozen = options(true, light),
           snapshotBars = [...bars.current],
           prefs = latest.current.preferences;
-        const header = 30, footer = 75;
+        const frozenBenchmark = benchmarkLayer.current?.snapshot();
+        const header = frozenBenchmark?.symbol ? 48 : 30, footer = 75;
         const width = frame?.width ?? dimensions.current.width, height = frame ? Math.max(60, frame.height - header - footer) : dimensions.current.height;
-        const frozenTrade = latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
+        const frozenBeforeEntry = beforeEntryActive.current;
+        const frozenTrade = frozenBeforeEntry ? { ...latest.current.trade, executions: [] } : latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
         const priceRange = candles.priceScale().getVisibleRange();
         const container = document.createElement("div");
         container.style.cssText = `position:fixed;left:-100000px;top:0;width:${width * scale}px;height:${height * scale}px;`;
@@ -789,6 +814,10 @@ export function TradeChart(props: Props) {
             lastValueVisible: false,
           });
           cs.setData(snapshotBars.map((b) => ({ ...b, time: asTime(b.time) })));
+          if (frozenBenchmark?.candles.length) {
+            const comparison = clone.addSeries(CandlestickSeries, benchmarkStyle(light));
+            comparison.setData(frozenBenchmark.candles.map(b => ({ ...b, time: asTime(b.time) })));
+          }
           const exportBackground = new SessionBackground();
           exportBackground.setData(snapshotBars, frozenInterval, frozenHistory.session, light);
           cs.attachPrimitive(exportBackground);
@@ -856,12 +885,13 @@ export function TradeChart(props: Props) {
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
           ctx.font = "600 13px system-ui";
           ctx.fillText(
-            `${frozenTrade.symbol} / ${frozenInterval} · ${frozenTrade.direction} · UTC${frozen.replay !== null ? " · REPLAY" : ""}`,
+            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · UTC${frozen.replay !== null ? " · REPLAY" : ""}`,
             16,
             21,
           );
           ctx.fillStyle = light ? "#526077" : "#8996ad";
           ctx.font = "10px system-ui";
+          if (frozenBenchmark?.symbol) { ctx.fillStyle = light ? "#2563eb" : "#60a5fa"; ctx.fillText(frozenBenchmark.legend, 16, 38, width - 32); ctx.fillStyle = light ? "#526077" : "#8996ad"; }
           const comparisons = frozenTrade.executions.filter(e => frozen.replay === null || e.time <= frozen.replay).map(e => diagnoseExecution(e, snapshotBars, frozenInterval, frozenHistory.session));
           const lines = [
             visibilitySummary(executionVisibility({ ...exportOptions, executions: frozenTrade.executions })),
@@ -893,6 +923,8 @@ export function TradeChart(props: Props) {
       sessionBackground.current = null;
       ohlcLegend.current?.reset();
       ohlcLegend.current = null;
+      benchmarkLayer.current?.dispose();
+      benchmarkLayer.current = null;
       api.remove();
       chart.current = null;
       series.current = null;
@@ -925,7 +957,15 @@ export function TradeChart(props: Props) {
         : null;
     wasReplaying.current = props.replay !== null;
     if (props.replay === null) beforeReplay.current = null;
+    const entryContext = `${props.trade.id}:${props.trade.timeInterpretationVersion}:${props.panel.interval}:${JSON.stringify(result.session)}`;
+    if (!wasBeforeEntry.current && beforeEntry && previousLogical) beforeEntryView.current = { range: previousLogical, candles: renderedData.current, interval: props.panel.interval, context: entryContext };
+    const entryRestore = wasBeforeEntry.current && !beforeEntry && beforeEntryView.current?.context === entryContext ? beforeEntryView.current : null;
+    const entryStart = beforeEntry && (!wasBeforeEntry.current || changedInterval || changedTrade);
+    wasBeforeEntry.current = beforeEntry;
+    if (!beforeEntry) beforeEntryView.current = null;
     changingData.current = true;
+    // Remove old comparison timestamps before primary history contracts for replay.
+    benchmarkLayer.current?.update({ primary: [], benchmark: [], symbol: "", light: props.preferences.theme === "light" });
     cs.setData(data.map((b) => ({ ...b, time: asTime(b.time) })));
     sessionBackground.current?.setData(data, props.panel.interval, result.session, props.preferences.theme === "light");
     const volume = api.addSeries(HistogramSeries, {
@@ -1020,6 +1060,10 @@ export function TradeChart(props: Props) {
         .setVisibleLogicalRange(
           preserveHistoryViewport(renderedData.current, data, previousLogical),
         );
+    if (entryStart && data.length) {
+      const width = Math.max(20, previousLogical ? previousLogical.to - previousLogical.from : 120);
+      api.timeScale().setVisibleLogicalRange({ from: data.length - 1 - width, to: data.length + 2 });
+    } else if (entryRestore) api.timeScale().setVisibleLogicalRange(preserveHistoryViewport(entryRestore.candles, data, entryRestore.range));
     currentInterval.current = props.panel.interval;
     currentTrade.current = props.trade.id;
     lastData.current = result.candles;
@@ -1041,6 +1085,7 @@ export function TradeChart(props: Props) {
     props.panel.interval,
     props.preferences.volume,
     props.preferences.averages,
+    beforeEntry,
     props.replay,
     loading,
     failure,
@@ -1049,7 +1094,12 @@ export function TradeChart(props: Props) {
     if (loading || failure || changingData.current) return;
     // Reconcile after setData; hover itself never enters React or the data effects.
     ohlcLegend.current?.reconcile(renderedData.current, visibleWindow?.to);
-  }, [result.candles, props.panel.interval, props.replay, visibleWindow, loading, failure]);
+  }, [result.candles, props.panel.interval, props.replay, beforeEntry, visibleWindow, loading, failure]);
+  const benchmark = useBenchmark(props.adapter, props.trade, props.panel, visibleWindow ?? props.initialRange ?? null);
+  useEffect(() => {
+    if (!chart.current || loading || changingData.current) return;
+    benchmarkLayer.current?.update({ primary: renderedData.current, benchmark: benchmark.candles, symbol: props.panel.benchmark === "off" ? "" : props.panel.benchmark ?? "", light: props.preferences.theme === "light" });
+  }, [benchmark.candles, result.candles, props.panel.benchmark, props.panel.interval, props.preferences.theme, props.preferences.volume, props.preferences.averages, props.replay, beforeEntry, loading, failure]);
   useEffect(() => {
     const light = props.preferences.theme === "light";
     sessionBackground.current?.setTheme(light);
@@ -1075,6 +1125,8 @@ export function TradeChart(props: Props) {
     props.selected,
     props.selectedExecution,
     props.labelMode,
+    props.preferences.executionColors,
+    beforeEntry,
     props.replay,
   ]);
   useEffect(() => {
@@ -1253,7 +1305,7 @@ export function TradeChart(props: Props) {
     if (click.execution) { setInspectedId(click.execution); props.onExecution(click.execution); }
     else if (click.target) props.onDateClick(click.target);
   };
-  const visibleExecutions = props.trade.executions.filter(
+  const visibleExecutions = (beforeEntry ? [] : props.trade.executions).filter(
     (e) => props.replay === null || e.time <= props.replay,
   );
   const diagnostics = loading ? [] : visibleExecutions.map(e => diagnoseExecution(e, data, props.panel.interval, result.session));
@@ -1299,6 +1351,10 @@ export function TradeChart(props: Props) {
               <option key={i}>{i}</option>
             ))}
           </select>
+          <select aria-label={`Comparison ${props.panel.id}`} value={props.panel.benchmark ?? "off"} onChange={e => props.onPanel?.({ benchmark: e.target.value as ChartPanel["benchmark"] })}>
+            <option value="off">Off</option><option>SPY</option><option>QQQ</option>
+          </select>
+          <button className={beforeEntry ? "active" : ""} aria-label={`Before entry ${props.panel.id}`} aria-pressed={beforeEntry} disabled={entryBoundary === null} title={entryBoundary === null ? "Resolve the execution time and candle session before using Before entry" : "Exclude the first execution candle and all later candles"} onClick={() => props.onPanel?.({ beforeEntry: !props.panel.beforeEntry })}>Before entry</button>
           <span className="ws-session">
             {props.panel.interval === "5m" ? "EXECUTION" : "CONTEXT"}
           </span>
@@ -1348,6 +1404,29 @@ export function TradeChart(props: Props) {
           </button>
         </div>
       </div>
+      <div className="ws-benchmark-legend" ref={benchmarkHost} />
+      {props.panel.benchmark && props.panel.benchmark !== "off" && benchmark.error && <button className="ws-benchmark-error" onClick={benchmark.retry}>{benchmark.error}</button>}
+      {beforeEntry && !loading && !data.length && <div className="ws-before-entry-empty" role="status">No completed candles before entry</div>}
+      <div
+        className={`ws-plot ${props.tool !== "cursor" ? "ws-drawing" : ""}`}
+        onWheelCapture={() => {
+          focusedWindow.current = null;
+          focusedTarget.current = null;
+          clickGesture.current = null;
+          autoPages.current = 3;
+          props.onActive();
+        }}
+        onPointerDownCapture={down}
+        onPointerMoveCapture={move}
+        onPointerUpCapture={clickDate}
+        onPointerUp={up}
+        onPointerCancel={() => {
+          clickGesture.current = null;
+          drag.current = null;
+          draft.current = null;
+          paintRef.current();
+        }}
+      >
       <div className="ws-ohlc" ref={ohlcHost}>
         {/* The legend controller owns these text slots, classes and hidden flags. */}
         <span hidden>O <b data-ohlc="open" /></span>
@@ -1369,26 +1448,6 @@ export function TradeChart(props: Props) {
           ))}
         </span>
       </div>
-      <div
-        className={`ws-plot ${props.tool !== "cursor" ? "ws-drawing" : ""}`}
-        onWheelCapture={() => {
-          focusedWindow.current = null;
-          focusedTarget.current = null;
-          clickGesture.current = null;
-          autoPages.current = 3;
-          props.onActive();
-        }}
-        onPointerDownCapture={down}
-        onPointerMoveCapture={move}
-        onPointerUpCapture={clickDate}
-        onPointerUp={up}
-        onPointerCancel={() => {
-          clickGesture.current = null;
-          drag.current = null;
-          draft.current = null;
-          paintRef.current();
-        }}
-      >
         <div ref={host} className="ws-chart-canvas" />
         <canvas ref={overlay} className="ws-chart-overlay" />
         {!!historyState?.loading && !!result.candles.length && <div className="ws-history-progress" role="status">Loading additional history</div>}
@@ -1402,7 +1461,7 @@ export function TradeChart(props: Props) {
             </button>
           </div>
         )}
-        {!loading && !failure && !data.length && (
+        {!beforeEntry && !loading && !failure && !data.length && (
           <div className="ws-chart-state">
             {props.replay !== null
               ? "No completed candles at this replay time."

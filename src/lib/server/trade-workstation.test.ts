@@ -49,6 +49,12 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("escapes literal markup in older plain-text takeaways without changing stored notes", async () => {
+    const key = await fixture();
+    await prisma.closedTradeNote.update({ where: { groupKey: key }, data: { lesson: "Keep <strong>literal</strong> & text" } });
+    expect((await readWorkstationDocument(key)).review.takeaway).toBe("<p>Keep &lt;strong&gt;literal&lt;/strong&gt; &amp; text</p>");
+    expect((await prisma.closedTradeNote.findUniqueOrThrow({ where: { groupKey: key } })).lesson).toBe("Keep <strong>literal</strong> & text");
+  });
   it("saves chart views independently and rejects stale revisions without changing reviews", async () => {
     const key = await fixture();
     const before = await readWorkstationDocument(key);
@@ -63,6 +69,24 @@ describe("workstation persistence against isolated PostgreSQL", () => {
     expect(await readWorkstationDocument(key)).toEqual(before);
     await prisma.closedTrade.update({ where: { groupKey: key }, data: { isStale: true } });
     expect((await readTradeView(key)).view?.arrangement).toBe("top");
+  });
+  it("round-trips Notion content once, preserves legacy fields, and rejects stale template saves", async () => {
+    const key = await fixture();
+    const before = await readWorkstationDocument(key);
+    const notion = { version: 1 as const, properties: { marketRegime: "Rotation", sectorProxy: "IHF / XLV", plannedEntry: 20, plannedStop: 19, typeOfReview: ["Sector Thematic", "sector thematic"], idealExecutionOptions: ["Custom entry"] }, sections: { entry: { html: "<p><strong>Breakout</strong></p>", evidenceIds: [] } }, analysis: { fundamentals: "<ul><li>Revenue</li></ul>" } };
+    const saved = await saveWorkstationDocument(key, { ...before, review: { ...before.review, notion, takeaway: "<p><u>Patience</u></p>" } }, before.revision);
+    const loaded = await readWorkstationDocument(key);
+    expect(loaded.review.notion?.properties).toMatchObject({ marketRegime: "Rotation", sectorProxy: "IHF / XLV", plannedEntry: 20, plannedStop: 19, typeOfReview: ["Sector Thematic"], idealExecutionOptions: ["Custom entry"] });
+    expect(loaded.review.notion?.sections).toEqual(notion.sections);
+    expect(loaded.review.setup).toBe(before.review.setup);
+    const note = await prisma.closedTradeNote.findUniqueOrThrow({ where: { groupKey: key } });
+    expect(JSON.parse(note.workstationJson!).review.notion).toBeUndefined();
+    const entry = await prisma.journalEntry.findFirstOrThrow({ where: { links: { some: { targetType: "CLOSED_TRADE", targetId: key } } } });
+    expect(entry.stopLossPercent).toBe(5);
+    expect(entry.templateData).toMatchObject({ properties: { marketRegime: "Rotation" } });
+    expect((entry.templateData as { properties: object }).properties).not.toHaveProperty("plannedEntry");
+    await expect(saveWorkstationDocument(key, before, before.revision)).rejects.toBeInstanceOf(WorkstationError);
+    expect(saved.revision).toBe(loaded.revision);
   });
   it("keeps selected deep links out of strict filtered results while allowing explicit journal links", async () => {
     const key = await fixture(false);

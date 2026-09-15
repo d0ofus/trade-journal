@@ -1,3 +1,4 @@
+import { showTakeaways } from "./review-helpers";
 import { expect, test, type Page, type Locator } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 const prefsKey = "execution-lab:workstation:preferences:demo:v1";
@@ -22,7 +23,8 @@ async function arrangement(page: Page, value: string) { await page.getByRole("bu
 
 test("dragging three-chart divisions preserves chart instances, ranges, drawings and review drafts", async ({ page }) => {
   const { errors, requests } = await open(page);
-  await page.getByPlaceholder("What will you repeat or change?").fill("Resize without losing my review.");
+  await showTakeaways(page);
+  await page.getByRole("textbox", { name: "Takeaways", exact: true }).fill("Resize without losing my review.");
   await page.waitForTimeout(500);
   const before = await sizes(page), range = await windows(page);
   const element = await page.locator(".ws-chart-canvas").first().elementHandle();
@@ -33,7 +35,7 @@ test("dragging three-chart divisions preserves chart instances, ranges, drawings
   await page.waitForTimeout(500);
   expect(await windows(page)).toEqual(range);
   expect(await element!.evaluate(el => el === document.querySelector(".ws-chart-canvas"))).toBe(true);
-  await expect(page.getByPlaceholder("What will you repeat or change?")).toHaveValue("Resize without losing my review.");
+  await expect(page.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveText("Resize without losing my review.");
   const stored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).chartSizing, prefsKey);
   await page.reload(); await expect(page.locator(".ws-chart-state")).toHaveCount(0);
   expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).chartSizing, prefsKey)).toEqual(stored);

@@ -1,3 +1,5 @@
+import { emptyNotionReview } from "./notion-template";
+import { calculateMarketMetrics, exchangeDate, previousSession, unavailableMetrics } from "./market-metrics";
 import timingSnapshot from "./timing-candles.json";
 import { isRegularUsSession } from "./chart-session";
 import { aggregateCandles } from "./math";
@@ -62,12 +64,36 @@ export function initialDemoDocument(trade: Trade): TradeDocument {
     { id: "demo-level", tool: "ray", points: [{ time: trade.openTime - 1500, price: trade.entry - .8 }], text: "Opening range high", color: "#a5b4fc", width: 1.5, dashed: true, locked: false, hidden: false, panel: null, createdAt: trade.openTime - 1500 },
     { id: "demo-note", tool: "text", points: [{ time: trade.openTime + 2700, price: trade.entry + 3.4 }], text: "Reclaim + volume confirmation", color: "#c4b5fd", width: 1.5, dashed: false, locked: false, hidden: false, panel: "chart-1", createdAt: trade.openTime + 2700 },
   ];
+  doc.review.notion = emptyNotionReview();
   return doc;
 }
 export const DEMO_PREFIX = "execution-lab:workstation:demo:v1:";
 export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
   return {
     mode: "demo",
+    async benchmarkCandles(symbol, trade, interval, signal, range) {
+      signal.throwIfAborted();
+      const source = trade.id === "demo-mu-timing" ? timingSnapshot.candles : demoCandles(trade);
+      const base = symbol === "SPY" ? 500 : 450;
+      const candles = aggregateCandles(source, interval).filter(c => c.time >= range.from && c.time <= range.to).map(c => {
+        const open = base + Math.sin(c.time / 70000) * 3, close = open + Math.sin(c.time / 11000) * .8;
+        return { time: c.time, open, close, high: Math.max(open, close) + .4, low: Math.min(open, close) - .4, volume: 100000 };
+      });
+      return { candles, warning: "Synthetic benchmark demonstration", source: "Demo" };
+    },
+    async metrics(trade, signal) {
+      signal.throwIfAborted();
+      const reference = previousSession(exchangeDate(trade.openTime));
+      if (!reference) return unavailableMetrics(trade.symbol, trade.currency, "Demo session unavailable");
+      const rows: Candle[] = [];
+      let cursor = reference;
+      for (let i = 0; i < 250; i++) {
+        const close = trade.entry * (1 + Math.sin(i / 30) * .1);
+        rows.unshift({ time: cursor.open, open: close, high: close * 1.02, low: close * .98, close, volume: 1000000 });
+        const previous = previousSession(cursor.date); if (!previous) break; cursor = previous;
+      }
+      return calculateMarketMetrics(trade.symbol, trade.currency, reference.date, rows, "Synthetic demo metrics");
+    },
     async loadView(id) { const raw = localStorage.getItem(DEMO_PREFIX + "view:" + id); return raw ? JSON.parse(raw) : { revision: 0, updatedAt: null, view: null }; },
     async saveView(id, view, expectedRevision) { const key = DEMO_PREFIX + "view:" + id, raw = localStorage.getItem(key), previous = raw ? JSON.parse(raw) : null; if ((previous?.revision ?? 0) !== expectedRevision) throw new Error("Chart view changed in another tab. Your local view is preserved."); const next = { view, revision: expectedRevision + 1, updatedAt: new Date().toISOString() }; localStorage.setItem(key, JSON.stringify(next)); return next; },
     async load(id) { const trade = trades.find(t => t.id === id); if (!trade) throw new Error("Demo trade not found"); const raw = localStorage.getItem(DEMO_PREFIX + id); if (!raw) return initialDemoDocument(trade); const doc = JSON.parse(raw) as TradeDocument; if (doc.schema !== 1) throw new Error("Unsupported saved demo format. Export your local data before resetting."); return doc; },

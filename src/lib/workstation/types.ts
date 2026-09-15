@@ -81,6 +81,7 @@ export type Drawing = {
   createdAt: number;
 };
 export type Review = {
+  notion?: import("./notion-template").NotionReview;
   setup: string;
   execution: string;
   takeaway: string;
@@ -115,8 +116,9 @@ export type TradeDocument = {
   journalUpdatedAt?: string | null;
   legacy?: unknown;
 };
-export type ChartPanel = { id: string; interval: Interval };
+export type ChartPanel = { id: string; interval: Interval; benchmark?: "off" | "SPY" | "QQQ"; beforeEntry?: boolean };
 export type WorkspacePreferences = {
+  executionColors?: { buy: string; sell: string };
   chartSession?: "auto" | "regular" | "extended";
   theme: "dark" | "light";
   panels: ChartPanel[];
@@ -155,6 +157,8 @@ export type CandleResult = {
 };
 export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown"; aggregation?: string };
 export interface WorkstationAdapter {
+  benchmarkCandles?: (symbol: "SPY" | "QQQ", trade: Trade, interval: Interval, signal: AbortSignal, range: { from: number; to: number }, mode?: "cache" | "fill") => Promise<CandleResult>;
+  metrics?: (trade: Trade, signal: AbortSignal) => Promise<import("./market-metrics").MarketMetrics>;
   loadView?(id: string): Promise<import("./trade-view").SavedTradeView>;
   saveView?(id: string, view: import("./trade-view").TradeView, expectedRevision: number): Promise<import("./trade-view").SavedTradeView>;
   cachedCandles?: WorkstationAdapter["candles"];

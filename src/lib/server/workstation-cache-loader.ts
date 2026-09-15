@@ -6,11 +6,11 @@ import type { WorkstationCandlePolicy } from "./workstation-candle-policy";
 import { isRegularUsSession } from "@/lib/workstation/chart-session";
 import { missingRanges, unionRanges, type CandleRange, type CandleTimings } from "@/lib/workstation/candle-ranges";
 import { validateCandles } from "./workstation-cache-codec";
-import { CacheBudgetError, cacheBudgetAvailable, claimCacheLease, markForegroundRequest, persistCompactCandles, protectTradeCache, readCompactCandles, releaseCacheLease, seriesKey } from "./workstation-cache-store";
+import { CacheBudgetError, CachePriorityError, cacheBudgetAvailable, claimCacheLease, markForegroundRequest, persistCompactCandles, protectTradeCache, readCompactCandles, releaseCacheLease, seriesKey } from "./workstation-cache-store";
 import { CacheBusyError, CacheProviderError, fetchCompactCandles } from "./workstation-cache-provider";
 import { alpacaFailureSummary } from "./alpaca-candle-error";
 
-export type CompactInput = { symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete"; background?: boolean; tradeWindow?: boolean; signal?: AbortSignal };
+export type CompactInput = { supplementary?: boolean; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete"; background?: boolean; tradeWindow?: boolean; signal?: AbortSignal };
 const days: Record<CandleTimeframe, number> = { "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 };
 export function boundedCacheRanges(range: CandleRange, timeframe: CandleTimeframe) {
   const result: CandleRange[] = [];
@@ -54,7 +54,7 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
     warnings: [...(derived ? ["Hourly candles aggregated from Alpaca 5m bars, aligned to the regular-session open."] : []), ...warnings, ...(snapshot.corrupt ? ["Damaged cache data was excluded and will be fetched again."] : [])] });
   const readOnly = range.to <= range.from || input.mode === "cache";
   input.signal?.throwIfAborted();
-  const lease = readOnly ? null : await claimCacheLease(`series:${seriesKey(series)}`, 120_000);
+  const lease = readOnly ? null : await claimCacheLease(`series:${seriesKey(series)}`, 120_000, !input.background);
   try {
     // One authoritative read after acquiring ownership; cache probes never take a lease.
     snapshot = await read();
@@ -65,19 +65,22 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
     if (!lease) { snapshot.cache.retryAfterMs = 1000; return makeResult(); }
     if (!input.background) await markForegroundRequest();
     const windows = gaps.flatMap(r => boundedCacheRanges(r, derived ? "5m" : input.timeframe));
-    const limit = input.mode === "fill" || input.background ? 1 : 8;
+    const limit = input.mode === "fill" || input.background && !input.supplementary ? 1 : 8;
     const deadline = Date.now() + 65_000;
     for (const window of windows.slice(0, limit)) {
       if (Date.now() > deadline) break;
       input.signal?.throwIfAborted();
       const budgetStarted = performance.now();
-      const available = await cacheBudgetAvailable().finally(() => { timings.storageCheckMs! += performance.now() - budgetStarted; });
+      // Supplementary requests must reach the foreground-aware provider queue
+      // before doing expensive database-size accounting. Their persistence path
+      // enforces the stricter warning/budget limits and can return temporary bars.
+      const available = input.supplementary || await cacheBudgetAvailable().finally(() => { timings.storageCheckMs! += performance.now() - budgetStarted; });
       if (!available) {
         warnings.push("Storage limit reached—this history was not saved. Saved candles are preserved; automatic preparation is paused.");
         snapshot.cache.persistencePaused = true;
         // Foreground browsing remains possible without growing the database.
-        if (!input.background) {
-          const incoming = await fetchRange(window, false);
+        if (!input.background || input.supplementary) {
+          const incoming = await fetchRange(window, !!input.background);
           snapshot.candles = [...new Map([...snapshot.candles, ...incoming].map(c => [c.time, c])).values()].sort((a, b) => a.time - b.time).slice(0, input.limit);
           snapshot.cache.temporary = [window]; fetched = true;
         }
@@ -86,12 +89,12 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
       const incoming = await fetchRange(window, !!input.background);
       input.signal?.throwIfAborted();
       const persistStarted = performance.now();
-      try { await persistCompactCandles(series, window, incoming, lease, !!input.tradeWindow); }
+      try { await persistCompactCandles(series, window, incoming, lease, !!input.tradeWindow, !!input.supplementary); }
       catch (error) {
         if (!(error instanceof CacheBudgetError)) throw error;
-        warnings.push("Storage limit reached—this history was not saved. Saved candles are preserved; automatic preparation is paused.");
+        if (!(error instanceof CachePriorityError)) warnings.push("Storage limit reached—this history was not saved. Saved candles are preserved; automatic preparation is paused.");
         snapshot.candles = [...new Map([...snapshot.candles, ...incoming].map(c => [c.time, c])).values()].sort((a, b) => a.time - b.time).slice(0, input.limit);
-        snapshot.cache.persistencePaused = true;
+        if (!(error instanceof CachePriorityError)) snapshot.cache.persistencePaused = true;
         snapshot.cache.temporary = [window]; fetched = true; return makeResult();
       }
       finally { timings.persistenceMs += performance.now() - persistStarted; }

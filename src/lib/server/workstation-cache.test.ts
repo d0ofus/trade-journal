@@ -15,6 +15,7 @@ import { diagnoseExecution } from "@/lib/workstation/execution-diagnostics";
 import { candleIdentity } from "@/lib/workstation/regular-hours";
 import type { CandleSession } from "@/lib/workstation/types";
 import * as workstationRead from "./trade-workstation";
+import * as cacheStore from "./workstation-cache-store";
 
 const from = Date.parse("2024-09-03T12:00:00Z") / 1000;
 const range = { from, to: from + 3600 }, source = "workstation:v1:alpaca:sip:raw:extended";
@@ -32,6 +33,14 @@ beforeEach(async () => {
 afterEach(async () => { await prisma.workstationCandleChunk.deleteMany(); await prisma.workstationCandleLease.deleteMany(); await prisma.workstationCandleJob.deleteMany(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("compact candle cache on isolated PostgreSQL", () => {
+  it("lets supplementary work enter the provider queue before expensive storage accounting", async () => {
+    const preflight = vi.spyOn(cacheStore, "cacheBudgetAvailable");
+    const result = await loadWorkstationCandles({ ...input, purpose: "benchmark", mode: "complete" });
+    expect(result.candles).toHaveLength(1);
+    expect(preflight).not.toHaveBeenCalled();
+    expect(result.cache?.timings?.storageCheckMs).toBe(0);
+    expect(await prisma.workstationCandleChunk.findFirst({ where: { symbol: series.symbol } })).toMatchObject({ supplementary: true, tradeWindow: false });
+  });
   it("preserves all eight confirmed MU fills against frozen native Alpaca SIP/raw bars", () => {
     const encoded = encodeCandles(muFixture.candles), bars = decodeCandles(encoded.payload, encoded.checksum).map(c => ({ ...c, volume: c.volume ?? 0 }));
     expect(bars).toEqual(muFixture.candles);

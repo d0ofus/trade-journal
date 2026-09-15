@@ -11,8 +11,8 @@ export const seriesKey = (s: CacheSeries) => cacheHash(`${s.symbol}:${s.timefram
 const chunkKey = (s: CacheSeries, from: number) => cacheHash(`${seriesKey(s)}:${from}`);
 export const cacheEnabled = () => process.env.TRADES_CANDLE_CACHE_ENABLED === "1";
 export const preparationEnabled = () => cacheEnabled() && process.env.TRADES_CANDLE_PREPARE_ENABLED === "1";
-export async function claimCacheLease(key: string, durationMs = 60_000): Promise<CacheLease | null> {
-  const token = randomUUID();
+export async function claimCacheLease(key: string, durationMs = 60_000, foreground = false): Promise<CacheLease | null> {
+  const token = `${foreground ? "foreground:" : ""}${randomUUID()}`;
   const rows = await prisma.$queryRaw<{ key: string }[]>`
     INSERT INTO "WorkstationCandleLease" ("key", "token", "expiresAt") VALUES (${key}, ${token}, (clock_timestamp() AT TIME ZONE 'UTC') + ${durationMs} * interval '1 millisecond')
     ON CONFLICT ("key") DO UPDATE SET "token" = EXCLUDED."token", "expiresAt" = EXCLUDED."expiresAt"
@@ -22,9 +22,12 @@ export async function claimCacheLease(key: string, durationMs = 60_000): Promise
 export async function releaseCacheLease(lease: CacheLease) {
   await prisma.workstationCandleLease.deleteMany({ where: lease });
 }
+export async function foregroundPending(db: Pick<Prisma.TransactionClient, "workstationCandleLease"> = prisma) {
+  return (await db.workstationCandleLease.count({ where: { OR: [{ key: "foreground" }, { token: { startsWith: "foreground:" } }], expiresAt: { gt: new Date() } } })) > 0;
+}
 /** Atomic time slots coordinate request rates across serverless instances. */
 export async function takeProviderSlot(background: boolean): Promise<boolean> {
-  const blockers = await prisma.workstationCandleLease.count({ where: { key: { in: background ? ["rate:cooldown", "foreground"] : ["rate:cooldown"] }, expiresAt: { gt: new Date() } } });
+  const blockers = await prisma.workstationCandleLease.count({ where: { OR: [{ key: { in: background ? ["rate:cooldown", "foreground"] : ["rate:cooldown"] } }, ...(background ? [{ token: { startsWith: "foreground:" } }] : [])], expiresAt: { gt: new Date() } } });
   if (blockers) return false;
   if (background && !(await claimCacheLease("rate:background", 1000))) return false;
   return !!(await claimCacheLease("rate:all", 500));
@@ -37,10 +40,11 @@ export async function markForegroundRequest() {
 }
 type UsageReader = Pick<Prisma.TransactionClient, "$queryRaw">;
 export class CacheBudgetError extends Error { constructor() { super("Chart cache storage budget reached."); } }
+export class CachePriorityError extends CacheBudgetError {}
 export async function cacheUsage(db: UsageReader = prisma) {
   const rows = await db.$queryRaw<{ cache: bigint; databases: bigint }[]>`
     SELECT (pg_total_relation_size('"WorkstationCandleChunk"') + pg_total_relation_size('"WorkstationCandleCoverage"') +
-      pg_total_relation_size('"WorkstationCandleJob"') + pg_total_relation_size('"WorkstationCandleLease"'))::bigint AS cache,
+      pg_total_relation_size('"WorkstationCandleJob"') + pg_total_relation_size('"WorkstationCandleLease"') + coalesce(pg_total_relation_size(to_regclass('"WorkstationMetricCache"')),0))::bigint AS cache,
       (SELECT sum(pg_database_size(oid))::bigint FROM pg_database WHERE NOT datistemplate) AS databases`;
   const cacheBytes = Number(rows[0].cache), databaseBytes = Number(rows[0].databases);
   return { cacheBytes, databaseBytes, cacheLimit: 100_000_000, databaseLimit: 400_000_000,
@@ -88,10 +92,13 @@ export async function readCompactSeries(seriesList: CacheSeries[], range: Candle
   }));
 }
 
-export async function persistCompactCandles(series: CacheSeries, range: CandleRange, incoming: Candle[], lease: CacheLease, tradeWindow: boolean) {
+export async function persistCompactCandles(series: CacheSeries, range: CandleRange, incoming: Candle[], lease: CacheLease, tradeWindow: boolean, supplementary = false) {
   const accepted = validateCandles(incoming).filter(c => c.time >= range.from && c.time < range.to);
   const bounds = candleChunks(range, series.timeframe), keys = bounds.map(b => chunkKey(series, b.from));
   await prisma.$transaction(async tx => {
+    // Serialize only supplementary budget accounting; foreground writes do not wait here.
+    if (supplementary) await tx.$executeRaw`SELECT pg_advisory_xact_lock(731934282)`;
+    if (supplementary && await foregroundPending(tx)) throw new CachePriorityError();
     // Bulk timestamp parameters are timestamptz; storage columns use UTC timestamp.
     // Never let the server/session timezone shift chunk boundaries.
     await tx.$executeRawUnsafe("SET LOCAL TIME ZONE 'UTC'");
@@ -101,10 +108,14 @@ export async function persistCompactCandles(series: CacheSeries, range: CandleRa
     // Recheck allocation under a global write lock: many requests may have passed
     // the pre-fetch check before any of their responses reached the database.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(731934281)`;
-    if (!(await cacheBudgetAvailable(tx))) throw new CacheBudgetError();
+    if (supplementary) {
+      const usage = await cacheUsage(tx);
+      if (usage.cacheBytes >= 80_000_000 || usage.databaseBytes >= 350_000_000) throw new CacheBudgetError();
+    } else if (!(await cacheBudgetAvailable(tx))) throw new CacheBudgetError();
     const previous = await tx.workstationCandleChunk.findMany({ where: { key: { in: keys } }, include: { coverage: true } });
     const now = new Date(), at = now.getTime() / 1000;
     const chunks: Prisma.Sql[] = [], coverage: Prisma.Sql[] = [];
+    let addedBytes = 0;
     for (const b of bounds) {
       const key = chunkKey(series, b.from), part = intersectRange(b, range)!;
       const prior = previous.find(c => c.key === key);
@@ -112,12 +123,22 @@ export async function persistCompactCandles(series: CacheSeries, range: CandleRa
       try { if (prior) { old = decodeCandles(prior.payload, prior.checksum, prior.version); segments = JSON.parse(prior.coverage?.segments ?? "[]"); if (!Array.isArray(segments) || segments.some(s => ![s.from, s.to, s.at].every(Number.isFinite) || s.from >= s.to || s.from < b.from || s.to > b.to)) throw new Error("Invalid coverage"); } } catch { old = []; segments = []; }
       const merged = validateCandles([...old.filter(c => c.time < part.from || c.time >= part.to), ...accepted.filter(c => c.time >= b.from && c.time < b.to)]);
       const encoded = encodeCandles(merged), ranges = replaceSegments(segments, { ...part, at });
-      chunks.push(Prisma.sql`(${key},${series.symbol},${series.timeframe},${series.source},${new Date(b.from * 1000)},${new Date(b.to * 1000)},${encoded.payload},${encoded.checksum},1,${merged.length},${tradeWindow || !!prior?.tradeWindow},${now},${now})`);
+      if (supplementary && (!prior || prior.supplementary)) addedBytes += encoded.payload.length - (prior?.payload.length ?? 0);
+      chunks.push(Prisma.sql`(${key},${series.symbol},${series.timeframe},${series.source},${new Date(b.from * 1000)},${new Date(b.to * 1000)},${encoded.payload},${encoded.checksum},1,${merged.length},${tradeWindow || !!prior?.tradeWindow},${supplementary && (!prior || prior.supplementary)},${now},${now})`);
       coverage.push(Prisma.sql`(${key},${JSON.stringify(ranges)})`);
     }
     if (!chunks.length) return;
-    await tx.$executeRaw`INSERT INTO "WorkstationCandleChunk" ("key","symbol","timeframe","source","start","end","payload","checksum","version","barCount","tradeWindow","accessedAt","updatedAt") VALUES ${Prisma.join(chunks)}
-      ON CONFLICT ("key") DO UPDATE SET "payload"=EXCLUDED."payload", "checksum"=EXCLUDED."checksum", "version"=1,"barCount"=EXCLUDED."barCount","tradeWindow"=EXCLUDED."tradeWindow","accessedAt"=EXCLUDED."accessedAt","updatedAt"=EXCLUDED."updatedAt"`;
+    if (supplementary) {
+      const totals = await tx.$queryRaw<{ bytes: bigint }[]>`SELECT coalesce(sum(octet_length(payload)),0)::bigint AS bytes FROM "WorkstationCandleChunk" WHERE supplementary=true`;
+      let excess = Number(totals[0].bytes) + addedBytes - 10_000_000;
+      if (excess > 0) {
+        const victims = await tx.workstationCandleChunk.findMany({ where: { supplementary: true, tradeWindow: false, key: { notIn: keys } }, orderBy: { accessedAt: "asc" }, select: { key: true, payload: true } });
+        for (const victim of victims) { if (excess <= 0) break; await tx.workstationCandleChunk.delete({ where: { key: victim.key } }); excess -= victim.payload.length; }
+        if (excess > 0) throw new CacheBudgetError();
+      }
+    }
+    await tx.$executeRaw`INSERT INTO "WorkstationCandleChunk" ("key","symbol","timeframe","source","start","end","payload","checksum","version","barCount","tradeWindow","supplementary","accessedAt","updatedAt") VALUES ${Prisma.join(chunks)}
+      ON CONFLICT ("key") DO UPDATE SET "payload"=EXCLUDED."payload", "checksum"=EXCLUDED."checksum", "version"=1,"barCount"=EXCLUDED."barCount","tradeWindow"=EXCLUDED."tradeWindow","supplementary"=EXCLUDED."supplementary","accessedAt"=EXCLUDED."accessedAt","updatedAt"=EXCLUDED."updatedAt"`;
     await tx.$executeRaw`INSERT INTO "WorkstationCandleCoverage" ("chunkKey","segments") VALUES ${Prisma.join(coverage)} ON CONFLICT ("chunkKey") DO UPDATE SET "segments"=EXCLUDED."segments"`;
   }, { timeout: 20_000 });
 }

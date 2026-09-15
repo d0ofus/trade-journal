@@ -1,3 +1,4 @@
+import { showTakeaways } from "./review-helpers";
 import { expect, test, Page } from "@playwright/test";
 import { createHash } from "node:crypto";
 
@@ -47,8 +48,9 @@ test("prepending preserves execution/drawing pixel positions; reviews and drawin
   await expect.poll(count).toBeGreaterThan(initial);
   await page.mouse.move(80, 100);
   await expect.poll(pixels).toBe(before);
+  await showTakeaways(page);
   await page
-    .getByPlaceholder("What will you repeat or change?")
+    .getByRole("textbox", { name: "Takeaways", exact: true })
     .fill("History review survives reload");
   await expect(
     page.getByText("Saved on this device", { exact: true }).first(),
@@ -60,10 +62,10 @@ test("prepending preserves execution/drawing pixel positions; reviews and drawin
       ),
     )
     .toContain("History review survives reload");
-  await page.reload();
+  await page.reload(); await showTakeaways(page);
   await expect(
-    page.getByPlaceholder("What will you repeat or change?"),
-  ).toHaveValue("History review survives reload");
+    page.getByRole("textbox", { name: "Takeaways", exact: true }),
+  ).toHaveText("History review survives reload");
   expect(errors).toEqual([]);
   expect(apiRequests).toEqual([]);
 });

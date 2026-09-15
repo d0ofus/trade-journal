@@ -1,6 +1,6 @@
 {
   "regions": ["syd1"],
-  "buildCommand": "npm run build",
+  "buildCommand": "node scripts/vercel-build.mjs",
   "crons": [
     {
       "path": "/api/cron/flex-import",

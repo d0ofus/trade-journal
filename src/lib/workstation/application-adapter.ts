@@ -1,3 +1,4 @@
+import type { MarketMetrics } from "./market-metrics";
 import { Candle, CandleResult, TradeDocument, WorkstationAdapter, seconds } from "./types";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "./payload";
 import { tradeChartSession } from "./chart-session";
@@ -7,9 +8,10 @@ import { SharedRequests } from "./shared-requests";
 export function createApplicationAdapter(): WorkstationAdapter {
   const cache = new CandleMemory();
   const inflight = new SharedRequests<CandleResult>();
+  const metricRequests = new SharedRequests<MarketMetrics>();
   const legacy = new Map<string, { at: number; result: CandleResult }>();
   async function request<T>(url: string, init?: RequestInit): Promise<T> { const response = await fetch(url, { credentials: "same-origin", ...init }); const body = await response.json(); if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Request failed"); return body as T; }
-  const candles = async (mode: "cache" | "fill" | "refresh", ...[trade, interval, signal, range, identity]: Parameters<WorkstationAdapter["candles"]>): Promise<CandleResult> => {
+  const candles = async (mode: "cache" | "fill" | "refresh", purpose: "benchmark" | undefined, ...[trade, interval, signal, range, identity]: Parameters<WorkstationAdapter["candles"]>): Promise<CandleResult> => {
       signal?.throwIfAborted();
       const session = trade.chartSession ?? tradeChartSession(trade);
       const padding = Math.max(seconds[interval] * 240, trade.closeTime - trade.openTime);
@@ -17,14 +19,15 @@ export function createApplicationAdapter(): WorkstationAdapter {
       const base = `${trade.symbol}:${interval}:${session}`;
       const cached = cache.get(base, { from, to: to + 0.001 }, identity);
       if (mode !== "refresh" && cached?.cache?.status === "hit") return cached;
-      const key = `${base}:${from}:${to}:${identity ?? "initial"}:${mode}`;
+      const key = `${base}:${from}:${to}:${identity ?? "initial"}:${mode}:${purpose ?? "primary"}`;
       const previous = legacy.get(key);
       if (mode !== "refresh" && previous && Date.now() - previous.at < 300000) return previous.result;
       return inflight.run(key, signal, async sharedSignal => {
       const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, from: String(from), to: String(to), limit: "30000", mode });
+      if (purpose) { params.set("purpose", purpose); if (mode === "fill") params.set("mode", "complete"); }
       if (identity) params.set("identity", identity);
       params.set("session", session);
-      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { cache?: CandleCacheMetadata; warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { signal: AbortSignal.any([sharedSignal, AbortSignal.timeout(120000)]) });
+      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { cache?: CandleCacheMetadata; warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { priority: purpose ? "low" : "high", signal: AbortSignal.any([sharedSignal, AbortSignal.timeout(120000)]) });
       sharedSignal.throwIfAborted();
       const providerLabel = response.provider ? `${response.provider.provider.toUpperCase()}${response.provider.feed ? ` ${response.provider.feed.toUpperCase()}` : ""} / ${response.provider.adjustment}${response.provider.cached ? " / cache" : ""}${response.provider.fallback ? " / fallback" : ""}` : response.source ?? "Provider";
       const result: CandleResult = { cache: response.metadata?.cache, identity: response.provider?.identity, provider: response.provider, session: response.metadata?.session, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || (response.metadata?.cache?.enabled ? "" : "Provider history · UTC"), truncated: response.metadata?.truncated ?? false };
@@ -38,6 +41,8 @@ export function createApplicationAdapter(): WorkstationAdapter {
   };
   return {
     mode: "application",
+    benchmarkCandles: (symbol, trade, interval, signal, range, mode = "fill") => candles(mode, "benchmark", { ...trade, symbol }, interval, signal, range),
+    metrics: (trade, signal) => metricRequests.run(`${trade.id}:${trade.timeInterpretationVersion}`, signal, sharedSignal => request(`/api/closed-trades/${encodeURIComponent(trade.id)}/market-metrics`, { signal: sharedSignal, priority: "low" })),
     loadView: id => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`),
     saveView: (id, view, expectedRevision) => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ view, expectedRevision }), keepalive: true }),
     load: id => request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`),
@@ -46,8 +51,8 @@ export function createApplicationAdapter(): WorkstationAdapter {
       // The archive is server-owned and need not be uploaded with every keystroke.
       return request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: { ...document, legacy: undefined }, expectedRevision }) });
     },
-    candles: (...args) => candles("fill", ...args),
-    cachedCandles: (...args) => candles("cache", ...args),
-    refreshCandles: (...args) => candles("refresh", ...args),
+    candles: (...args) => candles("fill", undefined, ...args),
+    cachedCandles: (...args) => candles("cache", undefined, ...args),
+    refreshCandles: (...args) => candles("refresh", undefined, ...args),
   };
 }

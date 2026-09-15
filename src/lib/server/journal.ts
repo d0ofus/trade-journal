@@ -1,8 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS,
-  JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS,
   JOURNAL_NOTION_RELATION_KEYS,
   JOURNAL_NOTION_TRADE_STATUSES,
   JOURNAL_TAG_CATEGORIES,
@@ -149,10 +147,6 @@ function knownOption<T extends readonly string[]>(options: T, value: string | nu
   return typeof value === "string" && options.includes(value) ? value : null;
 }
 
-function knownOptions<T extends readonly string[]>(options: T, values: string[]): T[number][] {
-  return values.filter((value): value is T[number] => options.includes(value));
-}
-
 function dateFromInput(value?: string | null) {
   if (!value) return undefined;
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -203,14 +197,8 @@ export function serializeJournalEntry(entry: JournalEntryWithRelations) {
   return {
     ...entry,
     tradeStatus: knownOption(JOURNAL_NOTION_TRADE_STATUSES, entry.tradeStatus) as JournalNotionTradeStatusValue | null,
-    idealExecutionOptions: knownOptions(
-      JOURNAL_NOTION_IDEAL_EXECUTION_OPTIONS,
-      entry.idealExecutionOptions,
-    ) as JournalNotionIdealExecutionValue[],
-    idealStopLossOptions: knownOptions(
-      JOURNAL_NOTION_IDEAL_STOP_LOSS_OPTIONS,
-      entry.idealStopLossOptions,
-    ) as JournalNotionIdealStopLossValue[],
+    idealExecutionOptions: entry.idealExecutionOptions as JournalNotionIdealExecutionValue[],
+    idealStopLossOptions: entry.idealStopLossOptions as JournalNotionIdealStopLossValue[],
     ideaDate: entry.ideaDate.toISOString(),
     entryEndAt: entry.entryEndAt?.toISOString() ?? null,
     actualTriggerAt: entry.actualTriggerAt?.toISOString() ?? null,

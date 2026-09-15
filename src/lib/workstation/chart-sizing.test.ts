@@ -5,7 +5,7 @@ describe("chart sizing", () => {
   it("repairs corrupt preferences without losing valid layouts", () => {
     const result = restoreChartSizing({ version: 1, layouts: { four: { main: NaN, first: .7, second: -100 } }, mobile: [1, 500, Infinity] });
     expect(result.layouts.four).toEqual({ main: .5, first: .7, second: .1 });
-    expect(result.mobile).toEqual([240, 500, 290, 290]);
+    expect(result.mobile).toEqual([240, 500, 320, 320]);
     expect(restoreChartSizing({ version: 2 })).toEqual(defaultChartSizing());
   });
   it.each([2, 3, 4])("fills the available space without overlapping charts in %i-chart layouts", count => {

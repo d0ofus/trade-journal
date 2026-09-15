@@ -31,7 +31,14 @@
     "tests/workstation-auth/**/*.ts",
     "playwright.workstation-auth.config.ts",
     "src/lib/workstation/execution-visibility.test.ts",
-    "scripts/seed-execution-visibility-preview.ts"
+    "scripts/seed-execution-visibility-preview.ts",
+    "src/lib/workstation/comparison-review.test.ts",
+    "src/lib/server/workstation-supplementary.test.ts",
+    "src/lib/server/historical-shares.test.ts",
+    "tests/workstation-preview/comparison-review.spec.ts",
+    "scripts/benchmark-workstation-comparison.ts",
+    "scripts/measure-comparison-storage.ts",
+    "src/lib/server/workstation-metrics.test.ts"
   ],
   "exclude": [
     "node_modules"

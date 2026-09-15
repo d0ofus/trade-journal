@@ -4,11 +4,14 @@ import type { CandleRange } from "@/lib/workstation/candle-ranges";
 import { measureText, riskReward } from "@/lib/workstation/math";
 
 export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; x: number; y: number; w: number; h: number };
-export type PaintOptions = { covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
+export type PaintOptions = { beforeEntry?: boolean; executionColors?: { buy: string; sell: string }; covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
 export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
   const hits: Hit[] = [], occupied: { x: number; y: number; w: number; h: number }[] = [];
-  const { x, y, plotWidth: w, plotHeight: h } = o;
+  const { x, y, plotHeight: h } = o;
+  const last = o.candles.at(-1), prior = o.candles.at(-2);
+  const lastX = last ? x(last.time) : null, priorX = prior ? x(prior.time) : null;
+  const w = o.beforeEntry ? Math.max(0, Math.min(o.plotWidth, lastX === null ? 0 : lastX + (priorX === null ? 4 : (lastX - priorX) / 2))) : o.plotWidth;
   // Reserve the in-chart OHLC strip so labels never disappear beneath it.
   const topInset = o.export ? 3 : 24;
   const label = (text: string, px: number, py: number, color: string, fill = o.light ? "#ffffff" : "#171d2a", maxWidth = 320) => {
@@ -70,7 +73,7 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
   for (const row of executionVisibility({ ...o, executions: o.trade.executions })) {
     if (row.reason !== "visible" || row.x === null || row.y === null) continue;
     const { diagnostic, index: i, x: px, y: py } = row, e = diagnostic.execution;
-    const color = e.side === "BUY" ? "#34d399" : "#fb7185", selected = o.selectedExecution === e.id;
+    const color = e.side === "BUY" ? o.executionColors?.buy ?? "#34d399" : o.executionColors?.sell ?? "#fb7185", selected = o.selectedExecution === e.id;
     ctx.setLineDash([]); ctx.fillStyle = color; ctx.strokeStyle = o.light ? "#fff" : "#121722"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px, py, selected ? 6 : 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     if (diagnostic.status === "price-outside") { ctx.strokeStyle = "#eab35f"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, selected ? 9 : 7, 0, Math.PI * 2); ctx.stroke(); }

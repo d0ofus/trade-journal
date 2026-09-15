@@ -1,4 +1,5 @@
 "use client";
+import { executionColors } from "@/lib/workstation/comparison";
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
@@ -100,6 +101,8 @@ import { useTradeDocument } from "./use-trade-document";
 import { useTradeView } from "./use-trade-view";
 import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
 import { ChartHandle, TradeChart } from "./trade-chart";
+import { TradeMarketMetrics } from "./market-metrics-strip";
+import type { MarketMetrics } from "@/lib/workstation/market-metrics";
 import { ReviewEditor } from "./review-editor";
 import { DrawingCoordinates } from "./drawing-coordinates";
 import { applyWorkspaceVisibility, reviewPanelIds } from "./workspace-layout";
@@ -308,6 +311,10 @@ export function TradesWorkstation({
     [loadedPreferences, setLoadedPreferences] = useState(false);
   const preferences = useMemo(() => ({ ...savedPreferences, theme: appearance.theme }), [savedPreferences, appearance.theme]);
   const trade = useMemo(() => selectedTrade ? { ...selectedTrade, chartSession: tradeChartSession(selectedTrade, preferences.chartSession) } : selectedTrade, [selectedTrade, preferences.chartSession]);
+  const marketMetrics = useRef<{ key: string; value?: MarketMetrics }>({ key: "" });
+  const metricKey = `${trade?.id}:${trade?.timeInterpretationVersion}`;
+  const receiveMetrics = useCallback((key: string, value: MarketMetrics | undefined) => { marketMetrics.current = { key, value }; }, []);
+  const getMarketMetrics = useCallback(() => marketMetrics.current.key === metricKey ? marketMetrics.current.value : undefined, [metricKey]);
   const prefRef = useRef(preferences);
   prefRef.current = preferences;
   const [targetDate, setTargetDate] = useState(() =>
@@ -890,6 +897,7 @@ export function TradesWorkstation({
         chosen.map(async (t) => ({
           trade: t,
           doc: await adapter.load(t.id),
+          metrics: t.id === trade.id ? getMarketMetrics() : await adapter.metrics?.(t, new AbortController().signal).catch(() => undefined),
           url: `${window.location.origin}${adapter.mode === "demo" ? "/preview/trades" : "/trades"}?groupKey=${encodeURIComponent(t.id)}`,
         })),
       );
@@ -902,7 +910,7 @@ export function TradesWorkstation({
         );
       else if (exportFormat === "markdown" && rows.length === 1)
         downloadBlob(
-          new Blob([reviewMarkdown(rows[0].trade, rows[0].doc, rows[0].url)], {
+          new Blob([reviewMarkdown(rows[0].trade, rows[0].doc, rows[0].url, rows[0].metrics)], {
             type: "text/markdown;charset=utf-8",
           }),
           `${filename(rows[0].trade)}.md`,
@@ -968,6 +976,7 @@ export function TradesWorkstation({
   const toggleLabels = (id = currentPanel.id) => setChartLabels(id, chartLabelMode(preferences, id) === "labels" ? "compact" : "labels");
   const chartContent = (
     <div className="ws-chart-workspace">
+      {adapter.metrics && <TradeMarketMetrics adapter={adapter} trade={trade} onValue={receiveMetrics} />}
       <div className="ws-chart-toolbar">
         <div className="ws-timeframes">
           {intervals.map((interval) => (
@@ -1164,6 +1173,7 @@ export function TradesWorkstation({
               fullscreenTitle={titleFor("chart.fullscreen", fullscreenChart === panel.id ? "Restore chart" : "Fullscreen chart")}
               onActive={() => setActiveChart(panel.id)}
               onDateClick={(target) => syncClickedDate(panel.id, target)}
+              onPanel={patch => changePreferences({ panels: preferences.panels.map(p => p.id === panel.id ? { ...p, ...patch } : p) })}
               onInterval={(interval) =>
                 changePreferences({
                   panels: preferences.panels.map((p) =>
@@ -1398,6 +1408,7 @@ export function TradesWorkstation({
   );
   const journalContent = documentState ? (
     <ReviewEditor
+      getMetrics={getMarketMetrics}
       key={trade.id}
       trade={trade}
       document={documentState}
@@ -2284,6 +2295,10 @@ export function TradesWorkstation({
                 <option value="hidden">Hidden</option>
               </select>
             </label>
+            <div className="ws-marker-colors">
+              {(["buy", "sell"] as const).map(side => <label key={side}><span>{side === "buy" ? "Buy colour" : "Sell colour"}</span><input type="color" aria-label={side === "buy" ? "Buy colour" : "Sell colour"} value={executionColors(preferences.executionColors)[side]} onChange={e => changePreferences({ executionColors: { ...executionColors(preferences.executionColors), [side]: e.target.value } })} /></label>)}
+              <button onClick={() => changePreferences({ executionColors: executionColors() })}>Reset marker colours</button>
+            </div>
             <label>
               <span>Volume</span>
               <input

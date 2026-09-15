@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
   const timeframe = params.get("timeframe") ?? "5m";
   const sessionMode = params.get("session") ?? "regular";
   const mode = params.get("mode") ?? "complete";
+  const purpose = params.get("purpose");
+  if (purpose !== null && (purpose !== "benchmark" || !["SPY", "QQQ"].includes(symbol))) return NextResponse.json({ error: "Invalid supplementary symbol or purpose." }, { status: 400 });
   if (!["cache", "fill", "refresh", "complete"].includes(mode)) return NextResponse.json({ error: "Invalid cache mode." }, { status: 400 });
   if (!["regular", "extended"].includes(sessionMode)) return NextResponse.json({ error: "Invalid chart session." }, { status: 400 });
   const from = Number(params.get("from")), to = Number(params.get("to"));
@@ -25,7 +27,7 @@ export async function GET(request: NextRequest) {
   }
   try {
     const started = performance.now();
-    const loaded = await loadWorkstationCandles({ symbol, timeframe: timeframe as Interval, range: { from, to }, limit: limit + 1, signal: request.signal, identity: params.get("identity"), session: sessionMode as "regular" | "extended", mode: mode as "cache" | "fill" | "refresh" | "complete" });
+    const loaded = await loadWorkstationCandles({ ...(purpose === "benchmark" ? { purpose: "benchmark" as const } : {}), symbol, timeframe: timeframe as Interval, range: { from, to }, limit: limit + 1, signal: request.signal, identity: params.get("identity"), session: sessionMode as "regular" | "extended", mode: mode as "cache" | "fill" | "refresh" | "complete" });
     const candles = loaded.candles.slice(-limit);
     const metadata = summarizeCandleResponse({ candles, range: { from, to }, limit, loadedCount: loaded.candles.length });
     if (loaded.cache?.enabled && !loaded.cache.missing.length) {

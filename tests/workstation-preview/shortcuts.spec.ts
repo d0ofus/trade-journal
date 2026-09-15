@@ -1,3 +1,4 @@
+import { showTakeaways } from "./review-helpers";
 import { expect, test, Page } from "@playwright/test";
 
 async function open(page: Page) {
@@ -43,10 +44,11 @@ test("chart shortcuts respect focus, typing and Escape priority; fullscreen and 
   await page.screenshot({ path: info.outputPath("workstation-shortcut-fullscreen.png"), fullPage: true });
   await page.keyboard.press("Escape");
   await expect(chart).not.toHaveClass(/ws-chart-fullscreen/);
-  const note = page.getByPlaceholder("What will you repeat or change?");
+  await showTakeaways(page);
+  const note = page.getByRole("textbox", { name: "Takeaways", exact: true });
   await note.fill("Typing keeps chart shortcuts inactive: "); await note.pressSequentially("rfgnh");
   await note.press("Control+Enter");
-  await expect(note).toHaveValue(/rfgnh/);
+  await expect(note).toHaveText(/rfgnh/);
   await expect(page.locator(".ws-chart").first()).toHaveAttribute("aria-label", /NVDA/);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Select / pan", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -71,7 +73,7 @@ test("shortcut recording detects conflicts, updates tooltips, persists and can b
   await page.screenshot({ path: info.outputPath("workstation-shortcut-settings-dark.png"), fullPage: true });
   await dialog.getByRole("button", { name: "Close dialog" }).click();
   await expect(page.getByRole("button", { name: "Horizontal ray", exact: true })).toHaveAttribute("title", /Shift \+ Y/);
-  await page.reload();
+  await page.reload(); await showTakeaways(page);
   const chart = page.locator(".ws-chart").first(); await chart.focus(); await page.keyboard.press("r");
   await expect(page.getByRole("button", { name: "Horizontal ray", exact: true })).toHaveAttribute("aria-pressed", "false");
   await page.keyboard.press("Shift+Y");

@@ -2,7 +2,7 @@ import { expect, test, type Page, type Locator } from "@playwright/test";
 import { demoCandles, demoTrades } from "../../src/lib/workstation/demo";
 import { aggregateCandles, executionBar } from "../../src/lib/workstation/math";
 import { defaultPreferences, type Candle, type Interval } from "../../src/lib/workstation/types";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import ts from "typescript";
 
 const key = "execution-lab:workstation:preferences:demo:v1";
@@ -10,13 +10,13 @@ const format = (bar: Candle) => [bar.open, bar.high, bar.low, bar.close].map(n =
 const values = (chart: Locator) => chart.locator(".ws-ohlc b").allTextContents();
 const fixture = (interval: Interval, trade = demoTrades[0]) => aggregateCandles(demoCandles(trade), interval);
 
-async function open(page: Page, count = 3) {
+async function open(page: Page, count = 3, benchmark = "off") {
   const errors: string[] = [], requests: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/**", route => { requests.push(route.request().url()); return route.abort(); });
-  await page.addInitScript(({ key, count, prefs }) => {
+  await page.addInitScript(({ key, count, prefs, benchmark }) => {
     const intervals = ["5m", "1h", "1d", "1wk"];
-    localStorage.setItem(key, JSON.stringify({ ...prefs, panels: intervals.slice(0, count).map((interval, i) => ({ id: `chart-${i + 1}`, interval })) }));
+    localStorage.setItem(key, JSON.stringify({ ...prefs, panels: intervals.slice(0, count).map((interval, i) => ({ id: `chart-${i + 1}`, interval, benchmark })) }));
     const state = window as unknown as { ohlcTime: number; ohlcCommits: number; __REACT_DEVTOOLS_GLOBAL_HOOK__: unknown };
     state.ohlcCommits = 0;
     const renderers = new Map();
@@ -36,7 +36,7 @@ async function open(page: Page, count = 3) {
       onCommitFiberUnmount() {}, checkDCE() {},
     };
     window.addEventListener("workstation-crosshair", event => { state.ohlcTime = (event as CustomEvent).detail.time; });
-  }, { key, count, prefs: defaultPreferences() });
+  }, { key, count, prefs: defaultPreferences(), benchmark });
   await page.goto("/preview/trades");
   await expect(page.locator(".ws-chart")).toHaveCount(count);
   for (const chart of await page.locator(".ws-chart").all()) {
@@ -131,12 +131,11 @@ test("replay removes a future inspection and does not restore it on exit", async
   await expect.poll(() => values(first)).not.toEqual(future);
   await page.getByRole("button", { name: "Exit replay", exact: true }).click();
   await expect(first.locator('[data-ohlc="close"]')).toBeVisible();
-  const to = Number(await first.getAttribute("data-visible-to"));
-  await expect.poll(() => values(first)).toEqual(format(fixture("5m").findLast(bar => bar.time <= to)!));
+  await expect.poll(async () => { const to = Number(await first.getAttribute("data-visible-to")); return JSON.stringify(await values(first)) === JSON.stringify(format(fixture("5m").findLast(bar => bar.time <= to)!)); }).toBe(true);
 });
 
-test("pointer sweeps do not render React, write storage or repaint candle layers; same-candle movement writes no values", async ({ page }) => {
-  const { requests } = await open(page, 4);
+for (const benchmark of ["off", "SPY"]) test(`${benchmark}: pointer sweeps do not render React, write storage or repaint candle layers; same-candle movement writes no values`, async ({ page }) => {
+  const { requests } = await open(page, 4, benchmark);
   const first = page.locator(".ws-chart").first();
   await hover(page, first, .4);
   // Let the existing viewport/save timers finish before measuring pointer-only work.
@@ -185,5 +184,7 @@ test("real DOM OHLC updates finish synchronously within the interaction budget",
     return { samples: times.length, p95Ms: times[Math.floor(times.length * .95)], maxMs: times.at(-1) };
   }, source);
   await info.attach("ohlc-interaction-timing", { body: JSON.stringify(result, null, 2), contentType: "application/json" });
+  mkdirSync("artifacts/comparison", { recursive: true });
+  writeFileSync("artifacts/comparison/ohlc-timing.json", JSON.stringify(result, null, 2));
   expect(result.p95Ms).toBeLessThan(1);
 });

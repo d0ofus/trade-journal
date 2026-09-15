@@ -1,36 +1,45 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import { ArrowUpRight, Bold, Check, ChevronDown, Copy, Italic, List, Plus, Sparkles } from "lucide-react";
+import { useState } from "react";
+import dynamic from "next/dynamic";
+import { ArrowUpRight, Check, ChevronDown, Copy, Plus, Sparkles } from "lucide-react";
+import { NotionReviewEditor } from "./notion-review-editor";
 import { Review, Trade, TradeDocument, WorkspacePreferences } from "@/lib/workstation/types";
-import { plainText, reviewMarkdown } from "@/lib/workstation/export";
+import { notionClipboard } from "@/lib/workstation/notion-export";
+import type { MarketMetrics } from "@/lib/workstation/market-metrics";
+import { richPlain } from "@/lib/workstation/rich-text";
+import { plainText } from "@/lib/workstation/export";
 
-function FormattedNote({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const change = useRef(onChange);
-  useEffect(() => { change.current = onChange; }, [onChange]);
-  const editor = useEditor({ extensions: [StarterKit.configure({ heading: { levels: [2, 3] }, link: false })], content: value, immediatelyRender: false, editorProps: { attributes: { "aria-label": "Formatted review notes", role: "textbox", "aria-multiline": "true" } }, onUpdate: ({ editor }) => change.current(editor.getHTML()) });
-  useEffect(() => { if (editor && editor.getHTML() !== value) editor.commands.setContent(value, { emitUpdate: false }); }, [editor, value]);
-  return <div className="ws-richtext"><div className="ws-format"><button title="Bold" aria-label="Bold notes" onClick={() => editor?.chain().focus().toggleBold().run()}><Bold size={13} /></button><button title="Italic" aria-label="Italic notes" onClick={() => editor?.chain().focus().toggleItalic().run()}><Italic size={13} /></button><button title="Bullet list" aria-label="Bullet list notes" onClick={() => editor?.chain().focus().toggleBulletList().run()}><List size={14} /></button><span>Notes & observations</span></div><EditorContent editor={editor} /></div>;
-}
-type Props = { trade: Trade; document: TradeDocument; onChange: (review: Review) => void; status: string; error: string; retry: () => void; reload: () => void; onSaveNext: () => void; saveNextShortcut: string; onEvidence: () => void; preferences: WorkspacePreferences; onPreferences: (update: Partial<WorkspacePreferences>) => void; replay: number | null; mode: "demo" | "application"; notify: (message: string) => void };
+const FormattedNote = dynamic(() => import("./rich-review-editors").then(m => m.FormattedNote), { ssr: false });
+
+type Props = { getMetrics?: () => MarketMetrics | undefined; trade: Trade; document: TradeDocument; onChange: (review: Review) => void; status: string; error: string; retry: () => void; reload: () => void; onSaveNext: () => void; saveNextShortcut: string; onEvidence: () => void; preferences: WorkspacePreferences; onPreferences: (update: Partial<WorkspacePreferences>) => void; replay: number | null; mode: "demo" | "application"; notify: (message: string) => void };
 export function ReviewEditor(p: Props) {
   const r = p.document.review, [deep, setDeep] = useState(false), [tag, setTag] = useState(""), [customName, setCustomName] = useState(""), [templateName, setTemplateName] = useState("");
   const change = (patch: Partial<Review>) => p.onChange({ ...r, ...patch });
-  const complete = [r.setup, r.execution, r.takeaway].filter(v => v.trim()).length;
+  const complete = [r.notion?.analysis.technicalPositive || r.setup, r.notion?.analysis.idealExecution || r.execution, r.takeaway].filter(v => richPlain(v ?? "")).length;
   const addTag = () => { if (tag.trim() && !r.tags.includes(tag.trim())) change({ tags: [...r.tags, tag.trim()].slice(0, 30) }); setTag(""); };
-  const copy = async () => { try { await navigator.clipboard.writeText(reviewMarkdown(p.trade, p.document, window.location.href)); p.notify("Review copied. Paste it into your Notion trade page."); } catch { p.notify("Clipboard unavailable. Use Export review to download Markdown."); } };
+  const copy = async () => { try {
+    const output = notionClipboard(p.trade, p.document, window.location.href, p.getMetrics?.());
+    if (navigator.clipboard.write && typeof ClipboardItem !== "undefined") {
+      try { await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([output.html], { type: "text/html" }), "text/plain": new Blob([output.text], { type: "text/plain" }) })]); }
+      catch { await navigator.clipboard.writeText(output.text); }
+    } else await navigator.clipboard.writeText(output.text);
+    p.notify("Review copied. Paste it into your Notion trade page.");
+  } catch { p.notify("Clipboard unavailable. Use Export review to download Markdown."); } };
+
   if (p.replay !== null) return <div className="ws-replay-journal"><Sparkles size={24} /><h3>Review without hindsight.</h3><p>Your saved review and trade outcome are hidden during replay. Chart notes created during replay appear at their saved candle time.</p><span>Exit replay to continue your journal.</span></div>;
   return <div className="ws-journal-content">
-    <div className="ws-journal-intro"><div><span className="ws-eyebrow">TRADE REVIEW</span><h2>Make the next trade better.</h2></div><span className="ws-review-progress">{complete}/3</span></div>
+    <div className="ws-journal-intro"><div><span className="ws-eyebrow">TRADE REVIEW</span><h2>Trade journal</h2></div><span className="ws-review-progress">{complete}/3</span></div>
     <div className="ws-review-progress-track"><span style={{ width: `${complete / 3 * 100}%` }} /></div>
     <div className="ws-journal-meta"><select aria-label="Review status" value={r.status} onChange={e => change({ status: e.target.value as Review["status"] })}>{["Not reviewed", "In progress", "Reviewed"].map(s => <option key={s}>{s}</option>)}</select><select aria-label="Review template" value={r.template} onChange={e => { const template = e.target.value; const preset = p.preferences.templates[template]; change(preset ? { ...preset, template } : { template }); if (template === "Detailed review") setDeep(true); }}><option>Quick review</option><option>Detailed review</option>{Object.keys(p.preferences.templates).map(name => <option key={name}>{name}</option>)}</select></div>
+    <NotionReviewEditor trade={p.trade} document={p.document} onChange={p.onChange} />
+    <details className="ws-template-section"><summary>Previous review fields</summary>
     <label className="ws-field"><span><i>01</i> Setup <small>What was the opportunity?</small></span><input value={r.setup} onChange={e => change({ setup: e.target.value })} placeholder="e.g. Opening range breakout" maxLength={10000} /></label>
     <label className="ws-field"><span><i>02</i> Execution <small>How did you trade it?</small></span><textarea value={r.execution} onChange={e => change({ execution: e.target.value })} placeholder="Entry, management, and the decisions that mattered…" rows={4} maxLength={10000} /></label>
-    <label className="ws-field"><span><i>03</i> Takeaway <small>One thing to carry forward.</small></span><textarea value={r.takeaway} onChange={e => change({ takeaway: e.target.value })} placeholder="What will you repeat or change?" rows={3} maxLength={10000} /></label>
+
     <div className="ws-tags-label">Tags <span>Find patterns over time</span></div><div className="ws-tags">{r.tags.map(t => <button title={`Remove ${t}`} key={t} onClick={() => change({ tags: r.tags.filter(v => v !== t) })}>{t}<span>×</span></button>)}<input aria-label="Add review tag" value={tag} placeholder="+ Add tag" list="ws-tag-suggestions" maxLength={60} onChange={e => setTag(e.target.value)} onBlur={addTag} onKeyDown={e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(); } }} /><datalist id="ws-tag-suggestions">{["Breakout", "Relative strength", "Scale out", "Patience", "Late entry", "Trend continuation", "Reversal"].map(t => <option key={t} value={t} />)}</datalist></div>
     <button className={`ws-deeper ${deep ? "active" : ""}`} onClick={() => setDeep(v => !v)}><Plus size={14} /> Go deeper <span>Context, lessons & custom fields</span><ChevronDown size={13} /></button>
     {deep && <div className="ws-depth">{([["thesis", "Thesis & market context"], ["exit", "Exit review"], ["mistake", "Mistake / improvement"], ["followUp", "Follow up"]] as const).map(([field, label]) => <label className="ws-field" key={field}><span>{label}</span><textarea rows={2} value={r[field]} onChange={e => change({ [field]: e.target.value })} /></label>)}<FormattedNote value={r.notes} onChange={notes => change({ notes })} />{Object.entries(r.custom).map(([name, value]) => <label className="ws-field" key={name}><span>{name}<button aria-label={`Remove field ${name}`} onClick={() => { const custom = { ...r.custom }; delete custom[name]; change({ custom }); }}>×</button></span><input value={value} onChange={e => change({ custom: { ...r.custom, [name]: e.target.value } })} /></label>)}<div className="ws-inline-add"><input placeholder="Custom field name" aria-label="Custom field name" value={customName} maxLength={60} onChange={e => setCustomName(e.target.value)} /><button disabled={!customName.trim()} onClick={() => { change({ custom: { ...r.custom, [customName.trim()]: "" } }); setCustomName(""); }}><Plus size={14} /></button></div><div className="ws-inline-add"><input placeholder="Save as a reusable template" aria-label="Template name" value={templateName} maxLength={60} onChange={e => setTemplateName(e.target.value)} /><button disabled={!templateName.trim()} onClick={() => { p.onPreferences({ templates: { ...p.preferences.templates, [templateName.trim()]: { ...r, status: "Not reviewed" } } }); p.notify("Review template saved on this device."); setTemplateName(""); }}><Check size={14} /></button></div><p className="ws-help">Applying a saved template replaces this review’s fields. Your previous version remains in the local draft until saved.</p></div>}
+    </details>
     <button className="ws-add-evidence" onClick={p.onEvidence}><Plus size={14} /> Attach current chart <span>{p.document.evidence.length} saved</span></button>
     <div className="ws-journal-save"><span className={p.error ? "negative" : "ws-save-status"}><span className="ws-feed-dot" />{p.status}</span>{p.error && <div className="ws-error"><p>{p.error}</p><button onClick={p.retry}>Retry</button><button onClick={p.reload}>Reload saved review</button><button onClick={() => { const blob = new Blob([JSON.stringify(p.document, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = `${p.trade.symbol}-recovered-draft.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}>Export draft</button></div>}<button className="ws-primary ws-save-next" onClick={p.onSaveNext}><Check size={14} /> Save & next <kbd>{p.saveNextShortcut === "Unassigned" ? "" : p.saveNextShortcut}</kbd></button><button className="ws-copy-review" onClick={() => void copy()}><Copy size={13} /> Copy review for Notion <ArrowUpRight size={13} /></button><p className="ws-help">One review, shared with your journal.{p.mode === "demo" ? " Demo changes stay on this device." : ""}</p></div>
     {!!p.document.legacy && <details className="ws-legacy"><summary>Preserved original journal material</summary><pre>{typeof p.document.legacy === "string" ? plainText(p.document.legacy) : JSON.stringify(p.document.legacy, null, 2)}</pre></details>}

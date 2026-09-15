@@ -156,6 +156,17 @@ function planTable(plan: ReturnType<typeof buildBackupRestorePlan>, key: BackupT
 }
 
 describe("backup restore planning", () => {
+  it("preserves template content and per-panel review controls without copying metric caches", () => {
+    const payload = compactGraphPayload();
+    const templateData = { version: 1, properties: { marketRegime: "Rotation" }, sections: { entry: { html: "<p><strong>Setup</strong></p>", evidenceIds: ["chart-1"] } } };
+    const panelsJson = JSON.stringify([{ id: "chart-1", interval: "5m", benchmark: "SPY", beforeEntry: true }]);
+    Object.assign(payload.journalEntries[0] as object, { templateData });
+    Object.assign(payload.closedTradeLayouts[0] as object, { panelsJson });
+    const plan = buildBackupRestorePlan(payload);
+    expect(planTable(plan, "journalEntries").rows[0]).toHaveProperty("templateData", templateData);
+    expect(planTable(plan, "closedTradeLayouts").rows[0]).toHaveProperty("panelsJson", panelsJson);
+    expect(plan.tables.map(table => table.key)).not.toContain("workstationMetricCaches");
+  });
   it("retains the versioned workstation document in backup restore rows", () => {
     const payload = compactGraphPayload();
     const document = JSON.stringify({ schema: 1, review: { notes: "Formatted notes" }, drawings: [], evidence: [], legacy: { journal: "Preserved original" } });

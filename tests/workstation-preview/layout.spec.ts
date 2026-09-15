@@ -1,3 +1,4 @@
+import { showTakeaways } from "./review-helpers";
 import { expect, test, Page } from "@playwright/test";
 import { demoCandles, demoTrades } from "../../src/lib/workstation/demo";
 import { aggregateCandles } from "../../src/lib/workstation/math";
@@ -72,8 +73,9 @@ test("collapsed panels reclaim space, focus restores drafts and layout survives 
   await page
     .getByRole("button", { name: "Hide page title", exact: true })
     .click();
+  await showTakeaways(page);
   await page
-    .getByPlaceholder("What will you repeat or change?")
+    .getByRole("textbox", { name: "Takeaways", exact: true })
     .fill("Keep this review when panels collapse.");
   await page.getByRole("button", { name: "Chart focus", exact: true }).click();
   await expect(page.locator(".ws-topbar")).toBeHidden();
@@ -94,16 +96,16 @@ test("collapsed panels reclaim space, focus restores drafts and layout survives 
     .getByRole("button", { name: "Exit chart focus", exact: true })
     .click();
   await expect(
-    page.getByPlaceholder("What will you repeat or change?"),
-  ).toHaveValue("Keep this review when panels collapse.");
+    page.getByRole("textbox", { name: "Takeaways", exact: true }),
+  ).toHaveText("Keep this review when panels collapse.");
   await expect
     .poll(async () => (await dimensions(page))[1].height)
     .toBe(compact[1].height);
-  await page.reload();
+  await page.reload(); await showTakeaways(page);
   await expect(page.locator(".ws-page-heading")).toBeHidden();
   await expect(
-    page.getByPlaceholder("What will you repeat or change?"),
-  ).toHaveValue("Keep this review when panels collapse.");
+    page.getByRole("textbox", { name: "Takeaways", exact: true }),
+  ).toHaveText("Keep this review when panels collapse.");
   await expect(
     page.getByRole("button", { name: "Show Executions", exact: true }),
   ).toHaveAttribute("aria-expanded", "false");

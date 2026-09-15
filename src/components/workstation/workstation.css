@@ -2492,10 +2492,10 @@
 .ws-chart-actions .ws-history-warning {
   color: #ca9a57;
 }
-.ws-chart > .ws-ohlc {
+.ws-chart .ws-ohlc {
   position: absolute;
   z-index: 3;
-  top: 32px;
+  top: 2px;
   left: 0;
   right: 65px;
   min-height: 0;
@@ -2634,7 +2634,7 @@
   .ws-chart-heading {
     padding: 0 7px;
   }
-  .ws-chart > .ws-ohlc {
+  .ws-chart .ws-ohlc {
     font-size: 7px;
     gap: 6px;
     padding-left: 7px;
@@ -2742,3 +2742,40 @@
 .ws-fill-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; border-bottom: 1px solid var(--ws-border); }
 .ws-fill-row > button:last-child { font-size: 10px; color: var(--ws-accent); }
 .ws-fill-popover { z-index: 25; }
+
+/* Template editors and supplementary controls never cover the candle canvas. */
+.ws-chart-heading { height: auto; min-height: 33px; flex-wrap: wrap; padding-block: 4px; }
+.ws-chart-symbol { flex-wrap: wrap; }
+.ws-chart-symbol button { font-size: 9px; white-space: nowrap; padding: 3px 5px; }
+.ws-chart-symbol button.active { color: var(--ws-text); background: #7c8fea30; }
+.ws-chart-symbol select { max-width: 110px; }
+.ws-benchmark-legend { color: #60a5fa; font-size: 9px; padding: 0 12px 3px; font-variant-numeric: tabular-nums; min-height: 0; }
+.ws-benchmark-legend:empty { display: none; }
+.ws-benchmark-error, .ws-before-entry-empty { font-size: 10px; margin: 2px 12px; color: var(--ws-muted); }
+.ws-market-metrics { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 7px 12px; align-items: center; border-bottom: 1px solid var(--ws-border-soft); font-size: 10px; flex: 0 0 auto; }
+.ws-market-metrics > span { display: flex; gap: 6px; flex-wrap: wrap; }
+.ws-market-metrics small, .ws-metric-date { color: var(--ws-dim); }
+.ws-market-metrics b { font-weight: 500; color: var(--ws-muted); font-variant-numeric: tabular-nums; }
+.ws-market-metrics a { color: var(--ws-dim); font-size: 9px; }
+.ws-template-section { border-bottom: 1px solid var(--ws-border-soft); padding: 10px 0; }
+.ws-template-section > summary { cursor: pointer; font-size: 11px; font-weight: 550; color: var(--ws-text); }
+.ws-template-section > div { padding-top: 6px; }
+.ws-template-properties { display: grid; gap: 10px; }
+.ws-template-property { display: grid; grid-template-columns: minmax(100px, 0.8fr) minmax(0, 1.2fr); align-items: start; gap: 8px; font-size: 10px; }
+.ws-template-property > label { color: var(--ws-muted); padding-top: 5px; }
+.ws-template-property input:not([type=checkbox]), .ws-stop-inputs input { width: 100%; min-width: 0; background: var(--ws-input); border: 1px solid var(--ws-border); border-radius: 4px; padding: 5px; color: var(--ws-text); }
+.ws-template-property > .ws-richtext { margin: 0; grid-column: 1 / -1; }
+.ws-template-choices { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.ws-template-choices button { font-size: 9px; text-align: left; overflow-wrap: anywhere; padding: 3px 5px; background: #7c8fea20; border-radius: 3px; }
+.ws-stop-inputs { grid-column: 1 / -1; display: flex; gap: 10px; }
+.ws-stop-inputs label { flex: 1; min-width: 0; color: var(--ws-muted); }
+.ws-section-evidence { border: 0; padding: 0; font-size: 10px; }
+.ws-section-evidence label { display: flex; gap: 6px; align-items: start; margin: 6px 0; overflow-wrap: anywhere; }
+.ws-notion-review h3 { font-size: 12px; margin: 16px 0 3px; }
+.ws-format { flex-wrap: wrap; }
+.ws-format button { min-width: 25px; font-size: 10px; }
+.ws-richtext .tiptap ul { list-style: disc; padding-left: 20px; }
+.ws-richtext .tiptap ol { list-style: decimal; padding-left: 20px; }
+.ws-marker-colors { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.ws-marker-colors label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.ws-marker-colors input { width: 32px; height: 24px; }

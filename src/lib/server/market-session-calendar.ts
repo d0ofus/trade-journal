@@ -29,7 +29,7 @@ type TradingSession = { open: number; close: number; earlyClose: boolean } | nul
 
 const DAY_SECONDS = 24 * 60 * 60;
 const MAX_MISSING_SAMPLES = 12;
-const SPECIAL_CLOSURES = new Set(["2001-09-11", "2001-09-12", "2001-09-13", "2001-09-14", "2012-10-29", "2012-10-30", "2018-12-05"]);
+const SPECIAL_CLOSURES = new Set(["2001-09-11", "2001-09-12", "2001-09-13", "2001-09-14", "2012-10-29", "2012-10-30", "2018-12-05", "2025-01-09"]);
 
 export const US_EQUITIES_CORE_PROFILE: CandleSessionProfile = {
   id: US_EQUITIES_CORE_PROFILE_ID,

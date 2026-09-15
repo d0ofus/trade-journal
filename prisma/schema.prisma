@@ -563,6 +563,7 @@ model WorkstationCandleChunk {
   version     Int      @default(1)
   barCount    Int
   tradeWindow Boolean  @default(false)
+  supplementary Boolean @default(false)
   accessedAt  DateTime @default(now())
   updatedAt   DateTime @updatedAt
   coverage    WorkstationCandleCoverage?
@@ -670,6 +671,7 @@ model JournalEntry {
   id                     String                       @id @default(cuid())
   symbol                 String
   tradeTitle             String                       @default("")
+  templateData           Json?
   ideaDate               DateTime                     @default(now())
   entryEndAt             DateTime?
   direction              JournalDirection             @default(LONG)
@@ -1007,4 +1009,19 @@ model ExecutionTimePolicyApplication {
   rowsJson       String
   createdAt      DateTime @default(now())
   @@index([policyId, policyRevision, importBatchId])
+}
+
+model WorkstationMetricCache {
+  key String @id
+  symbol String
+  sessionDate String
+  provider String
+  version Int
+  payload Json
+  bytes Int
+  accessedAt DateTime @default(now())
+  expiresAt DateTime
+  updatedAt DateTime @updatedAt
+  @@unique([symbol, sessionDate, provider, version])
+  @@index([accessedAt])
 }

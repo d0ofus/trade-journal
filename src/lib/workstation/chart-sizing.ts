@@ -5,7 +5,7 @@ export type ChartSizing = {
 };
 export type ChartRect = { x: number; y: number; width: number; height: number };
 export type Divider = ChartRect & { id: string; axis: "x" | "y"; field: "main" | "first" | "second" | number; extent: number; min: number; max: number; value: number; label: string };
-export const defaultChartSizing = (): ChartSizing => ({ version: 1, layouts: { two: { main: .5, first: .5, second: .5 }, threeLeft: { main: 1.45 / 2.45, first: .5, second: .5 }, threeTop: { main: 1.12 / 2.12, first: .5, second: .5 }, four: { main: .5, first: .5, second: .5 } }, mobile: [340, 290, 290, 290] });
+export const defaultChartSizing = (): ChartSizing => ({ version: 1, layouts: { two: { main: .5, first: .5, second: .5 }, threeLeft: { main: 1.45 / 2.45, first: .5, second: .5 }, threeTop: { main: 1.12 / 2.12, first: .5, second: .5 }, four: { main: .5, first: .5, second: .5 } }, mobile: [340, 320, 320, 320] });
 export function restoreChartSizing(raw: unknown): ChartSizing {
   const result = defaultChartSizing();
   if (!raw || typeof raw !== "object" || !("version" in raw) || raw.version !== 1) return result;
