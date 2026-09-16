@@ -1,5 +1,5 @@
 "use client";
-import { executionColors } from "@/lib/workstation/comparison";
+import { executionColors, benchmarkColor } from "@/lib/workstation/comparison";
 import { attachEvidence, removeEvidence } from "@/lib/workstation/evidence";
 import { chartSections, type ChartSectionKey } from "@/lib/workstation/notion-template";
 import { notionImportCsv, notionPageArchive } from "@/lib/workstation/notion-import";
@@ -644,10 +644,11 @@ export function TradesWorkstation({
       setFullscreenChart(null);
       changePreferences({ focusMode: !preferences.focusMode });
       handles.current.get(chartId)?.focus();
-    } else if (id === "chart.beforeTrade" || id === "chart.fit" || id === "chart.session") {
+    } else if (id === "chart.beforeTrade" || id === "chart.fit" || id === "chart.session" || id === "chart.comparison") {
       const handle = handles.current.get(chartId);
       if (id === "chart.beforeTrade") handle?.beforeTrade();
       else if (id === "chart.fit") handle?.fit();
+      else if (id === "chart.comparison") handle?.toggleComparison();
       else handle?.toggleSession();
       handle?.focus();
     } else if (id === "chart.date") setModal("date");
@@ -1213,6 +1214,7 @@ export function TradesWorkstation({
               fullscreenTitle={titleFor("chart.fullscreen", fullscreenChart === panel.id ? "Restore chart" : "Fullscreen chart")}
               beforeTradeTitle={titleFor("chart.beforeTrade", "Before Trade — exclude the first execution candle and all later candles")}
               fitTitle={titleFor("chart.fit", "Fit trade")}
+              comparisonTitle={titleFor("chart.comparison", "Toggle index comparison")}
               sessionTitle={titleFor("chart.session", "Toggle Regular / Extended hours")}
               onActive={() => setActiveChart(panel.id)}
               onDateClick={(target) => syncClickedDate(panel.id, target)}
@@ -2358,6 +2360,10 @@ export function TradesWorkstation({
             <div className="ws-marker-colors">
               {(["buy", "sell"] as const).map(side => <label key={side}><span>{side === "buy" ? "Buy colour" : "Sell colour"}</span><input type="color" aria-label={side === "buy" ? "Buy colour" : "Sell colour"} value={executionColors(preferences.executionColors)[side]} onChange={e => changePreferences({ executionColors: { ...executionColors(preferences.executionColors), [side]: e.target.value } })} /></label>)}
               <button onClick={() => changePreferences({ executionColors: executionColors() })}>Reset marker colours</button>
+            </div>
+            <div className="ws-marker-colors">
+              <label><span>Index comparison colour</span><input type="color" aria-label="Index comparison colour" value={benchmarkColor(preferences.theme === "light", preferences.benchmarkColor)} onChange={e => changePreferences({ benchmarkColor: e.target.value })} /></label>
+              <button onClick={() => changePreferences({ benchmarkColor: undefined })}>Reset comparison colour</button>
             </div>
             <label>
               <span>Volume</span>

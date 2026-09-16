@@ -1,13 +1,16 @@
 import { CandlestickSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
-import { alignComparison, type Comparison } from "@/lib/workstation/comparison";
+import { alignComparison, benchmarkColor, type Comparison } from "@/lib/workstation/comparison";
 import type { Candle } from "@/lib/workstation/types";
 
-export const benchmarkStyle = (light: boolean) => ({ priceScaleId: "benchmark", upColor: "transparent", downColor: light ? "#2563eb40" : "#60a5fa40", borderUpColor: light ? "#2563eb" : "#60a5fa", borderDownColor: light ? "#2563eb" : "#60a5fa", wickUpColor: light ? "#2563eb" : "#60a5fa", wickDownColor: light ? "#2563eb" : "#60a5fa", borderVisible: true, priceLineVisible: false, lastValueVisible: false });
+export const benchmarkStyle = (light: boolean, value?: string) => {
+  const color = benchmarkColor(light, value);
+  return { priceScaleId: "benchmark", upColor: "transparent", downColor: `${color}40`, borderUpColor: color, borderDownColor: color, wickUpColor: color, wickDownColor: color, borderVisible: true, priceLineVisible: false, lastValueVisible: false };
+};
 
 export const benchmarkScale = { autoScale: true, visible: false, scaleMargins: { top: 0.16, bottom: 0.22 } };
 
 export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
-  let series: ISeriesApi<"Candlestick"> | null = null, primary: Candle[] = [], benchmark: Candle[] = [], symbol = "", light = false;
+  let series: ISeriesApi<"Candlestick"> | null = null, primary: Candle[] = [], benchmark: Candle[] = [], symbol = "", light = false, color: string | undefined;
   let comparison: Comparison = alignComparison([], [], null), updating = false, lastAnchor: number | null = null, dirty = true, inspected: Candle | undefined, written = "";
   const display = (candle?: Candle) => {
     if (candle) inspected = candle;
@@ -32,14 +35,14 @@ export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
     } finally { updating = false; }
   };
   return {
-    update(next: { primary: Candle[]; benchmark: Candle[]; symbol: string; light: boolean }) {
+    update(next: { primary: Candle[]; benchmark: Candle[]; symbol: string; light: boolean; color?: string }) {
       dirty = primary !== next.primary || benchmark !== next.benchmark || symbol !== next.symbol;
       if (symbol !== next.symbol) inspected = undefined;
       primary = next.primary; benchmark = next.benchmark; symbol = next.symbol;
       if (!symbol) { if (series) api.removeSeries(series); series = null; comparison = alignComparison([], [], null); inspected = undefined; display(); return; }
-      if (!series) { series = api.addSeries(CandlestickSeries, benchmarkStyle(next.light)); series.priceScale().applyOptions(benchmarkScale); dirty = true; }
-      else if (light !== next.light) series.applyOptions(benchmarkStyle(next.light));
-      light = next.light;
+      if (!series) { series = api.addSeries(CandlestickSeries, benchmarkStyle(next.light, next.color)); series.priceScale().applyOptions(benchmarkScale); dirty = true; }
+      else if (light !== next.light || color !== next.color) series.applyOptions(benchmarkStyle(next.light, next.color));
+      light = next.light; color = next.color;
       refresh();
     },
     refresh,

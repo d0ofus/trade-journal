@@ -2,8 +2,9 @@ import { Candle, CandleSession, Drawing, Interval, Trade, WorkspacePreferences }
 import { executionVisibility } from "@/lib/workstation/execution-visibility";
 import type { CandleRange } from "@/lib/workstation/candle-ranges";
 import { measureText, riskReward } from "@/lib/workstation/math";
+import { defaultNoteEnd, noteLayout, type PixelPoint } from "@/lib/workstation/note-layout";
 
-export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; x: number; y: number; w: number; h: number };
+export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; anchor?: PixelPoint; x: number; y: number; w: number; h: number };
 export type PaintOptions = { beforeEntry?: boolean; executionColors?: { buy: string; sell: string }; covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
 export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
@@ -42,9 +43,17 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       bounds = { x: Math.max(0, start), y: a.y - 6, w: w - Math.max(0, start), h: 12 };
     } else if (d.tool === "text" || d.tool === "price-note") {
       if (a.x < 0 || a.x > w || a.y < 0 || a.y > h) continue;
-      ctx.beginPath(); ctx.arc(a.x, a.y, 3, 0, Math.PI * 2); ctx.fill();
-      line(a.x, a.y, a.x + 12, a.y - 12);
-      bounds = label(d.tool === "price-note" ? `${d.points[0].price.toFixed(2)} ${d.text}` : d.text || "Double-click to edit note", a.x + 12, a.y - 37, d.color);
+      const text = d.tool === "price-note" ? `${d.points[0].price.toFixed(2)} ${d.text}` : d.text || "Double-click to edit note";
+      ctx.font = "11px system-ui, sans-serif";
+      const layout = noteLayout(a, points[1] ? b : defaultNoteEnd(a), ctx.measureText(text).width, w, h, topInset);
+      line(a.x, a.y, layout.join.x, layout.join.y);
+      const angle = Math.atan2(layout.join.y - a.y, layout.join.x - a.x);
+      line(a.x, a.y, a.x + 8 * Math.cos(angle - .4), a.y + 8 * Math.sin(angle - .4));
+      line(a.x, a.y, a.x + 8 * Math.cos(angle + .4), a.y + 8 * Math.sin(angle + .4));
+      bounds = label(text, layout.box.x, layout.box.y, d.color, undefined, layout.box.w);
+      hits.push({ ...bounds, id: d.id, kind: "drawing", point: 1, anchor: layout.end });
+      hits.push({ id: d.id, kind: "drawing", point: 0, anchor: a, x: a.x - 9, y: a.y - 9, w: 18, h: 18 });
+      points[1] = layout.end;
     } else if (d.tool === "zone") {
       ctx.globalAlpha = .12; ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.globalAlpha = 1; ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
       if (d.text) label(d.text, Math.min(a.x, b.x) + 5, Math.min(a.y, b.y) + 5, d.color);
@@ -65,7 +74,7 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
         label(measureText(d.points[0], d.points[1], bars), (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color);
       }
     }
-    hits.push({ ...bounds, id: d.id, kind: "drawing" });
+    if (d.tool !== "text" && d.tool !== "price-note") hits.push({ ...bounds, id: d.id, kind: "drawing" });
     if (d.id === o.selected && !o.export) {
       for (let i = 0; i < points.length; i++) { const p = points[i]; if (p.x === null || p.y === null) continue; ctx.setLineDash([]); ctx.fillStyle = o.light ? "#fff" : "#121722"; ctx.strokeStyle = d.color; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); if (!d.locked) hits.push({ id: d.id, kind: "handle", point: i, x: p.x - 9, y: p.y - 9, w: 18, h: 18 }); }
     }

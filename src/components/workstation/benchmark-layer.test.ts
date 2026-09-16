@@ -21,6 +21,10 @@ it("isolates actual benchmark prices and autoscaling from the trade scale throug
   expect(layer.snapshot().candles.map(c => c.close)).toEqual([500, 501]);
   expect(seriesOptions).toHaveBeenCalledWith(expect.objectContaining({ priceScaleId: "benchmark" }));
   expect(primary).toEqual(snapshot);
+  const updates = setData.mock.calls.length;
+  layer.update({ primary, benchmark, symbol: "SPY", light: true, color: "#e879f9" });
+  expect(seriesOptions).toHaveBeenLastCalledWith(expect.objectContaining({ borderUpColor: "#e879f9", downColor: "#e879f940", upColor: "transparent", priceScaleId: "benchmark" }));
+  expect(setData).toHaveBeenCalledTimes(updates);
   layer.update({ primary, benchmark: [], symbol: "", light: true });
   expect(api.removeSeries).toHaveBeenCalledOnce(); expect(legend.textContent).toBe("");
 });

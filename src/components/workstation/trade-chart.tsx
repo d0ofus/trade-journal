@@ -58,6 +58,7 @@ export type ChartHandle = {
   fit: () => void;
   beforeTrade: () => void;
   toggleSession: () => void;
+  toggleComparison: () => void;
   reveal: (target: ChartDateTarget) => void;
   view: () => HistoryRange | null;
 };
@@ -89,6 +90,7 @@ type Props = {
   beforeTradeTitle: string;
   fitTitle: string;
   sessionTitle: string;
+  comparisonTitle: string;
   style?: CSSProperties;
   onToggleLabels: () => void;
   onHistoryReady?: (tradeId: string) => void;
@@ -102,7 +104,7 @@ import { createOhlcLegend } from "./ohlc-legend";
 import { hasExtendedSession, SessionBackground } from "./session-background";
 
 import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "@/lib/workstation/before-entry";
-import { executionColors } from "@/lib/workstation/comparison";
+import { executionColors, benchmarkColor, selectBenchmark, toggleBenchmark } from "@/lib/workstation/comparison";
 import { createBenchmarkLayer, benchmarkStyle, benchmarkScale } from "./benchmark-layer";
 import { useBenchmark } from "./use-benchmark";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
@@ -187,7 +189,7 @@ export function TradeChart(input: Props) {
   );
   const pending = useRef<Point | null>(null),
     draft = useRef<Drawing | null>(null),
-    drag = useRef<{ drawing: Drawing; point: number } | null>(null);
+    drag = useRef<{ drawing: Drawing; point: number; offset?: { x: number; y: number } } | null>(null);
   const dimensions = useRef({ width: 0, height: 0 }),
     currentInterval = useRef<Interval>(props.panel.interval),
     currentSession = useRef(props.trade.chartSession),
@@ -727,6 +729,10 @@ export function TradeChart(input: Props) {
         if (beforeEntryBoundary(p.trade, p.panel.interval, historyResult.current.session) === null) return;
         p.onPanel?.({ beforeEntry: !p.panel.beforeEntry });
       },
+      toggleComparison: () => {
+        const p = latest.current;
+        p.onPanel?.(toggleBenchmark(p.panel));
+      },
       toggleSession: () => {
         const p = latest.current;
         p.onPanel?.({ session: p.trade.chartSession === "regular" ? "extended" : "regular" });
@@ -836,7 +842,7 @@ export function TradeChart(input: Props) {
           });
           cs.setData(snapshotBars.map((b) => ({ ...b, time: asTime(b.time) })));
           if (frozenBenchmark?.candles.length) {
-            const comparison = clone.addSeries(CandlestickSeries, benchmarkStyle(light));
+            const comparison = clone.addSeries(CandlestickSeries, benchmarkStyle(light, prefs.benchmarkColor));
             comparison.priceScale().applyOptions(benchmarkScale);
             comparison.setData(frozenBenchmark.candles.map(b => ({ ...b, time: asTime(b.time) })));
           }
@@ -921,7 +927,7 @@ export function TradeChart(input: Props) {
           );
           ctx.fillStyle = light ? "#526077" : "#8996ad";
           ctx.font = "10px system-ui";
-          if (frozenBenchmark?.symbol) { ctx.fillStyle = light ? "#2563eb" : "#60a5fa"; ctx.fillText(frozenBenchmark.legend, 16, 38, width - 32); ctx.fillStyle = light ? "#526077" : "#8996ad"; }
+          if (frozenBenchmark?.symbol) { ctx.fillStyle = benchmarkColor(light, prefs.benchmarkColor); ctx.fillText(frozenBenchmark.legend, 16, 38, width - 32); ctx.fillStyle = light ? "#526077" : "#8996ad"; }
           return output;
         } finally {
           detachExportBackground();
@@ -1131,8 +1137,8 @@ export function TradeChart(input: Props) {
   const benchmark = useBenchmark(props.adapter, props.trade, props.panel, visibleWindow ?? props.initialRange ?? null);
   useEffect(() => {
     if (!chart.current || loading || changingData.current) return;
-    benchmarkLayer.current?.update({ primary: renderedData.current, benchmark: benchmark.candles, symbol: props.panel.benchmark === "off" ? "" : props.panel.benchmark ?? "", light: props.preferences.theme === "light" });
-  }, [benchmark.candles, result.candles, props.panel.benchmark, props.panel.interval, props.preferences.theme, props.preferences.volume, props.preferences.averages, props.replay, beforeEntry, loading, failure]);
+    benchmarkLayer.current?.update({ primary: renderedData.current, benchmark: benchmark.candles, symbol: props.panel.benchmark === "off" ? "" : props.panel.benchmark ?? "", light: props.preferences.theme === "light", color: props.preferences.benchmarkColor });
+  }, [benchmark.candles, props.preferences.benchmarkColor, result.candles, props.panel.benchmark, props.panel.interval, props.preferences.theme, props.preferences.volume, props.preferences.averages, props.replay, beforeEntry, loading, failure]);
   useEffect(() => {
     const light = props.preferences.theme === "light";
     sessionBackground.current?.setTheme(light);
@@ -1172,7 +1178,7 @@ export function TradeChart(input: Props) {
     const rect = host.current!.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
-  const pointAt = (pos: { x: number; y: number }): Point | null => {
+  const pointAt = (pos: { x: number; y: number }, free = false): Point | null => {
     const logical = chart.current?.timeScale().coordinateToLogical(pos.x),
       price = series.current?.coordinateToPrice(pos.y);
     if (
@@ -1183,6 +1189,13 @@ export function TradeChart(input: Props) {
       !bars.current.length
     )
       return null;
+    if (free) {
+      const list = bars.current, index = Math.floor(logical);
+      const time = logical < 0 ? list[0].time + logical * seconds[props.panel.interval]
+        : logical >= list.length - 1 ? list.at(-1)!.time + (logical - list.length + 1) * seconds[props.panel.interval]
+        : list[index].time + (logical - index) * (list[index + 1].time - list[index].time);
+      return { time: Math.max(0, time), price };
+    }
     const index = Math.max(
         0,
         Math.min(bars.current.length - 1, Math.round(logical)),
@@ -1235,10 +1248,18 @@ export function TradeChart(input: Props) {
           };
         else {
           props.onSelect(hit.id);
-          if (hit.kind === "handle") {
-            const drawing = props.drawings.find((d) => d.id === hit.id);
+          if (hit.point !== undefined) {
+            let drawing = props.drawings.find((d) => d.id === hit.id);
             if (drawing && !drawing.locked) {
-              drag.current = { drawing, point: hit.point! };
+              const note = drawing.tool === "text" || drawing.tool === "price-note";
+              // Materialize a legacy note's implicit box anchor only when it is moved.
+              const box = note ? hits.current.find(h => h.id === hit.id && h.point === 1 && h.anchor)?.anchor : undefined;
+              if (box && !drawing.points[1]) {
+                const end = pointAt(box, true);
+                if (end) drawing = { ...drawing, points: [drawing.points[0], end] };
+              }
+              const anchor = hit.anchor ?? (note ? { x: hit.x + hit.w / 2, y: hit.y + hit.h / 2 } : undefined);
+              drag.current = { drawing, point: hit.point, offset: anchor ? { x: pos.x - anchor.x, y: pos.y - anchor.y } : undefined };
               event.currentTarget.setPointerCapture(event.pointerId);
             }
           }
@@ -1304,7 +1325,8 @@ export function TradeChart(input: Props) {
       click.moved = true;
     if (click?.moved && click.target && event.buttons === 1 && props.tool === "cursor") autoPages.current = 3;
     if (!dataReady.current) return;
-    const point = pointAt(pointer(event));
+    const pos = pointer(event), offset = drag.current?.offset;
+    const point = pointAt(offset ? { x: pos.x - offset.x, y: pos.y - offset.y } : pos, !!offset);
     if (!point) return;
     if (drag.current) {
       draft.current = {
@@ -1385,7 +1407,7 @@ export function TradeChart(input: Props) {
               <option key={i}>{i}</option>
             ))}
           </select>
-          <select aria-label={`Comparison ${props.panel.id}`} value={props.panel.benchmark ?? "off"} onChange={e => props.onPanel?.({ benchmark: e.target.value as ChartPanel["benchmark"] })}>
+          <select aria-label={`Comparison ${props.panel.id}`} title={props.comparisonTitle} value={props.panel.benchmark ?? "off"} onChange={e => props.onPanel?.(selectBenchmark(props.panel, e.target.value as NonNullable<ChartPanel["benchmark"]>))}>
             <option value="off">Off</option><option>SPY</option><option>QQQ</option>
           </select>
           <select className="ws-chart-session" aria-label={`Chart session ${props.panel.id}`} value={props.panel.session ?? "auto"} title={`${props.sessionTitle}${props.panel.interval === "1d" || props.panel.interval === "1wk" ? "; daily and weekly bars retain provider aggregation" : ""}`} onChange={e => props.onPanel?.({ session: e.target.value as ChartPanel["session"] })}>
@@ -1441,7 +1463,7 @@ export function TradeChart(input: Props) {
           </button>
         </div>
       </div>
-      <div className="ws-benchmark-legend" ref={benchmarkHost} />
+      <div className="ws-benchmark-legend" ref={benchmarkHost} style={{ color: benchmarkColor(props.preferences.theme === "light", props.preferences.benchmarkColor) }} />
       {props.panel.benchmark && props.panel.benchmark !== "off" && benchmark.error && <button className="ws-benchmark-error" onClick={benchmark.retry}>{benchmark.error}</button>}
       {beforeEntry && !loading && !data.length && <div className="ws-before-entry-empty" role="status">No completed candles before entry</div>}
       <div

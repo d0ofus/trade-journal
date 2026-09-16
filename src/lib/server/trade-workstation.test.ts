@@ -49,6 +49,15 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("persists both note anchors without rewriting other review fields", async () => {
+    const key = await fixture();
+    const doc = await readWorkstationDocument(key);
+    const note = { id: "two-anchor-note", tool: "text" as const, points: [{ time: 1725980400, price: 102 }, { time: 1725976800.5, price: 104 }], text: "Left of the tip", color: "#abcdef", width: 1, dashed: false, locked: false, hidden: false, panel: "chart-1", createdAt: 1725980400 };
+    await saveWorkstationDocument(key, { ...doc, drawings: [...doc.drawings, note] }, doc.revision);
+    const loaded = await readWorkstationDocument(key);
+    expect(loaded.drawings.find(d => d.id === note.id)).toEqual(note);
+    expect(loaded.review).toMatchObject(doc.review);
+  });
   it("escapes literal markup in older plain-text takeaways without changing stored notes", async () => {
     const key = await fixture();
     await prisma.closedTradeNote.update({ where: { groupKey: key }, data: { lesson: "Keep <strong>literal</strong> & text" } });
@@ -58,7 +67,7 @@ describe("workstation persistence against isolated PostgreSQL", () => {
   it("saves chart views independently and rejects stale revisions without changing reviews", async () => {
     const key = await fixture();
     const before = await readWorkstationDocument(key);
-    const view = tradeViewSchema.parse({ version: 1, arrangement: "left", panels: [{ id: "chart-1", interval: "5m", session: "extended", range: { from: 1700000000, to: 1700086400 } }] });
+    const view = tradeViewSchema.parse({ version: 1, arrangement: "left", panels: [{ id: "chart-1", interval: "5m", session: "extended", benchmark: "off", lastBenchmark: "QQQ", range: { from: 1700000000, to: 1700086400 } }] });
     expect((await readTradeView(key)).revision).toBe(0);
     const saved = await saveTradeView(key, view, 0);
     expect(saved.revision).toBe(1); expect((await readTradeView(key)).view).toEqual(view);

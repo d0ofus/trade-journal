@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import { bindingConflict, defaultShortcuts, keyBinding, matchCommand, restoreShortcuts } from "./shortcuts";
 
 const key = (value: string, modifiers = {}) => ({ key: value, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, ...modifiers });
+test("comparison toggle is chart-scoped and its new default preserves saved assignments", () => {
+  const event = key("I", { shiftKey: true });
+  assert.equal(matchCommand(event, defaultShortcuts(), "chart")?.id, "chart.comparison");
+  assert.equal(matchCommand(event, defaultShortcuts(), "workstation"), undefined);
+  const saved = restoreShortcuts({ version: 1, bindings: { "tool.ray": "Shift+I" } });
+  assert.equal(saved.bindings["tool.ray"], "Shift+I");
+  assert.equal(saved.bindings["chart.comparison"], null);
+  assert.equal(restoreShortcuts({ version: 1, bindings: { "chart.comparison": null } }).bindings["chart.comparison"], null);
+});
 test("chart shortcuts are focused, remappable, disableable and respect modifiers", () => {
   const prefs = defaultShortcuts();
   assert.equal(matchCommand(key("r"), prefs, "chart")?.tool, "ray");
