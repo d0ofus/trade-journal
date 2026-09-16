@@ -13,5 +13,5 @@ export type TradeView = z.infer<typeof tradeViewSchema>;
 export type SavedTradeView = { revision: number; updatedAt: string | null; view: TradeView | null };
 export const emptyTradeView = (): SavedTradeView => ({ revision: 0, updatedAt: null, view: null });
 export function viewPreferences(view: TradeView): Partial<WorkspacePreferences> {
-  return { panels: view.panels.map(({ id, interval, benchmark, beforeEntry }) => ({ id, interval, benchmark: benchmark ?? "off", beforeEntry: beforeEntry ?? false })), chartSession: view.panels[0].session, chartArrangement: view.arrangement, chartSizing: view.sizing };
+  return { panels: view.panels.map(({ id, interval, session, benchmark, beforeEntry }) => ({ id, interval, session, benchmark: benchmark ?? "off", beforeEntry: beforeEntry ?? false })), chartArrangement: view.arrangement, chartSizing: view.sizing };
 }

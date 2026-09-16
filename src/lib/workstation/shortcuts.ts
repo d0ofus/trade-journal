@@ -30,6 +30,9 @@ export const commands: Command[] = [
   { id: "trade.previous", label: "Previous trade", scope: "workstation", binding: "Alt+ArrowUp" },
   { id: "trade.next", label: "Next trade", scope: "workstation", binding: "Alt+ArrowDown" },
   { id: "shortcuts.help", label: "Keyboard shortcuts", scope: "chart", binding: "?" },
+  { id: "chart.beforeTrade", label: "Before Trade", scope: "chart", binding: "Shift+B" },
+  { id: "chart.fit", label: "Fit Trade", scope: "chart", binding: "Shift+T" },
+  { id: "chart.session", label: "Toggle trading hours", scope: "chart", binding: "Shift+E" },
 ];
 
 export type ShortcutPreferences = { version: 1; enabled: boolean; singleKeys: boolean; bindings: Record<string, string | null> };
@@ -59,10 +62,17 @@ export function restoreShortcuts(value: unknown): ShortcutPreferences {
   if (!value || typeof value !== "object" || !("version" in value) || value.version !== 1) return defaults;
   const saved = value as Partial<ShortcutPreferences>;
   const used = new Set<string>();
+  // New defaults must never take a key already explicitly assigned on this device.
+  const savedBindings = new Set(commands.flatMap(command => {
+    const binding = saved.bindings?.[command.id];
+    return typeof binding === "string" && !bindingProblem(binding) ? [binding] : [];
+  }));
   const bindings: Record<string, string | null> = {};
   for (const command of commands) {
     const candidate = saved.bindings?.[command.id] === undefined ? command.binding : saved.bindings[command.id];
-    bindings[command.id] = typeof candidate === "string" && !bindingProblem(candidate) && !used.has(candidate) ? candidate : null;
+    const newDefault = ["chart.beforeTrade", "chart.fit", "chart.session"].includes(command.id);
+    const defaultConflict = newDefault && saved.bindings?.[command.id] === undefined && typeof candidate === "string" && savedBindings.has(candidate);
+    bindings[command.id] = typeof candidate === "string" && !bindingProblem(candidate) && !used.has(candidate) && !defaultConflict ? candidate : null;
     if (bindings[command.id]) used.add(bindings[command.id]!);
   }
   return { version: 1, enabled: saved.enabled !== false, singleKeys: saved.singleKeys !== false, bindings };

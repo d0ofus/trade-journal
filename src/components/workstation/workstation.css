@@ -2730,10 +2730,10 @@
 .ws-has-fullscreen .ws-chart-grid.ws-resizable-grid { overflow:visible; }
 @media (prefers-reduced-motion:reduce) { .ws-chart-divider span { transition:none; } }
 
-.ws-session-select { max-width: 170px; min-width: 0; border: 1px solid var(--ws-border); border-radius: 4px; background: var(--ws-bg); color: var(--ws-text); font: inherit; padding: 4px; }
+.ws-session-apply { white-space: nowrap; font-size: 10px; }
 @media (max-width: 600px) {
   .ws-chart-toolbar { height: auto; flex: 0 0 auto; flex-wrap: wrap; padding: 4px 5px; row-gap: 3px; }
-  .ws-session-select { flex: 0 0 165px; }
+  .ws-session-apply { flex-shrink: 0; }
 }
 
 .ws-history-progress { position:absolute; z-index:3; top:8px; right:70px; pointer-events:none; font-size:10px; color:var(--ws-muted); background:var(--ws-bg); padding:3px 6px; border-radius:3px; }
@@ -2749,6 +2749,7 @@
 .ws-chart-symbol button { font-size: 9px; white-space: nowrap; padding: 3px 5px; }
 .ws-chart-symbol button.active { color: var(--ws-text); background: #7c8fea30; }
 .ws-chart-symbol select { max-width: 110px; }
+.ws-chart-symbol .ws-chart-session { width: 110px; }
 .ws-benchmark-legend { color: #60a5fa; font-size: 9px; padding: 0 12px 3px; font-variant-numeric: tabular-nums; min-height: 0; }
 .ws-benchmark-legend:empty { display: none; }
 .ws-benchmark-error, .ws-before-entry-empty { font-size: 10px; margin: 2px 12px; color: var(--ws-muted); }

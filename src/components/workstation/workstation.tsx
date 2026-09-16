@@ -3,6 +3,7 @@ import { executionColors } from "@/lib/workstation/comparison";
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
+import { restoreChartDisplay, restoreChartPanels } from "@/lib/workstation/chart-preferences";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
 import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
 import {
@@ -310,7 +311,7 @@ export function TradesWorkstation({
   const [savedPreferences, setPreferences] = useState(defaultPreferences),
     [loadedPreferences, setLoadedPreferences] = useState(false);
   const preferences = useMemo(() => ({ ...savedPreferences, theme: appearance.theme }), [savedPreferences, appearance.theme]);
-  const trade = useMemo(() => selectedTrade ? { ...selectedTrade, chartSession: tradeChartSession(selectedTrade, preferences.chartSession) } : selectedTrade, [selectedTrade, preferences.chartSession]);
+  const trade = selectedTrade;
   const marketMetrics = useRef<{ key: string; value?: MarketMetrics }>({ key: "" });
   const metricKey = `${trade?.id}:${trade?.timeInterpretationVersion}`;
   const receiveMetrics = useCallback((key: string, value: MarketMetrics | undefined) => { marketMetrics.current = { key, value }; }, []);
@@ -382,7 +383,7 @@ export function TradesWorkstation({
   const viewState = useTradeView(adapter, trade?.id ?? "", loadedPreferences, restoreView);
   const normalView = useRef<{ tradeId: string; preferences: Partial<WorkspacePreferences>; panels: TradeView["panels"] } | null>(null);
   useEffect(() => {
-    if (replay !== null && !normalView.current) normalView.current = { tradeId: trade?.id ?? "", preferences: { panels: prefRef.current.panels, chartSession: prefRef.current.chartSession, chartArrangement: prefRef.current.chartArrangement, chartSizing: prefRef.current.chartSizing }, panels: structuredClone(viewRanges.current.panels) };
+    if (replay !== null && !normalView.current) normalView.current = { tradeId: trade?.id ?? "", preferences: { panels: prefRef.current.panels, chartArrangement: prefRef.current.chartArrangement, chartSizing: prefRef.current.chartSizing }, panels: structuredClone(viewRanges.current.panels) };
     if (replay === null && normalView.current) {
       const normal = normalView.current; normalView.current = null;
       if (normal.tradeId === trade?.id) { viewRanges.current.panels = normal.panels; setPreferences(value => ({ ...value, ...normal.preferences })); }
@@ -391,9 +392,9 @@ export function TradesWorkstation({
   const saveView = () => {
     if (!trade || replay !== null || !viewState.ready) return;
     const pref = prefRef.current;
-    viewState.change({ version: 1, arrangement: pref.chartArrangement, sizing: restoreChartSizing(pref.chartSizing), panels: pref.panels.map(panel => ({ ...panel, session: pref.chartSession ?? "auto", range: viewRanges.current.panels.find(p => p.id === panel.id && p.interval === panel.interval)?.range ?? null })) });
+    viewState.change({ version: 1, arrangement: pref.chartArrangement, sizing: restoreChartSizing(pref.chartSizing), panels: pref.panels.map(panel => ({ ...panel, session: panel.session ?? "auto", range: viewRanges.current.panels.find(p => p.id === panel.id && p.interval === panel.interval)?.range ?? null })) });
   };
-  const viewConfiguration = JSON.stringify([preferences.panels, preferences.chartSession, preferences.chartArrangement, preferences.chartSizing]);
+  const viewConfiguration = JSON.stringify([preferences.panels, preferences.chartArrangement, preferences.chartSizing]);
   useEffect(() => { if (viewState.ready && replay === null) saveView(); }, [viewConfiguration, viewState.ready]); // eslint-disable-line react-hooks/exhaustive-deps
   const register = useCallback((id: string, handle: ChartHandle | null) => {
     if (handle) handles.current.set(id, handle);
@@ -423,7 +424,7 @@ export function TradesWorkstation({
     if (!adapter.cachedCandles || tradeId !== trade?.id) return;
     const index = filtered.findIndex(t => t.id === tradeId);
     for (const next of filtered.slice(index + 1, index + 3)) for (const panel of preferences.panels) {
-      const candidate = { ...next, chartSession: tradeChartSession(next, preferences.chartSession) };
+      const candidate = { ...next, chartSession: tradeChartSession(next, panel.session) };
       const key = `${candidate.id}:${panel.interval}:${candidate.chartSession}:${candidate.timeInterpretationVersion}`;
       if (prefetched.current.has(key)) continue;
       if (prefetched.current.size >= 100) prefetched.current.delete(prefetched.current.values().next().value!);
@@ -482,7 +483,8 @@ export function TradesWorkstation({
           chartLabels: restoreChartLabels(parsed.chartLabels, parsed.labels),
           dateLink: restoredDateLink(parsed.dateLink),
           chartSizing: restoreChartSizing(parsed.chartSizing),
-          chartSession: ["auto", "regular", "extended"].includes(parsed.chartSession) ? parsed.chartSession : "auto",
+          panels: restoreChartPanels(parsed.panels, parsed.chartSession),
+          ...restoreChartDisplay(parsed),
         });
         if (parsed.exportColumns?.length) setColumns(parsed.exportColumns);
       }
@@ -633,6 +635,12 @@ export function TradesWorkstation({
       setFullscreenChart(null);
       changePreferences({ focusMode: !preferences.focusMode });
       handles.current.get(chartId)?.focus();
+    } else if (id === "chart.beforeTrade" || id === "chart.fit" || id === "chart.session") {
+      const handle = handles.current.get(chartId);
+      if (id === "chart.beforeTrade") handle?.beforeTrade();
+      else if (id === "chart.fit") handle?.fit();
+      else handle?.toggleSession();
+      handle?.focus();
     } else if (id === "chart.date") setModal("date");
     else if (id === "shortcuts.help") setModal("shortcuts");
     else if (id === "drawing.undo") undoDrawings();
@@ -812,6 +820,7 @@ export function TradesWorkstation({
           preferences.panels[i] ?? {
             id: `chart-${i + 1}`,
             interval: (["5m", "1h", "1d", "1wk"] as Interval[])[i],
+            session: "auto",
           },
       ),
     });
@@ -1014,7 +1023,7 @@ export function TradesWorkstation({
           <span>Fit trade</span>
         </button>
         <button className={`ws-tool-button ${activeLabels === "labels" ? "active" : ""}`} aria-label={activeLabels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={activeLabels === "labels"} title={`Toggle labels on active chart (${currentPanel.id}); markers remain visible`} onClick={() => toggleLabels()}>{activeLabels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
-        <select className="ws-session-select" aria-label="Chart session" value={preferences.chartSession ?? "auto"} onChange={event => changePreferences({ chartSession: event.target.value as "auto" | "regular" | "extended" })}><option value="auto">Session: Auto ({trade.chartSession})</option><option value="regular">Regular hours</option><option value="extended">Extended hours</option></select>
+        <button className="ws-session-apply" aria-label="Apply active chart’s session to all charts" title={`Apply ${currentPanel.session ?? "auto"} from ${currentPanel.id} to all charts`} onClick={() => changePreferences({ panels: preferences.panels.map(panel => ({ ...panel, session: currentPanel.session ?? "auto" })) })}>Apply session to all</button>
         <span className="ws-flex-spacer" />
         <details className="ws-date-control">
           <summary
@@ -1150,7 +1159,7 @@ export function TradesWorkstation({
               initialRange={viewRanges.current.panels.find(p => p.id === panel.id && p.interval === panel.interval)?.range}
               onViewChange={range => {
                 if (replay !== null) return;
-                const next = { ...panel, session: preferences.chartSession ?? "auto" as const, range };
+                const next = { ...panel, session: panel.session ?? "auto" as const, range };
                 viewRanges.current.panels = [...viewRanges.current.panels.filter(p => p.id !== panel.id), next];
                 saveView();
               }}
@@ -1171,6 +1180,9 @@ export function TradesWorkstation({
               fullscreen={fullscreenChart === panel.id}
               onFullscreen={() => runCommand("chart.fullscreen", panel.id)}
               fullscreenTitle={titleFor("chart.fullscreen", fullscreenChart === panel.id ? "Restore chart" : "Fullscreen chart")}
+              beforeTradeTitle={titleFor("chart.beforeTrade", "Before Trade — exclude the first execution candle and all later candles")}
+              fitTitle={titleFor("chart.fit", "Fit trade")}
+              sessionTitle={titleFor("chart.session", "Toggle Regular / Extended hours")}
               onActive={() => setActiveChart(panel.id)}
               onDateClick={(target) => syncClickedDate(panel.id, target)}
               onPanel={patch => changePreferences({ panels: preferences.panels.map(p => p.id === panel.id ? { ...p, ...patch } : p) })}
@@ -2310,6 +2322,25 @@ export function TradesWorkstation({
               />
             </label>
             <label>
+              <span>Volume average</span>
+              <input type="checkbox" checked={preferences.volumeAverage.enabled} onChange={e => changePreferences({ volumeAverage: { ...preferences.volumeAverage, enabled: e.target.checked } })} />
+            </label>
+            <label>
+              <span>Volume average period (bars)</span>
+              <input type="number" min={1} max={500} step={1} value={preferences.volumeAverage.period} onChange={e => {
+                const period = e.target.valueAsNumber;
+                if (Number.isInteger(period) && period >= 1 && period <= 500) changePreferences({ volumeAverage: { ...preferences.volumeAverage, period } });
+              }} />
+            </label>
+            <label>
+              <span>Horizontal gridlines</span>
+              <input type="checkbox" checked={preferences.gridlines.horizontal} onChange={e => changePreferences({ gridlines: { ...preferences.gridlines, horizontal: e.target.checked } })} />
+            </label>
+            <label>
+              <span>Vertical gridlines</span>
+              <input type="checkbox" checked={preferences.gridlines.vertical} onChange={e => changePreferences({ gridlines: { ...preferences.gridlines, vertical: e.target.checked } })} />
+            </label>
+            <label>
               <span>Linked time crosshairs</span>
               <input
                 type="checkbox"
@@ -2530,7 +2561,7 @@ export function TradesWorkstation({
                     WorkspacePreferences,
                     "dock" | "panels" | "list" | "chartSizing" | "chartArrangement"
                   >;
-                  changePreferences({ ...value, chartSizing: restoreChartSizing(value.chartSizing) });
+                  changePreferences({ ...value, panels: restoreChartPanels(value.panels, preferences.chartSession), chartSizing: restoreChartSizing(value.chartSizing) });
                   if (value.dock && dock.current) {
                     try {
                       dock.current.fromJSON(value.dock as SerializedDockview);

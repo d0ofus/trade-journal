@@ -30,6 +30,7 @@ import {
   completedCandles,
   executionBar,
   movingAverage,
+  volumeMovingAverage,
   logicalTimeIndex,
   visibleDrawings,
 } from "@/lib/workstation/math";
@@ -55,6 +56,8 @@ export type ChartHandle = {
   cancel: () => void;
   capture: (light?: boolean, scale?: number, frame?: { width: number; height: number }) => Promise<HTMLCanvasElement>;
   fit: () => void;
+  beforeTrade: () => void;
+  toggleSession: () => void;
   reveal: (target: ChartDateTarget) => void;
   view: () => HistoryRange | null;
 };
@@ -83,6 +86,9 @@ type Props = {
   fullscreen: boolean;
   onFullscreen: () => void;
   fullscreenTitle: string;
+  beforeTradeTitle: string;
+  fitTitle: string;
+  sessionTitle: string;
   style?: CSSProperties;
   onToggleLabels: () => void;
   onHistoryReady?: (tradeId: string) => void;
@@ -99,10 +105,15 @@ import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "@/
 import { executionColors } from "@/lib/workstation/comparison";
 import { createBenchmarkLayer, benchmarkStyle } from "./benchmark-layer";
 import { useBenchmark } from "./use-benchmark";
+import { tradeChartSession } from "@/lib/workstation/chart-session";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
-export function TradeChart(props: Props) {
+export function TradeChart(input: Props) {
+  // A panel's session is part of its data identity. Sibling preference changes
+  // must not recreate this trade object and restart its history session.
+  const trade = useMemo(() => ({ ...input.trade, chartSession: tradeChartSession(input.trade, input.panel.session) }), [input.trade, input.panel.session]);
+  const props = { ...input, trade };
   const container = useRef<HTMLElement>(null);
   const ohlcHost = useRef<HTMLDivElement>(null);
   const ohlcLegend = useRef<ReturnType<typeof createOhlcLegend> | null>(null);
@@ -179,6 +190,7 @@ export function TradeChart(props: Props) {
     drag = useRef<{ drawing: Drawing; point: number } | null>(null);
   const dimensions = useRef({ width: 0, height: 0 }),
     currentInterval = useRef<Interval>(props.panel.interval),
+    currentSession = useRef(props.trade.chartSession),
     lastData = useRef<Candle[]>([]);
   const renderedData = useRef<Candle[]>([]),
     currentTrade = useRef(props.trade.id);
@@ -211,7 +223,7 @@ export function TradeChart(props: Props) {
         ? chart.current?.timeScale().getVisibleRange()
         : null;
     const intervalContext =
-      currentInterval.current !== props.panel.interval &&
+      (currentInterval.current !== props.panel.interval || currentSession.current !== props.trade.chartSession) &&
       visible &&
       typeof visible.from === "number" &&
       typeof visible.to === "number"
@@ -229,7 +241,7 @@ export function TradeChart(props: Props) {
         : intervalContext ?? (latest.current.initialRange ? { time: (latest.current.initialRange.from + latest.current.initialRange.to) / 2, trade: props.trade.id, fit: false, range: latest.current.initialRange } : null);
     if (
       currentTrade.current !== props.trade.id ||
-      currentInterval.current !== props.panel.interval
+      currentInterval.current !== props.panel.interval || currentSession.current !== props.trade.chartSession
     ) {
       focusedWindow.current = requested?.range ?? null;
       focusedTarget.current = requested?.reveal ?? null;
@@ -248,7 +260,7 @@ export function TradeChart(props: Props) {
         : null;
     dataReady.current = false;
     sessionBackground.current?.setData([], props.panel.interval, undefined, latest.current.preferences.theme === "light");
-    const nextOhlcContext = JSON.stringify([props.trade.id, props.panel.interval, props.trade.chartSession, latest.current.preferences.chartSession ?? "auto", props.trade.timeInterpretationVersion]);
+    const nextOhlcContext = JSON.stringify([props.trade.id, props.panel.interval, props.trade.chartSession, props.trade.timeInterpretationVersion]);
     if (ohlcContext.current !== nextOhlcContext) ohlcLegend.current?.reset();
     else ohlcLegend.current?.update(null);
     ohlcContext.current = nextOhlcContext;
@@ -323,8 +335,8 @@ export function TradeChart(props: Props) {
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: "#1b2230" },
-        horzLines: { color: "#1b2230" },
+        vertLines: { color: "#1b2230", visible: p.preferences.gridlines.vertical },
+        horzLines: { color: "#1b2230", visible: p.preferences.gridlines.horizontal },
       },
       rightPriceScale: {
         borderVisible: false,
@@ -710,6 +722,15 @@ export function TradeChart(props: Props) {
         paintRef.current();
       },
       fit: () => { autoPages.current = 0; requestFit.current(); },
+      beforeTrade: () => {
+        const p = latest.current;
+        if (beforeEntryBoundary(p.trade, p.panel.interval, historyResult.current.session) === null) return;
+        p.onPanel?.({ beforeEntry: !p.panel.beforeEntry });
+      },
+      toggleSession: () => {
+        const p = latest.current;
+        p.onPanel?.({ session: p.trade.chartSession === "regular" ? "extended" : "regular" });
+      },
       view() {
         const range = api.timeScale().getVisibleRange();
         return range &&
@@ -788,8 +809,8 @@ export function TradeChart(props: Props) {
             attributionLogo: false,
           },
           grid: {
-            vertLines: { color: light ? "#edf0f5" : "#1b2230" },
-            horzLines: { color: light ? "#edf0f5" : "#1b2230" },
+            vertLines: { color: light ? "#edf0f5" : "#1b2230", visible: prefs.gridlines.vertical },
+            horzLines: { color: light ? "#edf0f5" : "#1b2230", visible: prefs.gridlines.horizontal },
           },
           rightPriceScale: {
             borderVisible: false,
@@ -839,6 +860,14 @@ export function TradeChart(props: Props) {
                 color: b.close >= b.open ? "#38bfa633" : "#e4788633",
               })),
             );
+            if (prefs.volumeAverage.enabled) {
+              const average = clone.addSeries(LineSeries, {
+                priceScaleId: "volume", priceFormat: { type: "volume" },
+                color: light ? "#96691e" : "#d4b477", lineWidth: Math.min(4, scale) as 1 | 2 | 3 | 4,
+                lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+              });
+              average.setData(volumeMovingAverage(snapshotBars, prefs.volumeAverage.period).map(b => ({ ...b, time: asTime(b.time) })));
+            }
           }
           prefs.averages.forEach((period, i) => {
             const sma = clone.addSeries(LineSeries, {
@@ -1065,6 +1094,7 @@ export function TradeChart(props: Props) {
       api.timeScale().setVisibleLogicalRange({ from: data.length - 1 - width, to: data.length + 2 });
     } else if (entryRestore) api.timeScale().setVisibleLogicalRange(preserveHistoryViewport(entryRestore.candles, data, entryRestore.range));
     currentInterval.current = props.panel.interval;
+    currentSession.current = props.trade.chartSession;
     currentTrade.current = props.trade.id;
     lastData.current = result.candles;
     renderedData.current = data;
@@ -1091,6 +1121,17 @@ export function TradeChart(props: Props) {
     failure,
   ]);
   useEffect(() => {
+    const api = chart.current;
+    if (!api || loading || failure || !props.preferences.volume || !props.preferences.volumeAverage.enabled) return;
+    const average = api.addSeries(LineSeries, {
+      priceScaleId: "volume", priceFormat: { type: "volume" },
+      color: props.preferences.theme === "light" ? "#96691e" : "#d4b477", lineWidth: 1,
+      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+    });
+    average.setData(volumeMovingAverage(data, props.preferences.volumeAverage.period).map(b => ({ ...b, time: asTime(b.time) })));
+    return () => { if (chart.current === api) api.removeSeries(average); };
+  }, [data, props.preferences.volume, props.preferences.volumeAverage.enabled, props.preferences.volumeAverage.period, props.preferences.theme, loading, failure]);
+  useEffect(() => {
     if (loading || failure || changingData.current) return;
     // Reconcile after setData; hover itself never enters React or the data effects.
     ohlcLegend.current?.reconcile(renderedData.current, visibleWindow?.to);
@@ -1112,12 +1153,12 @@ export function TradeChart(props: Props) {
         textColor: light ? "#68758a" : "#7e899e",
       },
       grid: {
-        vertLines: { color: light ? "#edf0f5" : "#1b2230" },
-        horzLines: { color: light ? "#edf0f5" : "#1b2230" },
+        vertLines: { color: light ? "#edf0f5" : "#1b2230", visible: props.preferences.gridlines.vertical },
+        horzLines: { color: light ? "#edf0f5" : "#1b2230", visible: props.preferences.gridlines.horizontal },
       },
     });
     paintRef.current();
-  }, [props.preferences.theme]);
+  }, [props.preferences.theme, props.preferences.gridlines.horizontal, props.preferences.gridlines.vertical]);
   useEffect(() => {
     paintRef.current();
   }, [
@@ -1325,6 +1366,7 @@ export function TradeChart(props: Props) {
       data-chart-id={props.panel.id}
       style={props.fullscreen ? undefined : props.style}
       data-label-mode={props.labelMode}
+      data-session={props.trade.chartSession}
       onFocusCapture={props.onActive}
       onPointerDownCapture={(event) => {
         props.onActive();
@@ -1354,7 +1396,10 @@ export function TradeChart(props: Props) {
           <select aria-label={`Comparison ${props.panel.id}`} value={props.panel.benchmark ?? "off"} onChange={e => props.onPanel?.({ benchmark: e.target.value as ChartPanel["benchmark"] })}>
             <option value="off">Off</option><option>SPY</option><option>QQQ</option>
           </select>
-          <button className={beforeEntry ? "active" : ""} aria-label={`Before entry ${props.panel.id}`} aria-pressed={beforeEntry} disabled={entryBoundary === null} title={entryBoundary === null ? "Resolve the execution time and candle session before using Before entry" : "Exclude the first execution candle and all later candles"} onClick={() => props.onPanel?.({ beforeEntry: !props.panel.beforeEntry })}>Before entry</button>
+          <select className="ws-chart-session" aria-label={`Chart session ${props.panel.id}`} value={props.panel.session ?? "auto"} title={`${props.sessionTitle}${props.panel.interval === "1d" || props.panel.interval === "1wk" ? "; daily and weekly bars retain provider aggregation" : ""}`} onChange={e => props.onPanel?.({ session: e.target.value as ChartPanel["session"] })}>
+            <option value="auto">Auto ({props.trade.chartSession})</option><option value="regular">Regular</option><option value="extended">Extended</option>
+          </select>
+          <button className={beforeEntry ? "active" : ""} aria-label={`Before entry ${props.panel.id}`} aria-pressed={beforeEntry} disabled={entryBoundary === null} title={entryBoundary === null ? "Resolve the execution time and candle session before using Before entry" : props.beforeTradeTitle} onClick={() => ownHandle.current?.beforeTrade()}>Before entry</button>
           <span className="ws-session">
             {props.panel.interval === "5m" ? "EXECUTION" : "CONTEXT"}
           </span>
@@ -1381,9 +1426,9 @@ export function TradeChart(props: Props) {
             </span>
           </button>
           <button
-            title="Fit trade"
+            title={props.fitTitle}
             aria-label={`Fit trade ${props.panel.id}`}
-            onClick={() => { autoPages.current = 0; requestFit.current(); }}
+            onClick={() => ownHandle.current?.fit()}
           >
             <Crosshair size={13} />
           </button>

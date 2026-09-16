@@ -1,5 +1,6 @@
 import { expect, test, BrowserContext, Page } from "@playwright/test";
 import { prisma } from "../../src/lib/prisma";
+import { candleFixture } from "./candle-fixture";
 
 // Dedicated test-server login. Never load the application's .env.local in this suite.
 const username = "phase2-reviewer", password = "phase2-local-test-only";
@@ -30,6 +31,9 @@ test.beforeAll(async () => {
   expect(trade.closeTime.toISOString()).toBe(executions.at(-1)!.executedAt.toISOString());
 });
 test.afterAll(() => prisma.$disconnect());
+test.beforeEach(async ({ context }) => {
+  await context.route("**/api/workstation/candles?**", route => route.fulfill({ json: candleFixture(route.request().url()) }));
+});
 
 test("production build protects authenticated routes and keeps preview disabled", async ({ page, context }) => {
   await page.goto("/trades");

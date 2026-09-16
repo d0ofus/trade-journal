@@ -40,6 +40,15 @@ export function movingAverage(candles: Candle[], period: number) {
   let sum = 0;
   return candles.flatMap((c, i) => { sum += c.close; if (i >= period) sum -= candles[i - period].close; return i >= period - 1 ? [{ time: c.time, value: sum / period }] : []; });
 }
+export function volumeMovingAverage(candles: Candle[], period: number) {
+  if (!Number.isInteger(period) || period < 1 || period > 500) return [];
+  let sum = 0;
+  return candles.flatMap((c, i) => {
+    sum += c.volume;
+    if (i >= period) sum -= candles[i - period].volume;
+    return i >= period - 1 ? [{ time: c.time, value: sum / period }] : [];
+  });
+}
 export function riskReward(drawing: Drawing) {
   const [entry, end, stopPoint] = drawing.points;
   if (!entry || !end) return null;

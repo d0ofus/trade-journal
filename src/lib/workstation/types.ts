@@ -116,16 +116,20 @@ export type TradeDocument = {
   journalUpdatedAt?: string | null;
   legacy?: unknown;
 };
-export type ChartPanel = { id: string; interval: Interval; benchmark?: "off" | "SPY" | "QQQ"; beforeEntry?: boolean };
+export type ChartSessionPreference = "auto" | "regular" | "extended";
+export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; beforeEntry?: boolean };
 export type WorkspacePreferences = {
   executionColors?: { buy: string; sell: string };
-  chartSession?: "auto" | "regular" | "extended";
+  /** Legacy workspace setting, read only when migrating panels without a session. */
+  chartSession?: ChartSessionPreference;
   theme: "dark" | "light";
   panels: ChartPanel[];
   labels: "labels" | "compact" | "hidden";
   chartLabels?: import("./chart-labels").ChartLabels;
   linked: boolean;
   volume: boolean;
+  volumeAverage: { enabled: boolean; period: number };
+  gridlines: { horizontal: boolean; vertical: boolean };
   averages: number[];
   magnet: boolean;
   keepTool: boolean;
@@ -204,13 +208,15 @@ export const emptyDocument = (): TradeDocument => ({
 export const defaultPreferences = (): WorkspacePreferences => ({
   theme: "dark",
   panels: [
-    { id: "chart-1", interval: "5m" },
-    { id: "chart-2", interval: "1h" },
-    { id: "chart-3", interval: "1d" },
+    { id: "chart-1", interval: "5m", session: "auto" },
+    { id: "chart-2", interval: "1h", session: "auto" },
+    { id: "chart-3", interval: "1d", session: "auto" },
   ],
   labels: "labels",
   linked: true,
   volume: true,
+  volumeAverage: { enabled: true, period: 20 },
+  gridlines: { horizontal: true, vertical: true },
   averages: [20, 50],
   magnet: false,
   keepTool: false,

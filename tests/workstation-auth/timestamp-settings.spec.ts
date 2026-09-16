@@ -53,7 +53,7 @@ test("Account confirmation plots legacy Flex executions like MU and removes stal
     });
     await page.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${batchId}`);
     await expect(page.locator(".ws-chart-state")).toHaveCount(0);
-    await expect(page.getByLabel("Chart session")).toContainText("Auto (extended)");
+    await expect(page.getByLabel("Chart session chart-1", { exact: true })).toContainText("Auto (extended)");
     await page.getByRole("button", { name: "Chart history chart-1", exact: true }).click();
     await page.locator(".ws-diagnostic-list").getByRole("button", { name: /SELL 6 @ 1008.71/ }).click();
     const details = page.getByRole("dialog", { name: "Execution details", exact: true });
@@ -97,7 +97,7 @@ test("Settings confirms and disables a batch while preserving imported records a
   await expect(settings.getByRole("status")).toContainText("Imported records are unchanged");
   await page.locator("#timestamp-interpretation").screenshot({ path: "screenshots/timestamp-interpretation/settings-confirmed.png" });
   await tradePage.bringToFront();
-  await expect(tradePage.getByLabel("Chart session")).toContainText("Auto (extended)", { timeout: 30000 });
+  await expect(tradePage.getByLabel("Chart session chart-1", { exact: true })).toContainText("Auto (extended)", { timeout: 30000 });
   await expect(chart).toHaveAttribute("data-visible-from", viewport.from!);
   await expect(chart).toHaveAttribute("data-visible-to", viewport.to!);
   await expect(tradePage.getByPlaceholder("What will you repeat or change?")).toHaveValue("Keep this review across timezone confirmation.");
@@ -107,7 +107,7 @@ test("Settings confirms and disables a batch while preserving imported records a
   await batch.getByRole("button", { name: "Disable", exact: true }).click();
   await expect(settings.getByRole("status")).toContainText("Interpretation disabled");
   await tradePage.bringToFront();
-  await expect(tradePage.getByLabel("Chart session")).toContainText("Auto (regular)", { timeout: 30000 });
+  await expect(tradePage.getByLabel("Chart session chart-1", { exact: true })).toContainText("Auto (regular)", { timeout: 30000 });
   expect(await prisma.execution.findMany({ where: { importBatchId: batchId }, orderBy: { id: "asc" } })).toEqual(records);
   expect(errors).toEqual([]);
   await tradePage.close();

@@ -20,6 +20,34 @@ Default hourly initialization requests the existing visible context first, then 
 
 ## Fetch behavior
 
+### When panning and zooming loads more bars
+
+The chart uses bounded, gesture-triggered loading. A wheel gesture or a plot drag
+that begins over a valid chart time grants up to three automatic history extensions.
+After visible-range changes settle for 180 ms, the chart checks a buffer equal to
+20% of the visible bar count, clamped to 20–200 bars. When both edges qualify,
+older history is checked first. Initial fitting and resizing reset this budget.
+
+Loading stops while a request is running, after a failure, when the gesture budget
+is exhausted, or when the requested direction has a stop message. Even a successful
+empty response pauses that direction, so a weekend or holiday can require a manual
+continuation. Subsequent checks depend on range-change events; there is no dedicated
+recheck when an in-flight request completes. A drag starting in blank space may not
+grant a budget. These conditions explain why manual loading is sometimes needed;
+they are not a diagnosis of a particular observed stall.
+
+**Load older/newer** bypasses the directional pause and requests a full history page
+(14/21/28/90/365/1,825 calendar days for 5m/10m/15m/1h/1d/1wk). Automatic pages are
+sized to the visible gap and buffer, between two days and that timeframe's maximum.
+Errors offer Retry history. Automatic newer loading is suppressed during replay
+and Before entry. Date boundaries, provider availability, and the 100,000-bar chart
+memory limit still apply. This is historical loading, without live streaming.
+
+The independent session controls, volume average, and gridline preferences do not
+change this loading algorithm.
+
+### Cache and provider requests
+
 Each fill takes the series lease before reading its authoritative snapshot. Compatible regular and extended 5m source lookups share a database query, retain separate identities and verified coverage, and reuse decoded results while aggregating market-open hourly candles. A successful fenced, atomic write supplies the response directly, avoiding a final full cache read.
 
 Successful partial fills continue immediately. Contention, rate limits and failures retain their delays. Background jobs count failures rather than successful partial passes; progress resets their failure count. The existing provider slots, maximum two background workers, pagination checks, 100 MB cache / 400 MB database guards and 1 MB write reserve remain in force. Storage-paused bars remain temporary and never certify persistence.

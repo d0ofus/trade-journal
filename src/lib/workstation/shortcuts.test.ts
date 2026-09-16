@@ -30,3 +30,16 @@ test("conflicts, reserved browser keys and corrupt saved preferences are handled
   assert.equal(keyBinding(key("?", { shiftKey: true })), "?");
   assert.equal(keyBinding(key("Dead", { isComposing: true })), null);
 });
+
+test("new chart actions have scoped defaults and preserve existing customized keys", () => {
+  const prefs = defaultShortcuts();
+  for (const [letter, id] of [["B", "chart.beforeTrade"], ["T", "chart.fit"], ["E", "chart.session"]]) {
+    assert.equal(matchCommand(key(letter, { shiftKey: true }), prefs, "chart")?.id, id);
+    assert.equal(matchCommand(key(letter, { shiftKey: true }), prefs, "workstation"), undefined);
+    const saved = restoreShortcuts({ version: 1, bindings: { "trade.next": `Shift+${letter}` } });
+    assert.equal(saved.bindings["trade.next"], `Shift+${letter}`);
+    assert.equal(saved.bindings[id], null);
+  }
+  assert.equal(restoreShortcuts({ version: 1, bindings: { "chart.session": null } }).bindings["chart.session"], null);
+  assert.equal(restoreShortcuts({ version: 1, bindings: { "chart.session": "Shift+B" } }).bindings["chart.beforeTrade"], null);
+});
