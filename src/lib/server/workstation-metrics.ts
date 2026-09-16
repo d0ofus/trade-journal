@@ -1,3 +1,4 @@
+import { shareEligibility, metricCalculationVersion } from "@/lib/workstation/share-eligibility";
 import { SharedRequests } from "@/lib/workstation/shared-requests";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -34,10 +35,11 @@ export async function loadTradeMetrics(trade: Trade, signal: AbortSignal): Promi
   if (!first || !executionTimeResolved(first) || ["pending", "stale", "unresolved"].includes(first.provenance?.interpretationStatus ?? "")) return unavailableMetrics(trade.symbol, trade.currency, "Resolve execution time first");
   const reference = previousSession(exchangeDate(first.time));
   if (!reference) return unavailableMetrics(trade.symbol, trade.currency, "Exchange session unavailable");
-  if (trade.assetType && !["STOCK", "ETF"].includes(trade.assetType.toUpperCase())) return unavailableMetrics(trade.symbol, trade.currency, "Unsupported instrument", reference.date);
+  const eligibilityBasis = shareEligibility(trade);
+  if (!eligibilityBasis) return unavailableMetrics(trade.symbol, trade.currency, "Unsupported instrument", reference.date);
   const policy = workstationCandlePolicy(), credentials = policy.credentials;
   if (!credentials) return unavailableMetrics(trade.symbol, trade.currency, "Daily metrics require the configured Alpaca chart feed", reference.date);
-  const provider = `alpaca:${credentials.feed}:split+raw:sec:${trade.currency}`, version = 1, key = cacheHash(`${trade.symbol}:${trade.currency}:${reference.date}:${provider}:${version}`);
+  const provider = `alpaca:${credentials.feed}:split+raw:sec:${trade.currency}:shares:${eligibilityBasis}`, version = metricCalculationVersion, key = cacheHash(`${trade.symbol}:${trade.currency}:${reference.date}:${provider}:${eligibilityBasis}:${version}`);
   return metricRequests.run(key, signal, async signal => {
   const cached = await prisma.workstationMetricCache.findUnique({ where: { key } });
   if (cached && cached.expiresAt > new Date()) return cached.payload as unknown as MarketMetrics;
@@ -45,12 +47,13 @@ export async function loadTradeMetrics(trade: Trade, signal: AbortSignal): Promi
   const [adjustedResult, rawResult, sharesResult] = await Promise.allSettled([
     fetchCompactCandles(trade.symbol, "1d", range, { ...credentials, adjustment: "split" }, true, true, { signal }),
     fetchCompactCandles(trade.symbol, "1d", range, { ...credentials, adjustment: "raw" }, true, true, { signal }),
-    trade.assetType?.toUpperCase() === "ETF" ? Promise.resolve(null) : historicalShares(trade.symbol, reference.date, signal),
+    eligibilityBasis === "etf" ? Promise.resolve(null) : historicalShares(trade.symbol, reference.date, signal),
   ]);
   signal.throwIfAborted();
   if (adjustedResult.status !== "fulfilled") return unavailableMetrics(trade.symbol, trade.currency, "Daily history unavailable; retry", reference.date);
   const adjusted = adjustedResult.value.filter(c => exchangeDate(c.time) <= reference.date).map(c => ({ ...c, volume: c.volume ?? 0 })) as Candle[];
   const value = calculateMarketMetrics(trade.symbol, trade.currency, reference.date, adjusted, `Alpaca ${credentials.feed.toUpperCase()} · split adjusted`);
+  value.eligibilityBasis = eligibilityBasis;
   const fact = sharesResult.status === "fulfilled" ? sharesResult.value : null;
   if (fact && rawResult.status === "fulfilled") {
     const raw = rawResult.value.filter(c => exchangeDate(c.time) <= reference.date);
@@ -65,7 +68,7 @@ export async function loadTradeMetrics(trade: Trade, signal: AbortSignal): Promi
       value.sharesDate = fact.end; value.sharesFiled = fact.filed; value.sharesSource = fact.source;
     } else value.marketCap = { value: null, reason: "Share observation outside verified split history" };
   }
-  if (trade.assetType?.toUpperCase() === "ETF") value.marketCap = { value: null, reason: "ETF market cap is not a company equity value" };
+  if (eligibilityBasis === "etf") value.marketCap = { value: null, reason: "ETF market cap is not a company equity value" };
   await persistMetrics(key, value, provider, version).catch(() => undefined);
   return value;
   });

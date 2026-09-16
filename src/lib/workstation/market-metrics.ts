@@ -2,7 +2,7 @@ import { usEquitiesTradingSession } from "../server/market-session-calendar";
 import type { Candle } from "./types";
 
 export type MetricValue = { value: number | null; reason?: string };
-export type MarketMetrics = { symbol: string; asOf: string | null; currency: string; provider: string; adr: MetricValue; atr: MetricValue; dollarVolume: MetricValue; marketCap: MetricValue; atrSessions: number; sharesDate?: string; sharesSource?: string; sharesFiled?: string };
+export type MarketMetrics = { eligibilityBasis?: import("./share-eligibility").ShareBasis; symbol: string; asOf: string | null; currency: string; provider: string; adr: MetricValue; atr: MetricValue; dollarVolume: MetricValue; marketCap: MetricValue; atrSessions: number; sharesDate?: string; sharesSource?: string; sharesFiled?: string };
 const dateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
 export function exchangeDate(time: number) { const p = Object.fromEntries(dateFormatter.formatToParts(new Date(time * 1000)).map(x => [x.type, x.value])); return `${p.year}-${p.month}-${p.day}`; }
 export function sessionForDate(date: string) { const [year, month, day] = date.split("-").map(Number); return usEquitiesTradingSession({ year, month, day }); }

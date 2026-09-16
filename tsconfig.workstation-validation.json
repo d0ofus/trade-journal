@@ -49,7 +49,11 @@
     "src/lib/server/storage-usage.test.ts",
     "src/lib/workstation/notion-import.test.ts",
     "src/components/workstation/benchmark-layer.test.ts",
-    "tests/workstation-auth/storage-monitor.spec.ts"
+    "tests/workstation-auth/storage-monitor.spec.ts",
+    "src/lib/journal/autosave.test.ts",
+    "src/lib/journal/recovery.test.ts",
+    "src/lib/workstation/share-eligibility.test.ts",
+    "tests/workstation-preview/journal-recovery.spec.ts"
   ],
   "exclude": [
     "node_modules"

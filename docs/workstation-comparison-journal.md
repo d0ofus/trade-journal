@@ -41,13 +41,13 @@ In Notion, use Merge with CSV on the existing database; map Name to the title pr
 
 PNG captures retain the header and axes, remove the diagnostic footer, and expand the chart into its former space. This applies to individual/layout downloads, clipboard images and new attachments. Stored screenshots are unchanged.
 
-## Older-trade metrics diagnosis
+## Older-trade metrics diagnosis (original release)
 
 Read-only inspection reproduced all four unavailable metrics for IE entered January 7, 2026. Its instrument is stored as OTHER. Its first execution has a resolved, user-confirmed New York timestamp; the reference session is January 6. `loadTradeMetrics` returns Unsupported instrument at its asset-type guard, before requesting daily bars or historical shares. Older imported equities commonly retain OTHER classifications. The current parser recognizes STK but does not repair old records. This identifies the immediate blocker, not the original import operation that created it.
 
 Recommended follow-up: add a metrics-specific legacy equity eligibility resolver. Retain explicit option, futures, forex and crypto exclusions, including options historically marked OTHER. Admit legacy USD equity candidates only with supporting instrument/provider evidence; preserve stored classifications and trade identities. Test an IE-equivalent fixture, OTHER options and ambiguous symbols; expose useful unavailable reasons and retryable provider failures. Do not bulk-reclassify instruments merely from ticker shape. Historical market cap still separately requires eligible SEC shares and verified price history.
 
-This release changes no metric eligibility, calculations, imported classifications or automatic history loading.
+The original release changed no metric eligibility or calculations. The later approved share-assumption compatibility and saving implementation is described in [workstation controls and saving](workstation-controls-diagnosis.md); stored classifications and automatic history loading remain unchanged.
 
 ## App storage monitor
 

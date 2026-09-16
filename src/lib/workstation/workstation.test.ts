@@ -15,7 +15,26 @@ import { emptyDocument } from "./types";
 test("application saves measure UTF-8 bytes and reject oversized reviews before HTTP", async () => {
   assert.equal(jsonBytes("界"), 5);
   const adapter = createApplicationAdapter();
-  await assert.rejects(adapter.save("oversized", { ...emptyDocument(), legacy: "界".repeat(Math.ceil(REVIEW_PACKAGE_MAX_BYTES / 3)) }, 0), /4 MB save limit/);
+  const document = emptyDocument(); document.review.notes = "界".repeat(Math.ceil(REVIEW_PACKAGE_MAX_BYTES / 3));
+  await assert.rejects(adapter.save("oversized", document, 0), /4 MB save limit/);
+});
+
+test("application saves serialize the outgoing package once and exclude server-owned archives", async context => {
+  let serializations = 0;
+  const stringify = JSON.stringify;
+  context.mock.method(JSON, "stringify", (value: unknown) => {
+    if (value && typeof value === "object" && "document" in value) serializations++;
+    return stringify(value);
+  });
+  context.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => {
+    const payload = JSON.parse(options.body as string);
+    assert.equal(payload.document.legacy, undefined);
+    assert.equal(payload.document.review.takeaway, "最新 review");
+    return new Response(stringify({ ...payload.document, revision: 1 }), { status: 200 });
+  });
+  const doc = emptyDocument(); doc.review.takeaway = "最新 review"; doc.legacy = "archive".repeat(REVIEW_PACKAGE_MAX_BYTES);
+  await createApplicationAdapter().save("review", doc, 0);
+  assert.equal(serializations, 1);
 });
 
 test("date linking leaves exact visible times and overlapping candle periods untouched", () => {

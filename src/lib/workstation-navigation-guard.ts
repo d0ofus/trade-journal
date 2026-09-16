@@ -12,10 +12,12 @@ type NavigationRequestDetail = {
 type NavigationGuard = (action: string) => boolean;
 
 type BrowserNavigationEvent = Event & {
-  destination: { url: string };
+  destination: { url: string; key?: string };
+  navigationType?: string;
+  downloadRequest?: string | null;
 };
 
-type BrowserNavigation = EventTarget;
+type BrowserNavigation = EventTarget & { traverseTo?(key: string): unknown };
 
 function browserNavigation() {
   return (window as Window & { navigation?: BrowserNavigation }).navigation;
@@ -40,12 +42,14 @@ export function requestWorkstationNavigation(action: string, destination?: strin
   );
 }
 
-export function useWorkstationNavigationGuard(guard: NavigationGuard) {
+export function useWorkstationNavigationGuard(guard: NavigationGuard, save?: () => Promise<boolean>) {
   const guardRef = useRef(guard);
+  const saveRef = useRef(save);
 
   useEffect(() => {
     guardRef.current = guard;
-  }, [guard]);
+    saveRef.current = save;
+  }, [guard, save]);
 
   useEffect(() => {
     let allowedDestination: { url: string | null; expiresAt: number } | null = null;
@@ -98,6 +102,13 @@ export function useWorkstationNavigationGuard(guard: NavigationGuard) {
       if (destination.href === window.location.href) return;
 
       const action = anchor.dataset.navigationAction || "leave this page";
+      if (saveRef.current) {
+        event.preventDefault(); event.stopPropagation();
+        void saveRef.current().then(saved => {
+          if (saved) { rememberAllowedNavigation(destination.href, 5000); window.location.assign(destination.href); }
+        });
+        return;
+      }
       if (requestNavigation(action, destination.href)) return;
 
       event.preventDefault();
@@ -108,8 +119,20 @@ export function useWorkstationNavigationGuard(guard: NavigationGuard) {
     const handleBrowserNavigation = (rawEvent: Event) => {
       const event = rawEvent as BrowserNavigationEvent;
       const destination = event.destination?.url;
+      if (event.downloadRequest != null || (destination && !["http:", "https:"].includes(new URL(destination).protocol))) return;
       if (!destination || consumeAllowedNavigation(destination)) return;
       if (isSameDocumentAnchor(new URL(destination))) return;
+      if (saveRef.current && event.cancelable) {
+        event.preventDefault();
+        void saveRef.current().then(saved => {
+          if (!saved) return;
+          rememberAllowedNavigation(destination, 5000);
+          if (event.navigationType === "traverse" && event.destination.key && navigation?.traverseTo) navigation.traverseTo(event.destination.key);
+          else if (destination === window.location.href) window.location.reload();
+          else window.location.assign(destination);
+        });
+        return;
+      }
       if (!guardRef.current("use browser navigation")) event.preventDefault();
     };
 

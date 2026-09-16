@@ -115,9 +115,9 @@ test("trade cards show peak cost beside shares, wrap on mobile and mask replay",
   const { errors, requests } = await open(page, 1, false);
   const cards = page.locator(".ws-trade-card");
   const nvda = cards.filter({ hasText: "NVDA" });
-  await expect(nvda.locator(".ws-trade-size")).toContainText("200 shares · Max $34,840.00");
-  await expect(cards.filter({ hasText: "TSLA" }).locator(".ws-peak-cost")).toContainText("Max $27,984.00");
-  await expect(nvda.locator(".ws-peak-cost")).toHaveAttribute("title", "Maximum entry cost of the position held at one time, excluding fees.");
+  await expect(nvda.locator(".ws-trade-size")).toContainText("200 shares · Max notional $34,840.00");
+  await expect(cards.filter({ hasText: "TSLA" }).locator(".ws-peak-cost")).toContainText("Max notional $27,984.00");
+  await expect(nvda.locator(".ws-peak-cost")).toHaveAttribute("title", "Maximum shares held simultaneously multiplied by the displayed average entry price, excluding fees. Calculated assuming share quantities");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Show trade list", exact: true }).first().click();
   await expect(nvda.locator(".ws-peak-cost")).toBeVisible();
@@ -126,6 +126,6 @@ test("trade cards show peak cost beside shares, wrap on mobile and mask replay",
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.getByRole("button", { name: "Replay trade", exact: true }).click();
-  for (const value of await cards.locator(".ws-peak-cost").all()) await expect(value).toHaveText("Max —");
+  for (const value of await cards.locator(".ws-peak-cost").all()) await expect(value).toHaveText("Max notional —");
   expect(errors).toEqual([]); expect(requests).toEqual([]);
 });

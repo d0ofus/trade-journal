@@ -8,6 +8,7 @@ import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } fr
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { restoreChartDisplay, restoreChartPanels } from "@/lib/workstation/chart-preferences";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
+import { metricIdentity } from "@/lib/workstation/share-eligibility";
 import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
 import {
   createContext,
@@ -107,7 +108,7 @@ import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
 import { ChartHandle, TradeChart } from "./trade-chart";
 import { TradeMarketMetrics } from "./market-metrics-strip";
 import type { MarketMetrics } from "@/lib/workstation/market-metrics";
-import { ReviewEditor } from "./review-editor";
+import { ConnectedReviewEditor, ConnectedSaveStatus } from "./review-editor";
 import { DrawingCoordinates } from "./drawing-coordinates";
 import { applyWorkspaceVisibility, reviewPanelIds } from "./workspace-layout";
 import { ChartDateTarget, restoredDateLink } from "@/lib/workstation/date-link";
@@ -1452,16 +1453,14 @@ export function TradesWorkstation({
     </div>
   );
   const journalContent = documentState ? (
-    <ReviewEditor
+    <ConnectedReviewEditor
       getMetrics={getMarketMetrics}
       key={trade.id}
       trade={trade}
-      document={documentState}
-      onChange={(review) => {
-        if (!trade.stale) persistence.change((d) => ({ ...d, review }));
+      persistence={persistence}
+      onChange={(update) => {
+        if (!trade.stale) persistence.change((d) => ({ ...d, review: update(d.review) }));
       }}
-      status={persistence.status}
-      error={persistence.error}
       retry={() => void persistence.retry()}
       reload={() => void persistence.reload()}
       onSaveNext={() => runCommand("review.next")}
@@ -1888,8 +1887,8 @@ export function TradesWorkstation({
                         <div className="ws-trade-card-bottom">
                           <span className="ws-trade-size">
                             <span>{t.executions.length} fills · </span>
-                            <span>{t.quantity} shares · <span className="ws-peak-cost" title={replay !== null ? "Peak position cost is hidden during replay." : peakCosts.get(t.id)?.reason ?? peakCostDescription} aria-label={replay !== null ? "Peak position cost hidden during replay" : `${peakCostDescription} ${peakCosts.get(t.id)?.reason ?? peakCosts.get(t.id)?.formatted}`}>
-                              Max {replay !== null ? "—" : peakCosts.get(t.id)?.formatted}
+                            <span>{t.quantity} shares · <span className="ws-peak-cost" title={replay !== null ? "Max notional is hidden during replay." : peakCosts.get(t.id)?.reason ?? [peakCostDescription, peakCosts.get(t.id)?.basis].filter(Boolean).join(" ")} aria-label={replay !== null ? "Max notional hidden during replay" : `${peakCostDescription} ${peakCosts.get(t.id)?.basis ?? ""} ${peakCosts.get(t.id)?.reason ?? peakCosts.get(t.id)?.formatted}`}>
+                              Max notional {replay !== null ? "—" : peakCosts.get(t.id)?.formatted}
                             </span></span>
                           </span>
                           <i
@@ -2123,7 +2122,7 @@ export function TradesWorkstation({
               ? "Local preview · synthetic market data"
               : "Trade review workspace"}
           </span>
-          <span>{busy || persistence.status}</span>
+          <span>{busy || <ConnectedSaveStatus persistence={persistence} mode={adapter.mode} />}</span>
           <span>
             Built for better decisions <Activity size={12} />
           </span>

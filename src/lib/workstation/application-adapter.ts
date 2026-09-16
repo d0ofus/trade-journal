@@ -1,6 +1,7 @@
 import type { MarketMetrics } from "./market-metrics";
 import { Candle, CandleResult, TradeDocument, WorkstationAdapter, seconds } from "./types";
-import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "./payload";
+import { metricIdentity } from "./share-eligibility";
+import { REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "./payload";
 import { tradeChartSession } from "./chart-session";
 import { CandleMemory } from "./candle-memory";
 import type { CandleCacheMetadata } from "./candle-ranges";
@@ -42,14 +43,15 @@ export function createApplicationAdapter(): WorkstationAdapter {
   return {
     mode: "application",
     benchmarkCandles: (symbol, trade, interval, signal, range, mode = "fill") => candles(mode, "benchmark", { ...trade, symbol }, interval, signal, range),
-    metrics: (trade, signal) => metricRequests.run(`${trade.id}:${trade.timeInterpretationVersion}`, signal, sharedSignal => request(`/api/closed-trades/${encodeURIComponent(trade.id)}/market-metrics`, { signal: sharedSignal, priority: "low" })),
+    metrics: (trade, signal) => metricRequests.run(metricIdentity(trade), signal, sharedSignal => request(`/api/closed-trades/${encodeURIComponent(trade.id)}/market-metrics`, { signal: sharedSignal, priority: "low" })),
     loadView: id => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`),
     saveView: (id, view, expectedRevision) => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ view, expectedRevision }), keepalive: true }),
     load: id => request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`),
     async save(id, document, expectedRevision) {
-      if (jsonBytes({ document, expectedRevision }) > REVIEW_PACKAGE_MAX_BYTES) throw new Error(REVIEW_PACKAGE_TOO_LARGE);
+      const body = JSON.stringify({ document: { ...document, legacy: undefined }, expectedRevision });
+      if (new TextEncoder().encode(body).byteLength > REVIEW_PACKAGE_MAX_BYTES) throw new Error(REVIEW_PACKAGE_TOO_LARGE);
       // The archive is server-owned and need not be uploaded with every keystroke.
-      return request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: { ...document, legacy: undefined }, expectedRevision }) });
+      return request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body });
     },
     candles: (...args) => candles("fill", undefined, ...args),
     cachedCandles: (...args) => candles("cache", undefined, ...args),

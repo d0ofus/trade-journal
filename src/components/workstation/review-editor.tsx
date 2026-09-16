@@ -1,7 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
 import { ArrowUpRight, Check, ChevronDown, Download, Plus, Sparkles } from "lucide-react";
+import { documentSaveStatus, type useTradeDocument } from "./use-trade-document";
 import { NotionReviewEditor } from "./notion-review-editor";
 import { Review, Trade, TradeDocument, WorkspacePreferences } from "@/lib/workstation/types";
 import type { ChartSectionKey } from "@/lib/workstation/notion-template";
@@ -11,10 +12,11 @@ import { plainText } from "@/lib/workstation/export";
 
 const FormattedNote = dynamic(() => import("./rich-review-editors").then(m => m.FormattedNote), { ssr: false });
 
-type Props = { getMetrics?: () => MarketMetrics | undefined; trade: Trade; document: TradeDocument; onChange: (review: Review) => void; status: string; error: string; retry: () => void; reload: () => void; onSaveNext: () => void; saveNextShortcut: string; onEvidence: (section?: ChartSectionKey) => void; onNotionExport: () => void; preferences: WorkspacePreferences; onPreferences: (update: Partial<WorkspacePreferences>) => void; replay: number | null; mode: "demo" | "application"; notify: (message: string) => void };
+type Props = { getMetrics?: () => MarketMetrics | undefined; trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; status: string; error: string; retry: () => void; reload: () => void; onSaveNext: () => void; saveNextShortcut: string; onEvidence: (section?: ChartSectionKey) => void; onNotionExport: () => void; preferences: WorkspacePreferences; onPreferences: (update: Partial<WorkspacePreferences>) => void; replay: number | null; mode: "demo" | "application"; notify: (message: string) => void };
 export function ReviewEditor(p: Props) {
   const r = p.document.review, [deep, setDeep] = useState(false), [tag, setTag] = useState(""), [customName, setCustomName] = useState(""), [templateName, setTemplateName] = useState("");
-  const change = (patch: Partial<Review>) => p.onChange({ ...r, ...patch });
+  const change = (patch: Partial<Review>) => p.onChange(current => ({ ...current, ...patch }));
+  const legacyText = useMemo(() => typeof p.document.legacy === "string" ? plainText(p.document.legacy) : JSON.stringify(p.document.legacy, null, 2), [p.document.legacy]);
   const complete = [r.notion?.analysis.technicalPositive || r.setup, r.notion?.analysis.idealExecution || r.execution, r.takeaway].filter(v => richPlain(v ?? "")).length;
   const addTag = () => { if (tag.trim() && !r.tags.includes(tag.trim())) change({ tags: [...r.tags, tag.trim()].slice(0, 30) }); setTag(""); };
 
@@ -34,6 +36,18 @@ export function ReviewEditor(p: Props) {
     </details>
     <button className="ws-add-evidence" onClick={() => p.onEvidence()}><Plus size={14} /> Attach current chart <span>{p.document.evidence.length} saved</span></button>
     <div className="ws-journal-save"><span className={p.error ? "negative" : "ws-save-status"}><span className="ws-feed-dot" />{p.status}</span>{p.error && <div className="ws-error"><p>{p.error}</p><button onClick={p.retry}>Retry</button><button onClick={p.reload}>Reload saved review</button><button onClick={() => { const blob = new Blob([JSON.stringify(p.document, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = `${p.trade.symbol}-recovered-draft.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}>Export draft</button></div>}<button className="ws-primary ws-save-next" onClick={p.onSaveNext}><Check size={14} /> Save & next <kbd>{p.saveNextShortcut === "Unassigned" ? "" : p.saveNextShortcut}</kbd></button><button className="ws-copy-review" onClick={p.onNotionExport}><Download size={13} /> Export review for Notion <ArrowUpRight size={13} /></button><p className="ws-help">One review, shared with your journal.{p.mode === "demo" ? " Demo changes stay on this device." : ""}</p></div>
-    {!!p.document.legacy && <details className="ws-legacy"><summary>Preserved original journal material</summary><pre>{typeof p.document.legacy === "string" ? plainText(p.document.legacy) : JSON.stringify(p.document.legacy, null, 2)}</pre></details>}
+    {!!p.document.legacy && <details className="ws-legacy"><summary>Preserved original journal material</summary><pre>{legacyText}</pre></details>}
   </div>;
+}
+
+export function ConnectedReviewEditor({ persistence, ...props }: Omit<Props, "document" | "status" | "error"> & { persistence: ReturnType<typeof useTradeDocument> }) {
+  const snapshot = useSyncExternalStore(persistence.subscribe, persistence.getSnapshot, () => null);
+  if (!snapshot) return null;
+  const error = [snapshot.error, snapshot.backupError, persistence.error].filter(Boolean).join(" ");
+  return <ReviewEditor {...props} document={snapshot.value} status={documentSaveStatus(snapshot, props.mode)} error={error} />;
+}
+
+export function ConnectedSaveStatus({ persistence, mode }: { persistence: ReturnType<typeof useTradeDocument>; mode: string }) {
+  const snapshot = useSyncExternalStore(persistence.subscribe, persistence.getSnapshot, () => null);
+  return <>{snapshot ? documentSaveStatus(snapshot, mode) : persistence.error || "Loading review"}</>;
 }

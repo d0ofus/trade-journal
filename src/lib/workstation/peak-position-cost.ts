@@ -1,8 +1,8 @@
 import type { Trade } from "./types";
+import { shareEligibility, legacyShareDescription } from "./share-eligibility";
 
-const EPSILON = 1e-8;
-export const peakCostDescription = "Maximum entry cost of the position held at one time, excluding fees.";
-export type PeakPositionCost = { value: number | null; reason?: string };
+export const peakCostDescription = "Maximum shares held simultaneously multiplied by the displayed average entry price, excluding fees.";
+export type PeakPositionCost = { value: number | null; reason?: string; basis?: string };
 const currencies = new Map<string, Intl.NumberFormat>();
 export function formatPeakPositionCost(value: number, currency: string) {
   const unit = currency || "USD";
@@ -15,39 +15,28 @@ export function formatPeakPositionCost(value: number, currency: string) {
 }
 
 /** The allocated trade rows are already in canonical execution order. */
-export function peakPositionCost(trade: Pick<Trade, "direction" | "executions" | "assetType">): PeakPositionCost {
-  if (trade.assetType && !["STOCK", "ETF"].includes(trade.assetType)) {
-    return { value: null, reason: "Peak position cost is unavailable for instruments without a verified share or contract multiplier." };
-  }
-  const unavailable = { value: null, reason: "Peak position cost is unavailable because the entry history is incomplete or invalid." };
-  if (!trade.executions.length) return unavailable;
+export function peakPositionCost(trade: Pick<Trade, "direction" | "executions" | "assetType" | "symbol" | "entry">): PeakPositionCost {
+  const eligibility = shareEligibility(trade);
+  if (!eligibility) return { value: null, reason: "Max notional is unavailable for non-share instruments and option contracts." };
+  const basis = eligibility === "legacy-shares" ? legacyShareDescription : undefined;
+  if (!Number.isFinite(trade.entry) || trade.entry <= 0) return { value: null, basis, reason: "Max notional is unavailable because the average entry price is invalid." };
+  const incomplete = { value: null, basis, reason: "Max notional is unavailable because the allocated entry history is incomplete." };
+  const invalid = { value: null, basis, reason: "Max notional is unavailable because an allocated quantity is invalid." };
+  if (!trade.executions.length) return incomplete;
   const entrySide = trade.direction === "SHORT" ? "SELL" : "BUY";
-  const lots: { quantity: number; price: number }[] = [];
-  let first = 0, quantity = 0, cost = 0, peak = 0;
+  let quantity = 0, peak = 0;
   for (const execution of trade.executions) {
-    const q = execution.quantity, price = execution.price;
-    if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(price) || price <= 0) return unavailable;
-    if (execution.side === entrySide) {
-      lots.push({ quantity: q, price });
-      quantity += q;
-      cost += q * price;
-      if (!Number.isFinite(cost)) return unavailable;
-      peak = Math.max(peak, cost);
-    } else {
-      // With a complete, zero-baseline cycle the accounting matcher consumes FIFO
-      // trade lots. A carry-only exit cannot be reconstructed from these rows.
-      if (q > quantity + EPSILON) return unavailable;
-      let remaining = Math.min(q, quantity);
-      while (remaining > EPSILON && first < lots.length) {
-        const lot = lots[first], matched = Math.min(remaining, lot.quantity);
-        cost -= matched * lot.price;
-        lot.quantity -= matched;
-        remaining -= matched;
-        if (lot.quantity <= EPSILON) first++;
-      }
+    const q = execution.quantity;
+    if (!Number.isFinite(q) || q <= 0) return invalid;
+    if (!["BUY", "SELL"].includes(execution.side)) return incomplete;
+    if (execution.side === entrySide) quantity += q;
+    else {
+      if (quantity <= 0 || q - quantity > Math.max(q, quantity) * Number.EPSILON * 16) return incomplete;
       quantity = Math.max(0, quantity - q);
-      if (quantity <= EPSILON) cost = 0;
     }
+    if (!Number.isFinite(quantity)) return invalid;
+    peak = Math.max(peak, quantity);
   }
-  return { value: peak };
+  const value = peak * trade.entry;
+  return Number.isFinite(value) ? { value, basis } : { value: null, basis, reason: "Max notional exceeds the supported numeric range." };
 }

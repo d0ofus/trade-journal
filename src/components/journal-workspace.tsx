@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import {
@@ -66,6 +66,9 @@ import {
   type JournalTimeframe,
   type JournalTrendStateValue,
 } from "@/lib/journal/schema";
+import { Autosave } from "@/lib/journal/autosave";
+import { useJournalDraft, type JournalDraft } from "@/components/use-journal-draft";
+import { useApplicationShell } from "@/components/application-shell";
 import { cn } from "@/lib/utils";
 import { useWorkstationNavigationGuard } from "@/lib/workstation-navigation-guard";
 
@@ -476,15 +479,6 @@ function formFromEntry(entry: JournalEntry): ReturnType<typeof blankForm> {
   };
 }
 
-function journalFormSignature(form: ReturnType<typeof blankForm>) {
-  return JSON.stringify({
-    ...form,
-    tags: Object.fromEntries(JOURNAL_TAG_CATEGORIES.map((category) => [category, [...form.tags[category]].sort()])),
-    notionRelations: Object.fromEntries(
-      JOURNAL_NOTION_RELATION_KEYS.map((key) => [key, [...(form.notionRelations[key] ?? [])].sort()]),
-    ),
-  });
-}
 
 function blankPlaybookForm(): Omit<JournalPlaybook, "id" | "_count" | "updatedAt"> {
   return {
@@ -649,6 +643,60 @@ function sectionTitle(title: string, detail?: string) {
   );
 }
 
+type JournalForm = ReturnType<typeof blankForm>;
+type EntryDraft = JournalDraft<JournalForm, PendingJournalChart>;
+
+function QuickCaptureEditor({ session, loadChartPreview, save, fullEntry }: { session: Autosave<EntryDraft>; loadChartPreview(): void; save(): Promise<void>; fullEntry(): void }) {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const form = state.value.form;
+  const setForm = (update: (form: JournalForm) => JournalForm) => session.change(value => ({ ...value, form: update(value.form) }));
+  const updateSymbol = (symbol: string) => setForm(current => ({ ...current, symbol: symbol.toUpperCase() }));
+  const setNumberField = (key: keyof JournalForm, value: string) => setForm(current => ({ ...current, [key]: normalizeNumberInput(value) }));
+  const updateTags = (category: JournalTagCategoryValue, value: string) => setForm(current => ({ ...current, tags: { ...current.tags, [category]: parseTagInput(value) } }));
+  return (
+            <Panel title="Quick Capture" detail={state.saving ? "Saving..." : state.dirty ? "Unsaved changes" : "Saved"}>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Symbol
+                  <Input className="mt-1" value={form.symbol} onChange={(event) => updateSymbol(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); loadChartPreview(); } }} />
+                </label>
+                <DateField label="Idea Date" value={form.ideaDate} onChange={(value) => setForm((current) => ({ ...current, ideaDate: `${value}T00:00:00.000Z` }))} />
+                <SelectField label="Direction" value={form.direction} options={["LONG", "SHORT"]} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
+                <SelectField label="Timeframe" value={form.timeframe} options={[...JOURNAL_TIMEFRAMES]} onChange={(value) => setForm((current) => ({ ...current, timeframe: value }))} />
+                <LabelInput label="Setup" value={form.setup ?? ""} onChange={(value) => setForm((current) => ({ ...current, setup: value }))} />
+                <SelectField label="Macro Sentiment" value={form.macroSentiment} options={["BULLISH", "NEUTRAL", "BEARISH"]} onChange={(value) => setForm((current) => ({ ...current, macroSentiment: value as JournalEntry["macroSentiment"] }))} />
+                <NumberField label="Entry" value={form.plannedEntry} onChange={(value) => setNumberField("plannedEntry", value)} />
+                <NumberField label="Stop" value={form.plannedStop} onChange={(value) => setNumberField("plannedStop", value)} />
+                <NumberField label="Target 1" value={form.plannedTarget1} onChange={(value) => setNumberField("plannedTarget1", value)} />
+              </div>
+              <TextAreaField label="Thesis" value={form.thesis} onChange={(value) => setForm((current) => ({ ...current, thesis: value }))} />
+              <TextAreaField label="Trigger" value={form.trigger} onChange={(value) => setForm((current) => ({ ...current, trigger: value }))} />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <LabelInput label="Setup Tags" value={tagString(form.tags.SETUP)} onChange={(value) => updateTags("SETUP", value)} />
+                <LabelInput label="Lesson Tags" value={tagString(form.tags.LESSON)} onChange={(value) => updateTags("LESSON", value)} />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={loadChartPreview} variant="outline"><BarChart3 className="h-4 w-4" />Load Chart</Button>
+                <Button onClick={() => void save()} disabled={!form.symbol.trim()}><Save className="h-4 w-4" />{state.value.id ? "Refresh Draft" : "Create Draft"}</Button>
+                {state.value.id ? <Button variant="outline" onClick={fullEntry}><NotebookPen className="h-4 w-4" />Full Entry</Button> : null}
+              </div>
+            </Panel>
+  );
+}
+
+function JournalSaveFeedback({ session, backupError, reload }: { session: Autosave<EntryDraft>; backupError: string; reload(): Promise<void> }) {
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  return <div className="flex flex-wrap items-center gap-3 text-sm" aria-live="polite" data-testid="journal-save-status">
+    <span>{state.error ? "Save paused" : state.saving ? "Saving..." : state.dirty ? "Unsaved changes" : "Saved"}</span>
+    {state.error ? <><span role="alert">{state.error}</span><Button size="sm" onClick={() => void session.retry()}>Retry save</Button><Button size="sm" variant="outline" onClick={() => void reload()}>Reload saved entry</Button></> : null}
+    {(state.backupError || backupError) ? <span role="alert">{state.backupError || backupError}</span> : null}
+    {state.dirty || state.error || state.backupError || backupError ? <Button size="sm" variant="outline" onClick={() => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(session.getSnapshot().value, null, 2)], { type: "application/json" }));
+      const link = document.createElement("a"); link.href = url; link.download = "journal-recovery.json"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }}>Export recovery draft</Button> : null}
+  </div>;
+}
+
 export function JournalWorkspace({
   initialAnalytics,
   initialEntries,
@@ -679,8 +727,7 @@ export function JournalWorkspace({
   const [reviews, setReviews] = useState(initialReviews);
   const [analytics, setAnalytics] = useState(initialAnalytics);
   const [activeTab, setActiveTab] = useState<Tab>(() => (initialSelectedEntry ? "entry" : "dashboard"));
-  const [form, setForm] = useState(initialForm);
-  const [entryBaselineSignature, setEntryBaselineSignature] = useState(() => journalFormSignature(initialForm));
+  const [form, publishForm] = useState(initialForm);
   const [playbookForm, setPlaybookForm] = useState(blankPlaybookForm());
   const [reviewForm, setReviewForm] = useState(() => blankReviewForm(stableInitialNowIso));
   const [selectedId, setSelectedId] = useState<string | null>(() => initialSelectedEntry?.id ?? null);
@@ -710,13 +757,31 @@ export function JournalWorkspace({
   const [inboxData, setInboxData] = useState<JournalInbox | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectedChartIds, setSelectedChartIds] = useState<string[]>([]);
-  const [pendingCharts, setPendingCharts] = useState<PendingJournalChart[]>([]);
+  const [pendingCharts, publishPendingCharts] = useState<PendingJournalChart[]>([]);
   const [entrySaveInFlight, setEntrySaveInFlight] = useState(false);
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [tagManager, setTagManager] = useState({ category: "LESSON" as JournalTagCategoryValue, from: "", to: "", name: "" });
-  const [autosaveState, setAutosaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autosaveReadyRef = useRef(false);
+  const [entryDirty, setEntryDirty] = useState(false);
+  const publishedDraft = useRef<EntryDraft | null>(null);
+  const { registerSave } = useApplicationShell();
+  const draft = useJournalDraft<JournalForm, PendingJournalChart>({ form: initialForm, id: initialSelectedEntry?.id ?? null, updatedAt: initialSelectedEntry?.updatedAt ?? null, pendingCharts: [], autoDraft: !!initialSelectedEntry?.autoDraft }, {
+    automatic: activeTab === "capture",
+    save: persistEntry,
+    publish(state) {
+      const previous = publishedDraft.current, next = state.value;
+      publishedDraft.current = next;
+      if (activeTab !== "capture" || !previous || previous.id !== next.id) publishForm(next.form);
+      if (!previous || previous.pendingCharts !== next.pendingCharts) publishPendingCharts(next.pendingCharts);
+      setSelectedId(next.id);
+      setEntryDirty(state.dirty);
+    },
+  });
+  function setForm(update: JournalForm | ((value: JournalForm) => JournalForm)) {
+    draft.current.current?.change(value => ({ ...value, form: typeof update === "function" ? update(value.form) : update }));
+  }
+  function setPendingCharts(update: PendingJournalChart[] | ((value: PendingJournalChart[]) => PendingJournalChart[])) {
+    draft.current.current?.change(value => ({ ...value, pendingCharts: typeof update === "function" ? update(value.pendingCharts) : update }));
+  }
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [marketContext, setMarketContext] = useState<{
     peerGroupsUrl: string;
@@ -738,8 +803,7 @@ export function JournalWorkspace({
   const selectedPlaybook = useMemo(() => playbooks.find((playbook) => playbook.id === (form.playbookId || selectedPlaybookId)) ?? null, [form.playbookId, playbooks, selectedPlaybookId]);
   const selectedPlaybookForEdit = useMemo(() => playbooks.find((playbook) => playbook.id === selectedPlaybookId) ?? null, [playbooks, selectedPlaybookId]);
   const selectedReview = useMemo(() => reviews.find((review) => review.id === selectedReviewId) ?? null, [reviews, selectedReviewId]);
-  const entryFormDirty = useMemo(() => journalFormSignature(form) !== entryBaselineSignature, [entryBaselineSignature, form]);
-  const journalWorkspaceDirty = entryFormDirty || pendingCharts.length > 0;
+  const journalWorkspaceDirty = entryDirty || pendingCharts.length > 0;
   const chartRows = useMemo(() => entries.flatMap((entry) => entry.charts.map((chart) => ({ entry, chart }))), [entries]);
   const filteredChartRows = useMemo(() => chartRows.filter(({ entry, chart }) => {
     if (filterPurpose && chart.purpose !== filterPurpose) return false;
@@ -797,7 +861,9 @@ export function JournalWorkspace({
   }
 
   function loadChartPreview() {
-    const requestedSymbol = form.symbol.trim().toUpperCase();
+    const latest = draft.current.current?.getSnapshot().value.form ?? form;
+    publishForm(latest);
+    const requestedSymbol = latest.symbol.trim().toUpperCase();
     if (!requestedSymbol) return;
     setChartPreviewRequest((current) => ({
       symbol: requestedSymbol,
@@ -821,35 +887,19 @@ export function JournalWorkspace({
     );
   }, [selectedEntry, selectedPlaybook]);
 
-  useEffect(() => {
-    if (activeTab !== "capture" || !selectedId || !autosaveReadyRef.current || journalConflict === "entry") return;
-    setAutosaveState("dirty");
-    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = setTimeout(() => {
-      void autosaveCaptureDraft();
-    }, 800);
-    return () => {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    };
-  // Capture autosave intentionally watches the editable form fields and uses the latest selected draft id.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    activeTab,
-    journalConflict,
-    selectedId,
-    form.symbol,
-    form.ideaDate,
-    form.direction,
-    form.timeframe,
-    form.setup,
-    form.macroSentiment,
-    form.thesis,
-    form.trigger,
-    form.plannedEntry,
-    form.plannedStop,
-    form.plannedTarget1,
-    form.tags,
-  ]);
+  const draftSessionRef = draft.current;
+  useEffect(() => registerSave(() => draftSessionRef.current?.flush() ?? Promise.resolve(true)), [registerSave, draftSessionRef]);
+
+  async function changeTab(tab: Tab) {
+    const session = draft.current.current;
+    if (activeTab === "capture" && session?.getSnapshot().value.id && !(await session.flush())) return;
+    if (session) {
+      publishForm(session.getSnapshot().value.form);
+      session.metadata(value => ({ ...value, autoDraft: tab === "capture" }));
+      session.setAutomatic(tab === "capture" && !!session.getSnapshot().value.id);
+    }
+    setActiveTab(tab);
+  }
 
   useEffect(() => {
     if (activeTab === "inbox") loadInbox();
@@ -881,7 +931,7 @@ export function JournalWorkspace({
       setMessage(`Journal save in progress. Wait for it to finish before you ${action}.`);
       return false;
     }
-    if (!journalWorkspaceDirty) return true;
+    if (!draft.current.current?.getSnapshot().dirty) return true;
     const chartDetail =
       pendingCharts.length > 0
         ? ` ${pendingCharts.length} pending chart${pendingCharts.length === 1 ? "" : "s"} will also be discarded.`
@@ -893,41 +943,30 @@ export function JournalWorkspace({
     return confirmed;
   }
 
-  useWorkstationNavigationGuard(confirmDiscardJournalChanges);
+  useWorkstationNavigationGuard(confirmDiscardJournalChanges, () => draft.current.current?.flush() ?? Promise.resolve(true));
 
-  function selectEntry(entry: JournalEntry, options?: { force?: boolean }) {
-    if (!options?.force && !confirmDiscardJournalChanges("open another journal entry")) return false;
+  async function selectEntry(entry: JournalEntry, options?: { force?: boolean }) {
+    if (!options?.force && !(await draft.current.current?.flush())) return false;
     if (sharedTradeWorkstation && entry.links.some(link => link.linkType === "REVIEW_SOURCE" && link.targetType === "CLOSED_TRADE" && link.targetId)) {
       window.location.assign(`/journal?entryId=${encodeURIComponent(entry.id)}`);
       return true;
     }
-    const nextForm = formFromEntry(entry);
-    autosaveReadyRef.current = false;
+    const response = await fetch(`/api/journal/${entry.id}`);
+    if (response.ok) entry = (await response.json()).entry as JournalEntry;
     setJournalConflict(null);
-    setSelectedId(entry.id);
-    setForm(nextForm);
-    setEntryBaselineSignature(journalFormSignature(nextForm));
-    setMarketContext(null);
-    setChartPreviewRequest(null);
-    setPendingCharts([]);
-    setActiveTab("entry");
+    const nextForm = formFromEntry(entry);
+    publishForm(nextForm); publishedDraft.current = null;
+    await draft.open({ form: nextForm, id: entry.id, updatedAt: entry.updatedAt, pendingCharts: [], autoDraft: entry.autoDraft });
+    setMarketContext(null); setChartPreviewRequest(null); setActiveTab("entry");
     return true;
   }
 
-  function newEntry(options?: { force?: boolean }) {
-    if (!options?.force && !confirmDiscardJournalChanges("start a new idea")) return false;
+  async function newEntry(options?: { force?: boolean }) {
+    if (!options?.force && !(await draft.current.current?.flush())) return false;
     const nextForm = blankForm(stableInitialNowIso);
-    autosaveReadyRef.current = false;
-    setJournalConflict(null);
-    setSelectedId(null);
-    setForm(nextForm);
-    setEntryBaselineSignature(journalFormSignature(nextForm));
-    setMarketContext(null);
-    setChartPreviewRequest(null);
-    setRuleDrafts({});
-    setPendingCharts([]);
-    setEntrySection("basics");
-    setActiveTab("entry");
+    setJournalConflict(null); publishedDraft.current = null; publishForm(nextForm);
+    await draft.open({ form: nextForm, id: null, updatedAt: null, pendingCharts: [], autoDraft: false }, !!options?.force);
+    setMarketContext(null); setChartPreviewRequest(null); setRuleDrafts({}); setEntrySection("basics"); setActiveTab("entry");
     return true;
   }
 
@@ -1006,7 +1045,7 @@ export function JournalWorkspace({
     setForm((current) => ({ ...current, [key]: normalizeNumberInput(value) }));
   }
 
-  function journalPayload() {
+  function journalPayload(form: JournalForm) {
     return {
       ...form,
       ideaDate: dateInputValue(form.ideaDate),
@@ -1023,68 +1062,42 @@ export function JournalWorkspace({
     };
   }
 
-  async function createCaptureDraft(targetTab: Tab = "capture") {
-    const symbol = form.symbol.trim().toUpperCase();
-    if (!symbol) return;
-    setAutosaveState("saving");
-    const res = await fetch("/api/journal/drafts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbol,
-        ideaDate: dateInputValue(form.ideaDate),
-        direction: form.direction,
-        timeframe: form.timeframe,
-        setup: form.setup || null,
-        macroSentiment: form.macroSentiment,
-        thesis: form.thesis,
-        trigger: form.trigger,
-        plannedEntry: form.plannedEntry,
-        plannedStop: form.plannedStop,
-        plannedTarget1: form.plannedTarget1,
-        tags: { SETUP: form.tags.SETUP, LESSON: form.tags.LESSON },
-      }),
+  async function persistEntry(snapshot: EntryDraft, session: Autosave<EntryDraft>): Promise<EntryDraft> {
+    const body = JSON.stringify({ ...journalPayload(snapshot.form), autoDraft: snapshot.autoDraft, ...(snapshot.id ? { expectedUpdatedAt: snapshot.updatedAt } : {}) });
+    const response = await fetch(snapshot.id ? `/api/journal/${snapshot.id}` : "/api/journal", {
+      method: snapshot.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body,
     });
-    if (!res.ok) {
-      setAutosaveState("error");
-      setMessage(await responseErrorMessage(res, "Failed to create capture draft."));
-      return;
+    if (!response.ok) throw new Error(await responseErrorMessage(response, "Failed to save journal entry."));
+    const { entry } = await response.json() as { entry: JournalEntry };
+    // Update the revision immediately, including when a later attachment fails.
+    session.metadata(latest => ({ ...latest, id: entry.id, updatedAt: entry.updatedAt }));
+    const charts = [...entry.charts];
+    for (const chart of snapshot.pendingCharts) {
+      const { localId, ...payload } = chart;
+      const res = await fetch(`/api/journal/${entry.id}/charts`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, expectedUpdatedAt: session.getSnapshot().value.updatedAt }),
+      });
+      if (!res.ok) throw new Error(await responseErrorMessage(res, "Entry saved, but a chart upload failed. Retry to save the remaining attachments."));
+      const data = await res.json();
+      entry.updatedAt = data.entryUpdatedAt;
+      charts.push(data.chart as JournalChart);
+      session.metadata(latest => ({ ...latest, updatedAt: entry.updatedAt, pendingCharts: latest.pendingCharts.filter(item => item.localId !== localId) }));
     }
-    const data = await res.json();
-    const saved = data.entry as JournalEntry;
-    setSelectedId(saved.id);
-    selectEntry(saved, { force: true });
-    setActiveTab(targetTab);
-    setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
-    setAutosaveState("saved");
-    autosaveReadyRef.current = true;
+    entry.charts = charts;
+    if (draft.current.current === session) {
+      setEntries(current => [entry, ...current.filter(item => item.id !== entry.id)]);
+      setJournalConflict(null);
+      session.setAutomatic(activeTab === "capture");
+    }
+    return { ...snapshot, id: entry.id, updatedAt: entry.updatedAt };
   }
 
-  async function autosaveCaptureDraft() {
-    if (!selectedId) return;
-    setAutosaveState("saving");
-    const res = await fetch(`/api/journal/${selectedId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...journalPayload(),
-        autoDraft: true,
-        expectedUpdatedAt: selectedEntry?.updatedAt,
-      }),
-    });
-    if (!res.ok) {
-      setAutosaveState("error");
-      if (res.status === 409) {
-        autosaveReadyRef.current = false;
-        setJournalConflict("entry");
-      }
-      setMessage(await responseErrorMessage(res, "Failed to autosave capture draft."));
-      return;
-    }
-    const data = await res.json();
-    const saved = data.entry as JournalEntry;
-    setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
-    setAutosaveState("saved");
+  async function createCaptureDraft(targetTab: Tab = "capture") {
+    const session = draft.current.current;
+    if (!session?.getSnapshot().value.form.symbol.trim()) return;
+    session.change(value => ({ ...value, autoDraft: true }));
+    if (await session.flush()) { session.setAutomatic(true); await changeTab(targetTab); }
   }
 
   function stageChart(payload: JournalChartStagePayload) {
@@ -1102,37 +1115,6 @@ export function JournalWorkspace({
 
   function removePendingChart(localId: string) {
     setPendingCharts((current) => current.filter((chart) => chart.localId !== localId));
-  }
-
-  async function uploadPendingCharts(entryId: string, charts: PendingJournalChart[], expectedEntryUpdatedAt: string | null) {
-    const failed: PendingJournalChart[] = [];
-    const errors: string[] = [];
-    let uploaded = 0;
-    let nextExpectedUpdatedAt = expectedEntryUpdatedAt;
-    for (const chart of charts) {
-      const { localId, ...payload } = chart;
-      void localId;
-      try {
-        const res = await fetch(`/api/journal/${entryId}/charts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...payload, expectedUpdatedAt: nextExpectedUpdatedAt }),
-        });
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (typeof data.entryUpdatedAt === "string") nextExpectedUpdatedAt = data.entryUpdatedAt;
-          uploaded += 1;
-        } else {
-          if (res.status === 409) setJournalConflict("entry");
-          errors.push(await responseErrorMessage(res, `Failed to upload ${chart.symbol} chart.`));
-          failed.push(chart);
-        }
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : `Failed to upload ${chart.symbol} chart.`);
-        failed.push(chart);
-      }
-    }
-    return { entryUpdatedAt: nextExpectedUpdatedAt, errors, failed, uploaded };
   }
 
   async function reloadEntries(overrides?: {
@@ -1187,68 +1169,27 @@ export function JournalWorkspace({
     setPlaybooks(data.rows ?? []);
   }
 
-  function saveEntry() {
-    if (entrySaveInFlight) return;
+  async function saveEntry() {
+    const session = draft.current.current;
+    if (!session || entrySaveInFlight) return;
     setEntrySaveInFlight(true);
-    startTransition(async () => {
-      try {
-        setMessage("Saving journal entry...");
-        const chartsToUpload = pendingCharts;
-        const payload = {
-          ...journalPayload(),
-          autoDraft: false,
-          ...(selectedId && selectedEntry?.updatedAt ? { expectedUpdatedAt: selectedEntry.updatedAt } : {}),
-        };
-        const res = await fetch(selectedId ? `/api/journal/${selectedId}` : "/api/journal", {
-          method: selectedId ? "PATCH" : "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-          if (res.status === 409) setJournalConflict("entry");
-          throw new Error(await responseErrorMessage(res, "Failed to save journal entry."));
-        }
-        const data = await res.json();
-        const saved = data.entry as JournalEntry;
-        const savedForm = formFromEntry(saved);
-        setJournalConflict(null);
-        setSelectedId(saved.id);
-        setForm(savedForm);
-        setEntryBaselineSignature(journalFormSignature(savedForm));
-        setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
-        let uploaded = 0;
-        let failedCharts: PendingJournalChart[] = [];
-        let chartErrors: string[] = [];
-        if (chartsToUpload.length > 0) {
-          const result = await uploadPendingCharts(saved.id, chartsToUpload, saved.updatedAt);
-          uploaded = result.uploaded;
-          failedCharts = result.failed;
-          chartErrors = result.errors;
-        }
-        const attemptedChartIds = new Set(chartsToUpload.map((chart) => chart.localId));
-        setPendingCharts((current) => [
-          ...failedCharts,
-          ...current.filter((chart) => !attemptedChartIds.has(chart.localId)),
-        ]);
+    session.change(value => ({ ...value, autoDraft: false }));
+    try {
+      if (await session.flush()) {
+        setMessage("Saved journal entry.");
         await Promise.all([reloadEntries(), reloadPlaybooks()]);
-        if (failedCharts.length > 0) {
-          const detail = chartErrors.length > 0 ? ` ${chartErrors.join(" ")}` : "";
-          setMessage(`Saved entry. Attached ${uploaded} chart${uploaded === 1 ? "" : "s"}; ${failedCharts.length} chart${failedCharts.length === 1 ? "" : "s"} still pending.${detail}`);
-        } else {
-          setMessage(chartsToUpload.length > 0 ? `Saved entry with ${uploaded} chart${uploaded === 1 ? "" : "s"}.` : "Saved journal entry.");
-        }
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : "Failed to save journal entry.");
-      } finally {
-        setEntrySaveInFlight(false);
       }
-    });
+    } finally { setEntrySaveInFlight(false); }
   }
 
   function saveRuleChecks() {
     if (!selectedId || !selectedPlaybook) return;
+    const session = draft.current.current;
+    if (!session) return;
     startTransition(async () => {
       try {
+        if (!(await session.flush())) return;
+        await session.exclusive(async () => {
         const checks = selectedPlaybook.rules
           .filter((rule) => rule.id)
           .map((rule) => ({
@@ -1259,7 +1200,7 @@ export function JournalWorkspace({
         const res = await fetch(`/api/journal/${selectedId}/rule-checks`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ checks, expectedUpdatedAt: selectedEntry?.updatedAt }),
+          body: JSON.stringify({ checks, expectedUpdatedAt: session.getSnapshot().value.updatedAt }),
         });
         if (!res.ok) {
           if (res.status === 409) setJournalConflict("entry");
@@ -1267,9 +1208,11 @@ export function JournalWorkspace({
         }
         const data = await res.json();
         const saved = data.entry as JournalEntry;
+        session.metadata(value => ({ ...value, updatedAt: saved.updatedAt }));
         setJournalConflict(null);
         setEntries((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)]);
         setMessage("Saved rule checks.");
+        });
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "Failed to save rule checks.");
       }
@@ -1531,33 +1474,19 @@ export function JournalWorkspace({
   }
 
   function uploadTradingViewImage(file: File | null) {
-    if (!file || !selectedId || !selectedEntry) return;
+    const session = draft.current.current;
+    if (!file || !session?.getSnapshot().value.id) return;
     const reader = new FileReader();
     reader.onload = () => {
-      startTransition(async () => {
-        const res = await fetch(`/api/journal/${selectedId}/charts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            symbol: selectedEntry.symbol,
-            timeframe: coerceTimeframe(selectedEntry.timeframe),
-            purpose: "REVIEW",
-            caption: "TradingView analysis reference export",
-            screenshotDataUrl: String(reader.result),
-            mimeType: file.type || "image/png",
-            tradingViewLayoutJson: JSON.stringify({ source: "tradingview-widget-upload", fileName: file.name }),
-            expectedUpdatedAt: selectedEntry.updatedAt,
-          }),
-        });
-        if (!res.ok) {
-          if (res.status === 409) setJournalConflict("entry");
-          setMessage(await responseErrorMessage(res, "Failed to upload TradingView image."));
-          return;
-        }
-        setJournalConflict(null);
-        setMessage("Uploaded TradingView chart image.");
-        await reloadEntries();
-      });
+      if (draft.current.current !== session) return;
+      const latest = session.getSnapshot().value.form;
+      session.change(value => ({ ...value, pendingCharts: [...value.pendingCharts, {
+        localId: crypto.randomUUID(), symbol: latest.symbol, timeframe: coerceTimeframe(latest.timeframe), purpose: "REVIEW",
+        compareSymbol: null, rangeStart: null, rangeEnd: null, width: null, height: 560, markers: [],
+        caption: "TradingView analysis reference export", screenshotDataUrl: String(reader.result), mimeType: file.type || "image/png",
+        tradingViewLayoutJson: JSON.stringify({ source: "tradingview-widget-upload", fileName: file.name }),
+      }] }));
+      void session.flush();
     };
     reader.readAsDataURL(file);
   }
@@ -1854,7 +1783,7 @@ export function JournalWorkspace({
                 entrySaveInFlight && activeTab !== key ? "pointer-events-none opacity-50" : "",
               )}
               disabled={entrySaveInFlight && activeTab !== key}
-              onClick={() => setActiveTab(key as Tab)}
+              onClick={() => void changeTab(key as Tab)}
               type="button"
             >
               <Icon className="h-4 w-4" />
@@ -1868,6 +1797,17 @@ export function JournalWorkspace({
         </div>
       </div>
 
+      {draft.session ? <JournalSaveFeedback session={draft.session} backupError={draft.backupError} reload={async () => {
+        const current = draft.session!.getSnapshot().value;
+        if (!window.confirm("Discard this tab's recovered edits and load the saved entry? Export your draft first if needed.")) return;
+        if (current.id) {
+          const response = await fetch(`/api/journal/${current.id}`);
+          if (!response.ok) return;
+          const { entry } = await response.json() as { entry: JournalEntry };
+          setEntries(current => [entry, ...current.filter(item => item.id !== entry.id)]);
+          await draft.open({ ...current, form: formFromEntry(entry), updatedAt: entry.updatedAt, pendingCharts: [] }, true);
+        } else await draft.open({ ...current, form: blankForm(stableInitialNowIso), pendingCharts: [] }, true);
+      }} /> : null}
       {message && (
         <div
           aria-live="polite"
@@ -1962,45 +1902,18 @@ export function JournalWorkspace({
       )}
 
       {activeTab === "capture" && (
-        <div className="grid gap-5 xl:grid-cols-[24rem_minmax(0,1fr)]">
-          <div className="space-y-4">
-            <Panel title="Quick Capture" detail={autosaveState === "idle" ? "Chart-first draft" : autosaveState}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                  Symbol
-                  <Input className="mt-1" value={form.symbol} onChange={(event) => updateSymbol(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); loadChartPreview(); } }} />
-                </label>
-                <DateField label="Idea Date" value={form.ideaDate} onChange={(value) => setForm((current) => ({ ...current, ideaDate: `${value}T00:00:00.000Z` }))} />
-                <SelectField label="Direction" value={form.direction} options={["LONG", "SHORT"]} onChange={(value) => setForm((current) => ({ ...current, direction: value as JournalEntry["direction"] }))} />
-                <SelectField label="Timeframe" value={form.timeframe} options={[...JOURNAL_TIMEFRAMES]} onChange={(value) => setForm((current) => ({ ...current, timeframe: value }))} />
-                <LabelInput label="Setup" value={form.setup ?? ""} onChange={(value) => setForm((current) => ({ ...current, setup: value }))} />
-                <SelectField label="Macro Sentiment" value={form.macroSentiment} options={["BULLISH", "NEUTRAL", "BEARISH"]} onChange={(value) => setForm((current) => ({ ...current, macroSentiment: value as JournalEntry["macroSentiment"] }))} />
-                <NumberField label="Entry" value={form.plannedEntry} onChange={(value) => setNumberField("plannedEntry", value)} />
-                <NumberField label="Stop" value={form.plannedStop} onChange={(value) => setNumberField("plannedStop", value)} />
-                <NumberField label="Target 1" value={form.plannedTarget1} onChange={(value) => setNumberField("plannedTarget1", value)} />
-              </div>
-              <TextAreaField label="Thesis" value={form.thesis} onChange={(value) => setForm((current) => ({ ...current, thesis: value }))} />
-              <TextAreaField label="Trigger" value={form.trigger} onChange={(value) => setForm((current) => ({ ...current, trigger: value }))} />
-              <div className="grid gap-3 sm:grid-cols-2">
-                <LabelInput label="Setup Tags" value={tagString(form.tags.SETUP)} onChange={(value) => updateTags("SETUP", value)} />
-                <LabelInput label="Lesson Tags" value={tagString(form.tags.LESSON)} onChange={(value) => updateTags("LESSON", value)} />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={loadChartPreview} variant="outline"><BarChart3 className="h-4 w-4" />Load Chart</Button>
-                <Button onClick={() => void createCaptureDraft()} disabled={!form.symbol.trim()}><Save className="h-4 w-4" />{selectedId ? "Refresh Draft" : "Create Draft"}</Button>
-                {selectedEntry ? <Button variant="outline" onClick={() => { autosaveReadyRef.current = false; setActiveTab("entry"); }}><NotebookPen className="h-4 w-4" />Full Entry</Button> : null}
-              </div>
-            </Panel>
+        <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[24rem_minmax(0,1fr)]">
+          <div className="min-w-0 space-y-4">
+            {draft.session ? <QuickCaptureEditor session={draft.session} loadChartPreview={loadChartPreview} save={createCaptureDraft} fullEntry={() => void changeTab("entry")} /> : <p>Loading draft...</p>}
             <Panel title="Recent Drafts">
               <div className="space-y-2">
                 {entries.filter((entry) => entry.autoDraft || entry.status === "DRAFT").slice(0, 6).map((entry) => (
                   <button
                     key={entry.id}
                     className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-left text-sm"
-                    onClick={() => {
-                      if (!selectEntry(entry)) return;
-                      setActiveTab("capture");
-                      autosaveReadyRef.current = true;
+                    onClick={async () => {
+                      if (!(await selectEntry(entry))) return;
+                      await changeTab("capture");
                     }}
                   >
                     <span className="font-semibold text-slate-900">{entry.symbol} {entry.setup ? `| ${entry.setup}` : ""}</span>
@@ -2010,7 +1923,7 @@ export function JournalWorkspace({
               </div>
             </Panel>
           </div>
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             {chartPreviewRequest ? (
               <JournalEntryChartPreview requestKey={chartPreviewRequest.requestKey} symbol={chartPreviewRequest.symbol} timeframe={coerceTimeframe(form.timeframe)} />
             ) : (
@@ -2023,14 +1936,12 @@ export function JournalWorkspace({
               <>
                 <Panel title="App-Owned Saved Chart">
                   <JournalChartEditor
-                    entryId={selectedEntry.id}
-                    expectedEntryUpdatedAt={selectedEntry.updatedAt}
+                    mode="stage"
+                    onStageChart={payload => { stageChart(payload); void draft.current.current?.flush(); }}
                     symbol={selectedEntry.symbol}
                     initialTimeframe={coerceTimeframe(selectedEntry.timeframe)}
                     sectorEtf={selectedEntry.sectorEtf}
                     plan={selectedEntry}
-                    onConflict={() => setJournalConflict("entry")}
-                    onSaved={() => void reloadEntries()}
                   />
                 </Panel>
                 <Panel title="Analysis Reference">
@@ -2154,7 +2065,8 @@ export function JournalWorkspace({
         </div>
       )}
 
-      {activeTab === "entry" && (
+      {activeTab === "entry" && !draft.session ? <p role="status">Loading journal draft...</p> : null}
+      {activeTab === "entry" && draft.session && (
         <div className="space-y-4">
           <div className="rounded-[28px] border border-slate-200/80 bg-white/90 p-4 shadow-[0_18px_45px_-36px_rgba(15,23,42,0.3)]">
             <div className="flex flex-wrap items-start justify-between gap-4">

@@ -81,7 +81,18 @@ test("failed attachment saves keep image and section together in the recovery dr
   }, DEMO_PREFIX);
   await page.getByRole("button", { name: "Attach current chart to Exit Screen", exact: true }).click();
   await expect(page.getByText("Test save failure", { exact: true })).toBeVisible();
-  const draft = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!) as TradeDocument, `execution-lab:workstation:draft:demo:${demoTrades[0].id}`);
+  const recovery = () => page.evaluate(scope => new Promise<TradeDocument | null>((resolve, reject) => {
+    const request = indexedDB.open("execution-lab-journal-recovery");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction("drafts", "readonly");
+      const rows = tx.objectStore("drafts").index("scope").getAll(scope);
+      rows.onsuccess = () => resolve(rows.result.find(row => !row.acknowledged)?.payload ?? null);
+      rows.onerror = () => reject(rows.error); tx.oncomplete = () => db.close();
+    };
+  }), `workstation:demo:${demoTrades[0].id}`);
+  await expect.poll(async () => (await recovery())?.evidence.length).toBeGreaterThan(0);
+  const draft = (await recovery())!;
   expect(draft.review.notion!.sections.exit!.evidenceIds).toContain(draft.evidence.at(-1)!.id);
   await page.reload();
   await expect.poll(() => page.evaluate(key => {

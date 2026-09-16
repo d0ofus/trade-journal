@@ -88,7 +88,7 @@ test("a second tab preserves its conflicting draft across reload and can export 
   await page.getByRole("textbox", { name: "Takeaways", exact: true }).fill(winner);
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).review.takeaway).toBe(`<p>${winner}</p>`);
   await other.getByRole("textbox", { name: "Takeaways", exact: true }).fill(draft);
-  await expect(other.locator(".ws-journal-save").getByText("Save paused · draft preserved", { exact: true })).toBeVisible();
+  await expect(other.locator(".ws-journal-save").getByText(/^(Save paused|Conflict) \u00b7 draft preserved$/)).toBeVisible();
   await other.reload();
   await revealTakeaways(other);
   await expect(other.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveText(draft);

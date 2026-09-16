@@ -22,10 +22,10 @@ function Choices({ label, value, options, multiple, onChange }: { label: string;
   </div>;
 }
 
-export function NotionReviewEditor({ trade, document, onChange, onEvidence }: { trade: Trade; document: TradeDocument; onChange: (review: Review) => void; onEvidence: (section: ChartSectionKey) => void }) {
+export function NotionReviewEditor({ trade, document, onChange, onEvidence }: { trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ChartSectionKey) => void }) {
   const review = document.review, notion = review.notion ?? emptyNotionReview();
-  const change = (next: NotionReview) => onChange({ ...review, notion: next });
-  const property = (key: PropertyKey, value: NotionValue) => change({ ...notion, properties: { ...notion.properties, [key]: value } });
+  const change = (update: (current: NotionReview) => NotionReview) => onChange(current => ({ ...current, notion: update(current.notion ?? emptyNotionReview()) }));
+  const property = (key: PropertyKey, value: NotionValue) => change(current => ({ ...current, properties: { ...current.properties, [key]: value } }));
   return <div className="ws-notion-review">
     <Section title="Trade properties">
       <div className="ws-template-properties">{notionProperties.map(p => {
@@ -44,13 +44,13 @@ export function NotionReviewEditor({ trade, document, onChange, onEvidence }: { 
     </Section>
     {chartSections.map(([key, label]) => {
       const section = notion.sections[key] ?? { html: "", evidenceIds: [] };
-      return <Section title={label} key={key}><FormattedField label={`${label} commentary`} value={section.html} onChange={html => change({ ...notion, sections: { ...notion.sections, [key]: { ...section, html } } })} />
+      return <Section title={label} key={key}><FormattedField label={`${label} commentary`} value={section.html} onChange={html => change(current => ({ ...current, sections: { ...current.sections, [key]: { ...current.sections[key] ?? { evidenceIds: [] }, html } } }))} />
         <button type="button" className="ws-add-evidence" onClick={() => onEvidence(key)}>Attach current chart to {label}</button>
-        <fieldset className="ws-section-evidence"><legend>Captured charts</legend>{document.evidence.length ? document.evidence.map(e => <label key={e.id}><input type="checkbox" checked={section.evidenceIds.includes(e.id)} onChange={event => change({ ...notion, sections: { ...notion.sections, [key]: { ...section, evidenceIds: event.target.checked ? [...section.evidenceIds, e.id] : section.evidenceIds.filter(id => id !== e.id) } } })} />{e.name}</label>) : <p className="ws-help">Use Attach current chart to capture evidence, then choose it here.</p>}</fieldset>
+        <fieldset className="ws-section-evidence"><legend>Captured charts</legend>{document.evidence.length ? document.evidence.map(e => <label key={e.id}><input type="checkbox" checked={section.evidenceIds.includes(e.id)} onChange={event => change(current => { const section = current.sections[key] ?? { html: "", evidenceIds: [] }; return { ...current, sections: { ...current.sections, [key]: { ...section, evidenceIds: event.target.checked ? [...section.evidenceIds, e.id] : section.evidenceIds.filter(id => id !== e.id) } } }; })} />{e.name}</label>) : <p className="ws-help">Use Attach current chart to capture evidence, then choose it here.</p>}</fieldset>
       </Section>;
     })}
     <h3>Setup Analysis</h3>
-    {analysisSections.map(([key, label]) => <Section title={label} key={key}><FormattedField label={label} value={notion.analysis[key] ?? ""} onChange={html => change({ ...notion, analysis: { ...notion.analysis, [key]: html } })} /></Section>)}
-    <Section title="Takeaways"><FormattedField label="Takeaways" value={review.takeaway} onChange={takeaway => onChange({ ...review, takeaway })} /></Section>
+    {analysisSections.map(([key, label]) => <Section title={label} key={key}><FormattedField label={label} value={notion.analysis[key] ?? ""} onChange={html => change(current => ({ ...current, analysis: { ...current.analysis, [key]: html } }))} /></Section>)}
+    <Section title="Takeaways"><FormattedField label="Takeaways" value={review.takeaway} onChange={takeaway => onChange(current => ({ ...current, takeaway }))} /></Section>
   </div>;
 }

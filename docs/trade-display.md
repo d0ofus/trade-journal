@@ -1,4 +1,4 @@
-# Workstation execution times, session backgrounds and peak cost
+# Workstation execution times, session backgrounds and max notional
 
 ## Execution times
 
@@ -14,13 +14,13 @@ The series primitive draws underneath the grid, candles and volume. It classifie
 
 The primitive receives existing rendered-data references alongside the existing series update and attaches separately to export clones. It adds no history request, candle processing pass, React update, timer or independent animation-frame loop. Pointer sweeps do not repaint the shading.
 
-## Peak position cost
+## Max notional
 
-Each **Your Trades** item shows `fills · shares · Max $amount`. This is the highest entry cost of shares held simultaneously, using the trade's allocated execution rows in canonical order. Scale-ins add lots; exits consume FIFO trade lots at their entry cost. Short trades use positive entry value. Fees and exit proceeds do not inflate the result.
+Each **Your Trades** item shows `fills / shares / Max notional $amount`: the maximum number of shares held simultaneously multiplied by the displayed average entry price. Allocated execution rows retain their existing order; scale-ins add shares and partial exits reduce them. Shorts use their average opening sell price. Fees and exit prices are excluded. Fractional shares are preserved, and values use native currency without conversion.
 
-For example, buying 100 shares at $10 and another 100 at $12 reaches $2,200. Selling the first 100 shares and buying 100 at $11 subsequently reaches $2,300. The existing share count and separate Largest Notional metric retain their definitions.
+For example, buy 100 shares at $10, buy 100 at $12, sell 100, and buy another 100 at $11. Maximum holdings are 200 shares, average entry is $11, and max notional is $2,200. Total traded quantity is not substituted for concurrent holdings. This display does not modify accounting cost basis or other reports.
 
-Values are memoized when trade data changes and formatted in the trade's native currency with two decimals. There is no FX conversion. Incomplete entry histories, invalid values and unsupported contract multipliers show an explained unavailable marker. Values are masked during replay. No schema, public API, dependency or preference changes are needed.
+STOCK, ETF, OTHER and missing classifications are eligible under the approved share assumption. Legacy results explain **Calculated assuming share quantities**. Explicit non-share instruments and recognised OCC options remain unavailable. Invalid quantities, incomplete entry histories and invalid average entry prices show specific reasons. Values remain hidden during replay and are memoized with trade data.
 
 ## Validation
 
