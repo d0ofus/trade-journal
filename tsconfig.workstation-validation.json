@@ -40,7 +40,13 @@
     "tests/workstation-preview/comparison-review.spec.ts",
     "scripts/benchmark-workstation-comparison.ts",
     "scripts/measure-comparison-storage.ts",
-    "src/lib/server/workstation-metrics.test.ts"
+    "src/lib/server/workstation-metrics.test.ts",
+    "src/components/storage-monitor.tsx",
+    "src/components/workstation/workstation.tsx",
+    "src/lib/server/storage-usage.test.ts",
+    "src/lib/workstation/notion-import.test.ts",
+    "src/components/workstation/benchmark-layer.test.ts",
+    "tests/workstation-auth/storage-monitor.spec.ts"
   ],
   "exclude": [
     "node_modules"

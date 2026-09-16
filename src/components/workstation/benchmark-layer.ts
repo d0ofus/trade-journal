@@ -1,16 +1,18 @@
 import { CandlestickSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
-import { rebaseComparison, type Comparison } from "@/lib/workstation/comparison";
+import { alignComparison, type Comparison } from "@/lib/workstation/comparison";
 import type { Candle } from "@/lib/workstation/types";
 
-export const benchmarkStyle = (light: boolean) => ({ upColor: "transparent", downColor: light ? "#2563eb40" : "#60a5fa40", borderUpColor: light ? "#2563eb" : "#60a5fa", borderDownColor: light ? "#2563eb" : "#60a5fa", wickUpColor: light ? "#2563eb" : "#60a5fa", wickDownColor: light ? "#2563eb" : "#60a5fa", borderVisible: true, priceLineVisible: false, lastValueVisible: false });
+export const benchmarkStyle = (light: boolean) => ({ priceScaleId: "benchmark", upColor: "transparent", downColor: light ? "#2563eb40" : "#60a5fa40", borderUpColor: light ? "#2563eb" : "#60a5fa", borderDownColor: light ? "#2563eb" : "#60a5fa", wickUpColor: light ? "#2563eb" : "#60a5fa", wickDownColor: light ? "#2563eb" : "#60a5fa", borderVisible: true, priceLineVisible: false, lastValueVisible: false });
+
+export const benchmarkScale = { autoScale: true, visible: false, scaleMargins: { top: 0.16, bottom: 0.22 } };
 
 export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
   let series: ISeriesApi<"Candlestick"> | null = null, primary: Candle[] = [], benchmark: Candle[] = [], symbol = "", light = false;
-  let comparison: Comparison = rebaseComparison([], [], null), updating = false, lastAnchor: number | null = null, dirty = true, inspected: Candle | undefined, written = "";
+  let comparison: Comparison = alignComparison([], [], null), updating = false, lastAnchor: number | null = null, dirty = true, inspected: Candle | undefined, written = "";
   const display = (candle?: Candle) => {
     if (candle) inspected = candle;
     const c = inspected;
-    const value = symbol ? c && comparison.benchmarkOpen ? `${symbol} · O ${c.open.toFixed(2)} H ${c.high.toFixed(2)} L ${c.low.toFixed(2)} C ${c.close.toFixed(2)} · ${((c.close / comparison.benchmarkOpen - 1) * 100).toFixed(2)}% · visible-range comparison` : `${symbol} · No matching candles` : "";
+    const value = symbol ? c && comparison.benchmarkOpen ? `${symbol} · O ${c.open.toFixed(2)} H ${c.high.toFixed(2)} L ${c.low.toFixed(2)} C ${c.close.toFixed(2)} · ${((c.close / comparison.benchmarkOpen - 1) * 100).toFixed(2)}% · Independent scale` : `${symbol} · No matching candles` : "";
     if (value !== written) { legend.textContent = value; written = value; }
   };
   const refresh = () => {
@@ -21,7 +23,7 @@ export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
     if (!dirty && first?.time === lastAnchor) return;
     updating = true;
     try {
-      comparison = rebaseComparison(primary, benchmark, range);
+      comparison = alignComparison(primary, benchmark, range);
       lastAnchor = comparison.anchor; dirty = false;
       series.setData(comparison.candles.map(c => ({ ...c, time: c.time as UTCTimestamp })));
       if (inspected && (!primary.some(c => c.time === inspected!.time) || !comparison.originals.has(inspected.time))) inspected = undefined;
@@ -34,8 +36,8 @@ export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
       dirty = primary !== next.primary || benchmark !== next.benchmark || symbol !== next.symbol;
       if (symbol !== next.symbol) inspected = undefined;
       primary = next.primary; benchmark = next.benchmark; symbol = next.symbol;
-      if (!symbol) { if (series) api.removeSeries(series); series = null; comparison = rebaseComparison([], [], null); inspected = undefined; display(); return; }
-      if (!series) { series = api.addSeries(CandlestickSeries, benchmarkStyle(next.light)); dirty = true; }
+      if (!symbol) { if (series) api.removeSeries(series); series = null; comparison = alignComparison([], [], null); inspected = undefined; display(); return; }
+      if (!series) { series = api.addSeries(CandlestickSeries, benchmarkStyle(next.light)); series.priceScale().applyOptions(benchmarkScale); dirty = true; }
       else if (light !== next.light) series.applyOptions(benchmarkStyle(next.light));
       light = next.light;
       refresh();

@@ -103,7 +103,7 @@ import { hasExtendedSession, SessionBackground } from "./session-background";
 
 import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "@/lib/workstation/before-entry";
 import { executionColors } from "@/lib/workstation/comparison";
-import { createBenchmarkLayer, benchmarkStyle } from "./benchmark-layer";
+import { createBenchmarkLayer, benchmarkStyle, benchmarkScale } from "./benchmark-layer";
 import { useBenchmark } from "./use-benchmark";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 
@@ -788,8 +788,8 @@ export function TradeChart(input: Props) {
           snapshotBars = [...bars.current],
           prefs = latest.current.preferences;
         const frozenBenchmark = benchmarkLayer.current?.snapshot();
-        const header = frozenBenchmark?.symbol ? 48 : 30, footer = 75;
-        const width = frame?.width ?? dimensions.current.width, height = frame ? Math.max(60, frame.height - header - footer) : dimensions.current.height;
+        const header = frozenBenchmark?.symbol ? 48 : 30;
+        const width = frame?.width ?? dimensions.current.width, height = frame ? Math.max(60, frame.height - header) : dimensions.current.height + 75;
         const frozenBeforeEntry = beforeEntryActive.current;
         const frozenTrade = frozenBeforeEntry ? { ...latest.current.trade, executions: [] } : latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
         const priceRange = candles.priceScale().getVisibleRange();
@@ -837,6 +837,7 @@ export function TradeChart(input: Props) {
           cs.setData(snapshotBars.map((b) => ({ ...b, time: asTime(b.time) })));
           if (frozenBenchmark?.candles.length) {
             const comparison = clone.addSeries(CandlestickSeries, benchmarkStyle(light));
+            comparison.priceScale().applyOptions(benchmarkScale);
             comparison.setData(frozenBenchmark.candles.map(b => ({ ...b, time: asTime(b.time) })));
           }
           const exportBackground = new SessionBackground();
@@ -893,7 +894,7 @@ export function TradeChart(input: Props) {
           const native = clone.takeScreenshot(true, false),
             output = document.createElement("canvas");
           output.width = width * scale;
-          output.height = (height + header + footer) * scale;
+          output.height = (height + header) * scale;
           const ctx = output.getContext("2d")!;
           ctx.fillStyle = light ? "#ffffff" : "#10151f";
           ctx.fillRect(0, 0, output.width, output.height);
@@ -921,15 +922,6 @@ export function TradeChart(input: Props) {
           ctx.fillStyle = light ? "#526077" : "#8996ad";
           ctx.font = "10px system-ui";
           if (frozenBenchmark?.symbol) { ctx.fillStyle = light ? "#2563eb" : "#60a5fa"; ctx.fillText(frozenBenchmark.legend, 16, 38, width - 32); ctx.fillStyle = light ? "#526077" : "#8996ad"; }
-          const comparisons = frozenTrade.executions.filter(e => frozen.replay === null || e.time <= frozen.replay).map(e => diagnoseExecution(e, snapshotBars, frozenInterval, frozenHistory.session));
-          const lines = [
-            visibilitySummary(executionVisibility({ ...exportOptions, executions: frozenTrade.executions })),
-            !comparisons.length ? 'No visible executions / UTC display' : comparisons.some(d => d.timezoneUnverified || d.periodUnverified) ? 'Source or candle time basis unverified / UTC display' : 'Execution source timezone verified / UTC display',
-            (frozenHistory.provider?.provider ?? frozenHistory.source) + ' / adjustment: ' + (frozenHistory.provider?.adjustment ?? 'unverified'),
-            'Session: ' + (frozenHistory.session?.marketHours ?? 'unknown') + ' / ' + (frozenHistory.session?.aggregation ?? 'provider-native'),
-            'TradingView Lightweight Charts / tradingview.com',
-          ];
-          lines.forEach((line, i) => ctx.fillText(line, 8, height + header + 12 + i * 13, width - 16));
           return output;
         } finally {
           detachExportBackground();

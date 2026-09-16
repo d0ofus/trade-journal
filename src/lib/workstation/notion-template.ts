@@ -43,6 +43,7 @@ export const chartSections = [
 export const analysisSections = [["technicalPositive", "Technicals · +ve"], ["technicalNegative", "Technicals · −ve"], ["idealExecution", "Ideal Execution"], ["fundamentals", "Fundamentals"], ["noteworthyPositive", "Noteworthy · +ve"], ["noteworthyNegative", "Noteworthy · −ve"]] as const;
 export type PropertyKey = typeof notionProperties[number]["key"] | "plannedEntry" | "plannedStop";
 export type NotionValue = string | number | boolean | string[] | null;
+export type ChartSectionKey = typeof chartSections[number][0];
 export type NotionReview = { version: 1; properties: Partial<Record<PropertyKey, NotionValue>>; sections: Partial<Record<typeof chartSections[number][0], { html: string; evidenceIds: string[] }>>; analysis: Partial<Record<typeof analysisSections[number][0], string>> };
 const html = z.string().max(20000).transform(richHtml);
 const propertyShape: Record<string, z.ZodType> = {};

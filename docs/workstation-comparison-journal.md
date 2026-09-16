@@ -3,7 +3,7 @@
 ## Using the workstation
 
 - Each panel has an **Off / SPY / QQQ** comparison selector and an independent **Before entry** button. Both are saved with that trade's panel view.
-- Blue benchmark candles are rebased to the first common visible candle's open. The traded symbol keeps its actual price scale and execution coordinates. The benchmark legend gives actual benchmark OHLC and its percentage change from that reference. Panning or zooming can change the reference.
+- Blue benchmark candles use original prices on an independent, hidden, automatically scaled axis. They do not affect the trade's price scale or execution coordinates. The legend shows actual OHLC, percentage change from the first common visible open, and Independent scale. Vertical distances between independently scaled series are not directly comparable.
 - Missing benchmark timestamps stay missing. Benchmark data cannot add horizontal positions to the primary chart. Comparisons follow the chart interval, session, loaded coverage, replay and export settings.
 - **Before entry** excludes the entire candle containing the first interpreted execution. Daily panels exclude its date; weekly panels exclude its week. It also excludes later indicators, markers, drawings with future anchors, and comparison candles. Turning it off restores the previous view without refetching that history. Unresolved execution times or coarse candle date conventions disable the control.
 - **Chart settings** contains Buy colour, Sell colour and Reset. These device preferences affect execution markers and exported images.
@@ -33,7 +33,27 @@ The shared field mapping in `notion-template.ts` defines all 29 exported propert
 
 The page has six chart sections, technical positives/negatives, Ideal Execution, Fundamentals, noteworthy positives/negatives, and Takeaways. Editor code loads dynamically when an editor mounts, keeping Tiptap out of the initial chart bundle. Editors mount when their sections open and support bold, italics, underline, bullets, numbered lists, undo/redo and keyboard shortcuts. The property and body use one Takeaways value. Existing plain Takeaways are escaped into paragraphs; unmapped material stays under Previous review fields or preserved original material.
 
-Chart sections reference captured evidence IDs. One image can appear in several sections while the package contains one image asset. No screenshot is imported or captured automatically. Copy review for Notion writes formatted HTML with a plain-text fallback. Markdown/HTML archives use the same mapping; CSV uses plain text. Ideal Execution property choices and the narrative have distinct CSV headings. Clipboard export does not populate Notion database properties or relations automatically; images remain in the downloadable archive.
+Each chart section has an Attach current chart button. General attachment buttons open a destination selector. Capture and section assignment save together; checkboxes can assign one image to several sections. Removing evidence removes its section references. Navigation during capture cancels the pending attachment.
+
+Export review for Notion saves first, then offers a Database CSV and Review page ZIP from the same saved snapshot. CSV uses template property names, MM/DD/YYYY New York dates, TRUE/FALSE checkboxes, raw numbers, and plain text. Unresolved dates are blank. S/L % (snapshot) is a number in percentage points, not a formula. The ZIP contains only review.html and local image assets, preserving formatting, previous review fields and images under their assigned headings. Older unassigned images appear under Unassigned charts.
+
+In Notion, use Merge with CSV on the existing database; map Name to the title property. Imports add rows and can create duplicates; Trade ID is not an upsert key. Map relation columns to existing relation properties where supported and verify their targets, or import as Text and link manually. Preserve existing formulas; map snapshots to separate Number properties. Import the ZIP through Settings → Import → ZIP, then move its review blocks into the matching database page. File import does not automatically join page content to the CSV row or apply a database template. See [Notion import instructions](https://www.notion.com/help/import-data-into-notion).
+
+PNG captures retain the header and axes, remove the diagnostic footer, and expand the chart into its former space. This applies to individual/layout downloads, clipboard images and new attachments. Stored screenshots are unchanged.
+
+## Older-trade metrics diagnosis
+
+Read-only inspection reproduced all four unavailable metrics for IE entered January 7, 2026. Its instrument is stored as OTHER. Its first execution has a resolved, user-confirmed New York timestamp; the reference session is January 6. `loadTradeMetrics` returns Unsupported instrument at its asset-type guard, before requesting daily bars or historical shares. Older imported equities commonly retain OTHER classifications. The current parser recognizes STK but does not repair old records. This identifies the immediate blocker, not the original import operation that created it.
+
+Recommended follow-up: add a metrics-specific legacy equity eligibility resolver. Retain explicit option, futures, forex and crypto exclusions, including options historically marked OTHER. Admit legacy USD equity candidates only with supporting instrument/provider evidence; preserve stored classifications and trade identities. Test an IE-equivalent fixture, OTHER options and ambiguous symbols; expose useful unavailable reasons and retryable provider failures. Do not bulk-reclassify instruments merely from ticker shape. Historical market cap still separately requires eligible SEC shares and verified price history.
+
+This release changes no metric eligibility, calculations, imported classifications or automatic history loading.
+
+## App storage monitor
+
+Settings → Cloud storage is independent of the workstation flag. Physical current-database and branch totals include chart/metric cache. Existing 100 MB cache and 400 MB branch growth guards are application limits, not provider quotas. Warnings begin at 80/350 MB and cache persistence pauses at 99/399 MB. Metric cache is a subset of cache; cache is included in database usage.
+
+Logical payload totals include inline JournalChart images, images embedded in ClosedTradeNote workstation JSON, and archived import content. They measure stored text bytes, including base64, before database compression and indexes; do not add them to physical totals. External/local screenshot references have counts but unmeasured file storage. No provider monitoring credentials, cleanup actions, worker or schema migration are required. The authenticated endpoint returns aggregates only. Refresh runs every minute while visible and retains the prior reading as stale on failure.
 
 ## Persistence and limits
 

@@ -68,9 +68,11 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   const chart = page.getByRole("region", { name: /chart$/, exact: false }).first();
   await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/, { timeout: 30000 });
   await page.getByRole("button", { name: /Attach current chart/ }).click();
+  await page.getByRole("dialog", { name: "Attach current chart", exact: true }).getByRole("button", { name: "Exit Screen", exact: true }).click();
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).evidence.length).toBeGreaterThan(doc.evidence.length);
   const saved = await (await context.request.get(endpoint())).json();
   expect(saved.drawings).toContainEqual(drawing);
+  expect(saved.review.notion.sections.exit.evidenceIds).toContain(saved.evidence.at(-1).id);
   expect(saved.evidence.at(-1).image).toMatch(/^data:image\/png;base64,/);
   await page.goto(`/journal?entryId=${saved.journalEntryId}`);
   await revealTakeaways(page);

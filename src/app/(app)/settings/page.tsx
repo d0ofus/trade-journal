@@ -1,3 +1,4 @@
+import { StorageMonitor } from "@/components/storage-monitor";
 import { MarketDataSettings } from "@/components/workstation/market-data-settings";
 import { WorkstationShortcutSettings } from "@/components/workstation/shortcut-settings";
 import { TimestampInterpretationSettings } from "@/components/workstation/timestamp-settings";
@@ -133,6 +134,7 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
       </Card>}
       {process.env.TRADES_WORKSTATION_ENABLED === "1" && <Card id="timestamp-interpretation"><CardHeader><CardTitle>Trade data · Timestamp interpretation</CardTitle></CardHeader><CardContent><TimestampInterpretationSettings /></CardContent></Card>}
       {process.env.TRADES_WORKSTATION_ENABLED === "1" && <Card id="market-data"><CardHeader><CardTitle>Trade data · Market data</CardTitle></CardHeader><CardContent><MarketDataSettings /></CardContent></Card>}
+      <Card id="cloud-storage"><CardHeader><CardTitle>Cloud storage</CardTitle></CardHeader><CardContent><StorageMonitor /></CardContent></Card>
       <Card className="overflow-hidden">
         <CardHeader className="border-b border-slate-200/80">
           <CardTitle className="text-base">Accounts</CardTitle>

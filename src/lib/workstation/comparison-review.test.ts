@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "./before-entry";
-import { rebaseComparison, executionColors } from "./comparison";
+import { alignComparison, executionColors } from "./comparison";
 import { calculateMarketMetrics, previousSession } from "./market-metrics";
 import { chartSections, emptyNotionReview, notionProperties, notionReviewSchema, stopLossPercent } from "./notion-template";
 import { notionClipboard } from "./notion-export";
@@ -44,17 +44,17 @@ describe("before-entry boundaries", () => {
   });
 });
 describe("candlestick comparison", () => {
-  it("gives equal percentage moves equal distances without inserting benchmark timestamps", () => {
+  it("keeps original benchmark prices without inserting benchmark timestamps", () => {
     const stock = [candle(1, 20), candle(3, 22)], benchmark = [candle(1, 500), candle(2, 505), candle(3, 550)];
-    const result = rebaseComparison(stock, benchmark, { from: 1, to: 3 });
+    const result = alignComparison(stock, benchmark, { from: 1, to: 3 });
     expect(result.candles.map(c => c.time)).toEqual([1, 3]);
-    expect(result.candles.map(c => c.close)).toEqual([20, 22]);
+    expect(result.candles.map(c => c.close)).toEqual([500, 550]);
     expect(result.originals.get(3)?.close).toBe(550);
-    expect(rebaseComparison(stock, benchmark, { from: 3, to: 3 }).anchor).toBe(3);
+    expect(alignComparison(stock, benchmark, { from: 3, to: 3 }).anchor).toBe(3);
   });
   it("does not invent an anchor with missing or invalid prices", () => {
-    expect(rebaseComparison([candle(1)], [candle(2)], null).candles).toEqual([]);
-    expect(rebaseComparison([candle(1, 0)], [candle(1)], null).anchor).toBeNull();
+    expect(alignComparison([candle(1)], [candle(2)], null).candles).toEqual([]);
+    expect(alignComparison([candle(1, 0)], [candle(1)], null).anchor).toBeNull();
   });
   it("restores legacy views and validates marker colours", () => {
     const view = tradeViewSchema.parse({ version: 1, arrangement: "left", panels: [{ id: "chart-1", interval: "5m", session: "regular", range: null }] });

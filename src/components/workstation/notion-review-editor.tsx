@@ -1,7 +1,7 @@
 "use client";
 import { useId, useState, type ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { analysisSections, chartSections, emptyNotionReview, notionProperties, propertyText, type NotionReview, type NotionValue, type PropertyKey } from "@/lib/workstation/notion-template";
+import { analysisSections, chartSections, emptyNotionReview, notionProperties, propertyText, type ChartSectionKey, type NotionReview, type NotionValue, type PropertyKey } from "@/lib/workstation/notion-template";
 import { richPlain } from "@/lib/workstation/rich-text";
 import type { Review, Trade, TradeDocument } from "@/lib/workstation/types";
 
@@ -22,7 +22,7 @@ function Choices({ label, value, options, multiple, onChange }: { label: string;
   </div>;
 }
 
-export function NotionReviewEditor({ trade, document, onChange }: { trade: Trade; document: TradeDocument; onChange: (review: Review) => void }) {
+export function NotionReviewEditor({ trade, document, onChange, onEvidence }: { trade: Trade; document: TradeDocument; onChange: (review: Review) => void; onEvidence: (section: ChartSectionKey) => void }) {
   const review = document.review, notion = review.notion ?? emptyNotionReview();
   const change = (next: NotionReview) => onChange({ ...review, notion: next });
   const property = (key: PropertyKey, value: NotionValue) => change({ ...notion, properties: { ...notion.properties, [key]: value } });
@@ -45,6 +45,7 @@ export function NotionReviewEditor({ trade, document, onChange }: { trade: Trade
     {chartSections.map(([key, label]) => {
       const section = notion.sections[key] ?? { html: "", evidenceIds: [] };
       return <Section title={label} key={key}><FormattedField label={`${label} commentary`} value={section.html} onChange={html => change({ ...notion, sections: { ...notion.sections, [key]: { ...section, html } } })} />
+        <button type="button" className="ws-add-evidence" onClick={() => onEvidence(key)}>Attach current chart to {label}</button>
         <fieldset className="ws-section-evidence"><legend>Captured charts</legend>{document.evidence.length ? document.evidence.map(e => <label key={e.id}><input type="checkbox" checked={section.evidenceIds.includes(e.id)} onChange={event => change({ ...notion, sections: { ...notion.sections, [key]: { ...section, evidenceIds: event.target.checked ? [...section.evidenceIds, e.id] : section.evidenceIds.filter(id => id !== e.id) } } })} />{e.name}</label>) : <p className="ws-help">Use Attach current chart to capture evidence, then choose it here.</p>}</fieldset>
       </Section>;
     })}

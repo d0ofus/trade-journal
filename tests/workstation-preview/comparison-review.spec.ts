@@ -2,7 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 import { defaultPreferences } from "../../src/lib/workstation/types";
 import { demoTrades } from "../../src/lib/workstation/demo";
 import { beforeEntryBoundary } from "../../src/lib/workstation/before-entry";
+import { strFromU8, unzipSync } from "fflate";
 import { readFileSync } from "node:fs";
+import { DEMO_PREFIX } from "../../src/lib/workstation/demo";
+import type { TradeDocument } from "../../src/lib/workstation/types";
 
 async function open(page: Page, panels = 1, journal = false) {
   const errors: string[] = [], requests: string[] = [];
@@ -12,14 +15,86 @@ async function open(page: Page, panels = 1, journal = false) {
     localStorage.setItem("execution-lab:workstation:preferences:demo:v1", JSON.stringify({ ...preferences, journal, panels: ["5m", "1h", "1d", "1wk"].slice(0, panels).map((interval, i) => ({ id: `chart-${i + 1}`, interval, benchmark: "SPY" })) }));
   }, { preferences: defaultPreferences(), panels, journal });
   await page.goto("/preview/trades");
+  await expect(page.locator(".ws-chart")).toHaveCount(panels);
   for (const chart of await page.locator(".ws-chart").all()) await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/);
   return { errors, requests };
 }
+
+test("section captures persist, can be shared, export once, and lose all references when removed", async ({ page }, info) => {
+  const { errors } = await open(page, 1, true);
+  const saved = () => page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? "null") as TradeDocument | null, DEMO_PREFIX + demoTrades[0].id);
+  const exit = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Exit Screen$/ }) });
+  await exit.locator("summary").click();
+  await exit.getByRole("button", { name: "Attach current chart to Exit Screen", exact: true }).click();
+  await expect.poll(async () => (await saved())?.review.notion?.sections.exit?.evidenceIds.length).toBe(1);
+  const captured = (await saved())!.evidence.at(-1)!;
+  expect((await saved())!.review.notion?.sections.entry?.evidenceIds ?? []).not.toContain(captured.id);
+  const index = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Index$/ }) });
+  await index.locator("summary").click(); await index.getByRole("checkbox", { name: captured.name, exact: true }).check();
+  await expect.poll(async () => (await saved())?.review.notion?.sections.index?.evidenceIds).toContain(captured.id);
+  await page.reload();
+  await exit.locator("summary").click(); await expect(exit.getByRole("checkbox", { name: captured.name, exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "Export review for Notion", exact: false }).click();
+  const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Review page ZIP", exact: true }).click();
+  const files = unzipSync(readFileSync((await (await download).path())!));
+  expect(Object.keys(files).filter(key => key.startsWith("assets/"))).toHaveLength((await saved())!.evidence.length);
+  expect(strFromU8(files["review.html"]).split('alt="' + captured.name.replace(/&/g, "&amp;") + '"')).toHaveLength(3);
+  for (const width of [1366, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: info.outputPath(`notion-export-${width}.png`), fullPage: true });
+  }
+  await page.getByRole("button", { name: "Close dialog" }).click();
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  // Removing through the evidence panel must clear both section assignments.
+  await page.getByRole("button", { name: "Show Evidence", exact: true }).click();
+  await page.getByTitle("Remove attachment", { exact: true }).last().click();
+  await expect.poll(async () => (await saved())?.evidence.some(e => e.id === captured.id)).toBe(false);
+  expect((await saved())!.review.notion!.sections.exit!.evidenceIds).not.toContain(captured.id);
+  expect((await saved())!.review.notion!.sections.index!.evidenceIds).not.toContain(captured.id);
+  expect(errors).toEqual([]);
+});
+
+test("trade selection cannot redirect an in-flight capture to another review", async ({ page }) => {
+  await open(page, 1, true);
+  await page.locator("summary").filter({ hasText: /^Exit Screen$/ }).click();
+  await page.evaluate(() => {
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = callback => document.querySelector('[style*="-100000px"]') ? window.setTimeout(() => callback(performance.now()), 700) : raf(callback);
+  });
+  await page.getByRole("button", { name: "Attach current chart to Exit Screen", exact: true }).click();
+  await page.locator(".ws-trade-card").nth(1).click();
+  const original = () => page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? "null") as TradeDocument | null, DEMO_PREFIX + demoTrades[0].id);
+  await expect.poll(async () => (await original())?.review.notion?.sections.exit?.evidenceIds.length).toBe(1);
+  const captured = (await original())!.evidence.at(-1)!;
+  const other = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? "null") as TradeDocument | null, DEMO_PREFIX + demoTrades[1].id);
+  expect(other?.evidence.some(e => e.id === captured.id) ?? false).toBe(false);
+  await expect(page.locator(".ws-trade-card").first()).toHaveClass(/active/);
+});
+
+test("failed attachment saves keep image and section together in the recovery draft", async ({ page }) => {
+  await open(page, 1, true);
+  await page.locator("summary").filter({ hasText: /^Exit Screen$/ }).click();
+  await page.evaluate(prefix => {
+    const set = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) { if (key.startsWith(prefix) && !key.includes("view:")) throw new Error("Test save failure"); return set.call(this, key, value); };
+  }, DEMO_PREFIX);
+  await page.getByRole("button", { name: "Attach current chart to Exit Screen", exact: true }).click();
+  await expect(page.getByText("Test save failure", { exact: true })).toBeVisible();
+  const draft = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!) as TradeDocument, `execution-lab:workstation:draft:demo:${demoTrades[0].id}`);
+  expect(draft.review.notion!.sections.exit!.evidenceIds).toContain(draft.evidence.at(-1)!.id);
+  await page.reload();
+  await expect.poll(() => page.evaluate(key => {
+    const doc = JSON.parse(localStorage.getItem(key) ?? "null") as TradeDocument | null;
+    return doc?.review.notion?.sections.exit?.evidenceIds.length;
+  }, DEMO_PREFIX + demoTrades[0].id)).toBe(1);
+});
 
 for (const panels of [1, 2, 3, 4]) test(`${panels} panels compare benchmark candles and cut off independently`, async ({ page }) => {
   const { errors, requests } = await open(page, panels);
   const charts = page.locator(".ws-chart"), first = charts.first();
   for (const chart of await charts.all()) await expect(chart.locator(".ws-benchmark-legend")).toContainText("SPY · O");
+  await expect(first).toHaveAttribute("data-visible-to", /[1-9]\d{8,}/);
   const priorTo = Number(await first.getAttribute("data-visible-to"));
   await first.getByRole("button", { name: "Before entry chart-1", exact: true }).click();
   await expect(first.getByRole("button", { name: "Before entry chart-1", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -55,7 +130,7 @@ test("before entry covers all intervals, replay, theme and fullscreen", async ({
   expect(errors).toEqual([]);
 });
 
-test("journal lazily mounts formatting, retains custom properties and copies matching HTML", async ({ page }) => {
+test("journal lazily mounts formatting, retains custom properties and downloads matching Notion import files", async ({ page }) => {
   const { errors } = await open(page, 1, true);
   await expect(page.locator(".ws-notion-review .tiptap")).toHaveCount(0);
   await page.getByText("Trade properties", { exact: true }).click();
@@ -72,20 +147,23 @@ test("journal lazily mounts formatting, retains custom properties and copies mat
   await page.getByRole("button", { name: "Underline Takeaways", exact: true }).click();
   await page.getByRole("button", { name: "Bullet list Takeaways", exact: true }).click();
   await expect(field.locator("ul li strong u, ul li u strong")).toHaveText("Patient entry");
-  await page.evaluate(() => {
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write: async (items: ClipboardItem[]) => {
-      const item = items[0];
-      (window as unknown as { copied: object }).copied = { html: await (await item.getType("text/html")).text(), text: await (await item.getType("text/plain")).text() };
-    } } });
-  });
-  await page.getByRole("button", { name: "Copy review for Notion", exact: false }).click();
-  const copied = await page.evaluate(() => (window as unknown as { copied: { html: string; text: string } }).copied);
-  expect(copied.html).toContain("<u>"); expect(copied.html).toContain("<ul>");
-  expect(copied.html).toContain("Rotation"); expect(copied.html).toContain("IHF / XLV");
-  expect(copied.html).toContain("Pre-trade metrics"); expect(copied.text).toContain("Entry Screen");
+  await page.getByRole("button", { name: "Export review for Notion", exact: false }).click();
+  const dialog = page.getByRole("dialog", { name: "Export review for Notion" });
+  const zipDownload = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Review page ZIP", exact: true }).click();
+  const archive = unzipSync(readFileSync((await (await zipDownload).path())!));
+  const html = strFromU8(archive["review.html"]);
+  const csvDownload = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "Database CSV", exact: true }).click();
+  const csv = readFileSync((await (await csvDownload).path())!, "utf8");
+  expect(html).toContain("<u>"); expect(html).toContain("<ul>");
+  expect(html).toContain("Rotation"); expect(html).toContain("IHF / XLV");
+  expect(html).toContain("Pre-trade metrics"); expect(html).toContain("Entry Screen");
+  expect(csv).toContain('"S/L % (snapshot)"'); expect(csv).toContain("Patient entry");
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
   const adr = page.locator(".ws-market-metrics > span").filter({ hasText: "ADR%" }).locator("b");
   await expect(adr).toHaveText(/\d+\.\d+%/);
-  expect(copied.html).toContain(await adr.innerText());
+  expect(html).toContain(await adr.innerText());
   await expect.poll(() => page.evaluate(() => Object.entries(localStorage).some(([key, value]) => key.includes("demo-nvda") && value.includes("Patient entry") && value.includes("Rotation")))).toBe(true);
   await page.reload();
   await page.getByText("Trade properties", { exact: true }).click();
@@ -134,8 +212,27 @@ test("PNG exports retain comparison candles, their actual OHLC legend and the be
     return { blue, labels: (window as unknown as { exportText: string[] }).exportText };
   }, data);
   expect(result.blue).toBeGreaterThan(10);
+  expect(result.labels.some(text => text.includes("Independent scale"))).toBe(true);
+  expect(result.labels.some(text => text.includes("adjustment:") || text.includes("provider-native") || text.includes("tradingview.com"))).toBe(false);
   expect(result.labels.some(text => text.includes("SPY · O"))).toBe(true);
   expect(result.labels.some(text => text.includes("BEFORE ENTRY"))).toBe(true);
   await png.saveAs("artifacts/comparison/before-entry-spy.png");
   expect(errors).toEqual([]);
+});
+
+test("layout PNGs keep panel dimensions and omit footer text in both themes", async ({ page }, info) => {
+  await open(page, 2);
+  const bounds = await page.locator(".ws-chart").evaluateAll(nodes => nodes.map(node => {
+    const style = (node as HTMLElement).style;
+    return { x: parseFloat(style.left), y: parseFloat(style.top), width: parseFloat(style.width), height: parseFloat(style.height) };
+  }));
+  const expected = { width: Math.ceil(Math.max(...bounds.map(b => b.x + b.width)) * 2), height: Math.ceil(Math.max(...bounds.map(b => b.y + b.height)) * 2) };
+  await page.locator(".ws-chart").first().getByRole("button", { name: "Export chart-1", exact: true }).click();
+  for (const light of [false, true]) {
+    await page.getByLabel("Light background").setChecked(light);
+    const download = page.waitForEvent("download"); await page.getByRole("button", { name: "All charts PNG", exact: true }).click();
+    const file = await download, png = readFileSync((await file.path())!);
+    expect({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) }).toEqual(expected);
+    await file.saveAs(info.outputPath(`layout-${light ? "light" : "dark"}.png`));
+  }
 });

@@ -2780,3 +2780,8 @@
 .ws-marker-colors { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .ws-marker-colors label { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .ws-marker-colors input { width: 32px; height: 24px; }
+
+.ws-export-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.ws-export-actions button { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--ws-border); border-radius: 6px; }
+.ws-notion-import-steps { padding-left: 22px; line-height: 1.6; list-style: decimal; }
+.ws-notion-import-steps li { margin: 12px 0; }

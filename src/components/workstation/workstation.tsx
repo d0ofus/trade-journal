@@ -1,5 +1,8 @@
 "use client";
 import { executionColors } from "@/lib/workstation/comparison";
+import { attachEvidence, removeEvidence } from "@/lib/workstation/evidence";
+import { chartSections, type ChartSectionKey } from "@/lib/workstation/notion-template";
+import { notionImportCsv, notionPageArchive } from "@/lib/workstation/notion-import";
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
@@ -338,7 +341,7 @@ export function TradesWorkstation({
   const tradeListRef = useRef<HTMLElement>(null);
   useEffect(() => { setFilterDraft(JSON.parse(appliedFilterKey)); setFilterError(tradeFilterError(JSON.parse(appliedFilterKey))); }, [appliedFilterKey]);
   const [modal, setModal] = useState<
-      "export" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
+      "export" | "notion" | "attach" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
     >(null),
     [notice, setNotice] = useState("");
   const [replay, setReplay] = useState<number | null>(null),
@@ -362,6 +365,12 @@ export function TradesWorkstation({
   const handles = useRef(new Map<string, ChartHandle>()),
     dock = useRef<DockviewApi | null>(null),
     dockDispose = useRef<(() => void) | null>(null);
+  const [notionPackage, setNotionPackage] = useState<{ csv: Blob; zip: Blob; name: string; revision: number } | null>(null);
+  const operation = useRef(false);
+  const reviewContext = useRef({ id: trade?.id, generation: 0 });
+  if (reviewContext.current.id !== trade?.id) reviewContext.current = { id: trade?.id, generation: reviewContext.current.generation + 1 };
+  useEffect(() => { setNotionPackage(null); setModal(value => value === "notion" || value === "attach" ? null : value); }, [trade?.id]);
+  useEffect(() => () => { reviewContext.current.generation++; }, []);
   const pendingDate = useRef<{ tradeId: string; time: number; panel: string | null } | null>(null);
   const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
@@ -827,12 +836,18 @@ export function TradesWorkstation({
     if (!preferences.panels.slice(0, count).some((p) => p.id === activeChart))
       setActiveChart("chart-1");
   };
-  const capture = async (kind: "active" | "layout" | "copy" | "attach") => {
-    if (busy) return;
+  const capture = async (kind: "active" | "layout" | "copy" | "attach", destination?: ChartSectionKey) => {
+    if (busy || operation.current) return;
+    if (kind === "attach" && !destination) { setModal("attach"); return; }
+    if (kind === "attach" && (trade.stale || replay !== null || !documentState)) { notify("Open an editable review before attaching a chart."); return; }
+    const generation = reviewContext.current.generation;
+    const assertCurrent = () => { if (reviewContext.current.generation !== generation) throw new Error("Chart capture cancelled because the selected trade changed."); };
+    operation.current = true;
     setBusy("Preparing chart export…");
     try {
       if (kind === "attach" && !(await persistence.flush()))
         throw new Error("Save the review before attaching a chart.");
+      assertCurrent();
       const selected =
         handles.current.get(activeChart) ??
         (handles.current.values().next().value as ChartHandle | undefined);
@@ -849,6 +864,7 @@ export function TradesWorkstation({
         return handle.capture(exportLight || preferences.theme === "light", exportScale, bounds[i]);
       })), exportLight || preferences.theme === "light", bounds, exportScale)
         : await selected.capture(exportLight || preferences.theme === "light", exportScale);
+      assertCurrent();
       const interval =
           preferences.panels.find((p) => p.id === activeChart)?.interval ??
           "5m",
@@ -862,18 +878,17 @@ export function TradesWorkstation({
       else if (kind === "attach") {
         const evidence = {
           id: crypto.randomUUID(),
-          name,
+          name: `${chartSections.find(([key]) => key === destination)?.[1]} · ${name}`,
           image: canvas.toDataURL("image/png"),
           time: replay ?? Date.now() / 1000,
           revision: persistence.getDocument()?.revision ?? 0,
           timeframe: interval,
           timeInterpretationVersion: trade.timeInterpretationVersion ?? "original",
         };
-        persistence.change((d) => ({
-          ...d,
-          evidence: [...d.evidence, evidence],
-        }));
+        persistence.change(d => attachEvidence(d, evidence, destination!));
         if (await persistence.flush()) {
+          assertCurrent();
+          setModal(null);
           showPanel("evidence");
           notify("Annotated chart attached to this trade’s journal.");
         }
@@ -884,8 +899,24 @@ export function TradesWorkstation({
     } catch (e) {
       notify(e instanceof Error ? e.message : "Chart export failed");
     } finally {
+      operation.current = false;
       setBusy("");
     }
+  };
+  const prepareNotionExport = async () => {
+    if (busy || operation.current || replay !== null || !documentState) return;
+    operation.current = true; setBusy("Preparing Notion export…");
+    const generation = reviewContext.current.generation;
+    try {
+      if (!(await persistence.flush())) throw new Error("Save or recover the review before exporting to Notion.");
+      if (generation !== reviewContext.current.generation) return;
+      const doc = persistence.getDocument();
+      if (!doc) throw new Error("Wait for the review to load.");
+      const row = structuredClone({ trade, doc, url: window.location.href, metrics: getMarketMetrics() });
+      setNotionPackage({ csv: new Blob([notionImportCsv(row)], { type: "text/csv;charset=utf-8" }), zip: notionPageArchive(row), name: filename(trade), revision: doc.revision });
+      setModal("notion");
+    } catch (e) { notify(e instanceof Error ? e.message : "Notion export failed."); }
+    finally { operation.current = false; setBusy(""); }
   };
   const exportReviews = async () => {
     if (busy || replay !== null) return;
@@ -1433,7 +1464,8 @@ export function TradesWorkstation({
       reload={() => void persistence.reload()}
       onSaveNext={() => runCommand("review.next")}
       saveNextShortcut={shortcutLabel(shortcuts.value.bindings["review.next"])}
-      onEvidence={() => void capture("attach")}
+      onEvidence={section => void capture("attach", section)}
+      onNotionExport={() => void prepareNotionExport()}
       preferences={preferences}
       onPreferences={changePreferences}
       replay={replay}
@@ -1591,10 +1623,7 @@ export function TradesWorkstation({
                   <button
                     title="Remove attachment"
                     onClick={() =>
-                      persistence.change((d) => ({
-                        ...d,
-                        evidence: d.evidence.filter((item) => item.id !== e.id),
-                      }))
+                      persistence.change(d => removeEvidence(d, e.id))
                     }
                   >
                     <Trash2 size={12} />
@@ -2110,6 +2139,25 @@ export function TradesWorkstation({
           </button>
         </div>
       )}
+      {modal === "attach" && <Modal title="Attach current chart" onClose={closeModal}>
+        <p>Choose the review section for the active chart.</p>
+        <div className="ws-export-actions">{chartSections.map(([key, label]) => <button key={key} disabled={!!busy} onClick={() => void capture("attach", key)}>{label}</button>)}</div>
+        {busy && <p role="status">{busy}</p>}
+      </Modal>}
+      {modal === "notion" && notionPackage && <Modal title="Export review for Notion" onClose={closeModal}>
+        <p>Both downloads contain saved review revision {notionPackage.revision}.</p>
+        <div className="ws-export-actions">
+          <button onClick={() => downloadBlob(notionPackage.csv, `${notionPackage.name}_notion.csv`)}><Download size={14} /> Database CSV</button>
+          <button onClick={() => downloadBlob(notionPackage.zip, `${notionPackage.name}_notion-page.zip`)}><Download size={14} /> Review page ZIP</button>
+        </div>
+        <ol className="ws-notion-import-steps">
+          <li>In your Notion database, choose <strong>Merge with CSV</strong>. Match column names to the existing template properties; map Name to the title property. Imports add new rows and do not update existing trades.</li>
+          <li>Map relation columns to existing relations where supported; verify the related pages after import. The S/L % snapshot is a Number in percentage points, not a formula. Keep your existing formula and use Planned entry/stop as inputs if appropriate.</li>
+          <li>Import the page ZIP using <strong>Settings → Import → ZIP</strong>. Open the imported review and move its blocks into the corresponding database page. The ZIP preserves section headings and chart images; CSV does not attach this page body automatically.</li>
+        </ol>
+        <p className="ws-help">Dates use MM/DD/YYYY in New York time, checkboxes TRUE/FALSE, and numbers have no display units. Unresolved dates are blank. Unmatched relations can be imported as Text and linked manually.</p>
+        <a href="https://www.notion.com/help/import-data-into-notion" target="_blank" rel="noreferrer">Notion import instructions</a>
+      </Modal>}
       {modal === "export" && (
         <Modal title="Take your review with you" onClose={closeModal}>
           <p className="ws-modal-description">
