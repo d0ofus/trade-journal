@@ -5,10 +5,10 @@ import { chartSections, type ChartSectionKey } from "@/lib/workstation/notion-te
 import { notionImportCsv, notionPageArchive } from "@/lib/workstation/notion-import";
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
+import { splitAdjustedDrawing, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { restoreChartDisplay, restoreChartPanels } from "@/lib/workstation/chart-preferences";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
-import { metricIdentity } from "@/lib/workstation/share-eligibility";
 import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
 import {
   createContext,
@@ -627,6 +627,7 @@ export function TradesWorkstation({
       visible[Math.max(0, Math.min(visible.length - 1, index + offset))].id,
     );
   };
+  const [chartAdjustments, setChartAdjustments] = useState<Record<string, SplitAdjustment | undefined>>({});
   const titleFor = (id: string, label: string) => {
     const binding = shortcuts.value.bindings[id];
     return `${label}${binding ? ` (${shortcutLabel(binding)})` : ""}`;
@@ -645,11 +646,12 @@ export function TradesWorkstation({
       setFullscreenChart(null);
       changePreferences({ focusMode: !preferences.focusMode });
       handles.current.get(chartId)?.focus();
-    } else if (id === "chart.beforeTrade" || id === "chart.fit" || id === "chart.session" || id === "chart.comparison") {
+    } else if (id === "chart.beforeTrade" || id === "chart.fit" || id === "chart.session" || id === "chart.comparison" || id === "chart.labels") {
       const handle = handles.current.get(chartId);
       if (id === "chart.beforeTrade") handle?.beforeTrade();
       else if (id === "chart.fit") handle?.fit();
       else if (id === "chart.comparison") handle?.toggleComparison();
+      else if (id === "chart.labels") handle?.toggleLabels();
       else handle?.toggleSession();
       handle?.focus();
     } else if (id === "chart.date") setModal("date");
@@ -1055,7 +1057,7 @@ export function TradesWorkstation({
           <Maximize2 size={13} />
           <span>Fit trade</span>
         </button>
-        <button className={`ws-tool-button ${activeLabels === "labels" ? "active" : ""}`} aria-label={activeLabels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={activeLabels === "labels"} title={`Toggle labels on active chart (${currentPanel.id}); markers remain visible`} onClick={() => toggleLabels()}>{activeLabels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
+        <button className={`ws-tool-button ${activeLabels === "labels" ? "active" : ""}`} aria-label={activeLabels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={activeLabels === "labels"} title={titleFor("chart.labels", `Toggle labels on active chart (${currentPanel.id}); markers remain visible`)} onClick={() => toggleLabels()}>{activeLabels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
         <button className="ws-session-apply" aria-label="Apply active chart’s session to all charts" title={`Apply ${currentPanel.session ?? "auto"} from ${currentPanel.id} to all charts`} onClick={() => changePreferences({ panels: preferences.panels.map(panel => ({ ...panel, session: currentPanel.session ?? "auto" })) })}>Apply session to all</button>
         <span className="ws-flex-spacer" />
         <details className="ws-date-control">
@@ -1198,6 +1200,7 @@ export function TradesWorkstation({
               }}
               style={styles[index]}
               onToggleLabels={() => toggleLabels(panel.id)}
+              onPriceAdjustment={adjustment => setChartAdjustments(current => current[panel.id] === adjustment ? current : { ...current, [panel.id]: adjustment })}
               labelMode={chartLabelMode(preferences, panel.id)}
               onHistoryReady={prefetchNext}
               panel={panel}
@@ -1215,6 +1218,7 @@ export function TradesWorkstation({
               fullscreenTitle={titleFor("chart.fullscreen", fullscreenChart === panel.id ? "Restore chart" : "Fullscreen chart")}
               beforeTradeTitle={titleFor("chart.beforeTrade", "Before Trade — exclude the first execution candle and all later candles")}
               fitTitle={titleFor("chart.fit", "Fit trade")}
+              labelsTitle={titleFor("chart.labels", "Toggle execution labels; markers remain visible")}
               comparisonTitle={titleFor("chart.comparison", "Toggle index comparison")}
               sessionTitle={titleFor("chart.session", "Toggle Regular / Extended hours")}
               onActive={() => setActiveChart(panel.id)}
@@ -1244,7 +1248,7 @@ export function TradesWorkstation({
       {chosenDrawing && (
         <div className="ws-drawing-properties">
           <span>{tools.find((t) => t.id === chosenDrawing.tool)?.label}</span>
-          <DrawingCoordinates drawing={chosenDrawing} onChange={saveDrawing} />
+          <DrawingCoordinates drawing={splitAdjustedDrawing(chosenDrawing, chartAdjustments[activeChart])} onChange={drawing => saveDrawing(splitAdjustedDrawing(drawing, chartAdjustments[activeChart], true))} />
           <input
             key={chosenDrawing.id}
             autoFocus={chosenDrawing.tool === "text"}
@@ -1640,7 +1644,9 @@ export function TradesWorkstation({
     <div className="ws-object-list">
       {documentState?.drawings
         .filter((d) => replay === null || d.createdAt <= replay)
-        .map((d) => (
+        .map((d) => {
+          const shown = splitAdjustedDrawing(d, chartAdjustments[d.panel ?? activeChart]);
+          return (
           <div key={d.id} className={d.id === selectedDrawing ? "active" : ""}>
             <button
               onClick={() => {
@@ -1654,10 +1660,10 @@ export function TradesWorkstation({
                 {d.text || tools.find((t) => t.id === d.tool)?.label}
                 <small>
                   {d.tool === "measure" && d.points[1]
-                    ? measureText(d.points[0], d.points[1])
+                    ? measureText(shown.points[0], shown.points[1])
                     : d.tool === "long" || d.tool === "short"
-                      ? `${riskReward(d)?.ratio?.toFixed(2) ?? "—"}R`
-                      : `${d.points[0]?.price.toFixed(2)} · ${d.panel ?? "All trade charts"}`}
+                      ? `${riskReward(shown)?.ratio?.toFixed(2) ?? "—"}R`
+                      : `${shown.points[0]?.price.toFixed(2)} · ${d.panel ?? "All trade charts"}`}
                 </small>
               </span>
             </button>
@@ -1689,7 +1695,7 @@ export function TradesWorkstation({
               <Trash2 size={14} />
             </button>
           </div>
-        ))}
+        ); })}
       {!documentState?.drawings.length && (
         <div className="ws-empty">Add a drawing from the chart toolbar.</div>
       )}

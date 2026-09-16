@@ -166,7 +166,7 @@ function zoneOffsetMs(epochMs: number) {
   return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - epochMs;
 }
 
-function localDateTimeToEpoch(date: CalendarDate, hour: number, minute: number) {
+export function localDateTimeToEpoch(date: CalendarDate, hour: number, minute: number) {
   const localAsUtc = Date.UTC(date.year, date.month - 1, date.day, hour, minute, 0);
   let epoch = localAsUtc - zoneOffsetMs(localAsUtc);
   epoch = localAsUtc - zoneOffsetMs(epoch);

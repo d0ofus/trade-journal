@@ -4,6 +4,37 @@ import { observePngExport } from "../workstation-png";
 
 const key = "execution-lab:workstation:preferences:demo:v1";
 
+test("execution-label shortcut targets the focused chart, remaps, persists and respects typing and disabled settings", async ({ page }) => {
+  await page.goto("/preview/trades");
+  const first = page.locator('[data-chart-id="chart-1"]'), second = page.locator('[data-chart-id="chart-2"]');
+  await expect(second).toHaveAttribute("data-visible-bars", /[1-9]/);
+  await second.focus(); await page.keyboard.press("Shift+L");
+  await expect(second).toHaveAttribute("data-label-mode", "compact");
+  await expect(first).toHaveAttribute("data-label-mode", "labels");
+  const fills = await second.getAttribute("data-visible-executions");
+  await page.keyboard.press("Shift+L");
+  await expect(second).toHaveAttribute("data-label-mode", "labels");
+  await expect(second).toHaveAttribute("data-visible-executions", fills!);
+  await second.focus(); await page.keyboard.press("?");
+  const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts", exact: true });
+  const binding = dialog.getByRole("button", { name: "Set shortcut for Toggle execution labels", exact: true });
+  await expect(binding).toContainText("Shift + L");
+  await binding.click(); await binding.press("Shift+Y");
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await expect(second.getByRole("button", { name: "Hide execution labels chart-2", exact: true })).toHaveAttribute("title", /Shift \+ Y/);
+  await second.focus(); await page.keyboard.press("Shift+L");
+  await expect(second).toHaveAttribute("data-label-mode", "labels");
+  await page.keyboard.press("Shift+Y"); await expect(second).toHaveAttribute("data-label-mode", "compact");
+  await second.getByLabel("Timeframe chart-2", { exact: true }).focus(); await page.keyboard.press("Shift+Y");
+  await expect(second).toHaveAttribute("data-label-mode", "compact");
+  await page.reload(); await expect(second).toHaveAttribute("data-label-mode", "compact");
+  await second.focus(); await page.keyboard.press("Shift+Y"); await expect(second).toHaveAttribute("data-label-mode", "labels");
+  await second.focus(); await page.keyboard.press("?");
+  await dialog.getByLabel("Enable keyboard shortcuts", { exact: true }).uncheck();
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await second.focus(); await page.keyboard.press("Shift+Y"); await expect(second).toHaveAttribute("data-label-mode", "labels");
+});
+
 for (const count of [2, 3, 4]) test(`${count} chart slots retain independent labels through navigation, layout and reload`, async ({ page }) => {
   await page.addInitScript(({ key, prefs }) => { if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(prefs)); }, { key, prefs: defaultPreferences() });
   await page.route("**/api/**", route => route.abort());

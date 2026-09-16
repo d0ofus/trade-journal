@@ -78,6 +78,17 @@ const range = { from: trade.openTime - 86400, to: trade.closeTime + 86400 };
 const result = (candles: Candle[], source = "alpaca"): CandleResult => ({ candles, source, warning: "" });
 const cachedResult = (candles: Candle[], covered = [{ from: range.from, to: range.to + .001 }], identity = "alpaca:sip:raw:extended"): CandleResult => ({ ...result(candles), identity, cache: { enabled: true, status: covered.length ? "partial" : "miss", covered, missing: missingRanges({ from: range.from, to: range.to + .001 }, covered), refresh: [], effectiveRange: { from: range.from, to: range.to + .001 } } });
 
+test("split projection metadata survives initial loading and subsequent history pages", async () => {
+  const splitAdjustment = { version: 1 as const, asOf: "2026-09-16", splits: [{ time: trade.closeTime + 86400, ratio: 4 }] };
+  const adapter: WorkstationAdapter = { ...createDemoAdapter(), candles: async (_trade, _interval, _signal, window) => ({ ...result([bar(window!.from + 300)]), identity: "alpaca:split:v1", splitAdjustment }) };
+  const history = new CandleHistory(adapter, trade, "5m", range, () => {});
+  assert.equal(await history.start(), true);
+  assert.deepEqual(history.state.result.splitAdjustment, splitAdjustment);
+  assert.equal(await history.extend("older", true), true);
+  assert.deepEqual(history.state.result.splitAdjustment, splitAdjustment);
+  history.dispose();
+});
+
 test("storage-paused history renders temporary bars once without claiming durable coverage", async () => {
   let calls = 0;
   const value = cachedResult([bar(trade.openTime)], []);

@@ -19,6 +19,7 @@ export function ExecutionDetails({ diagnostic: d, history, onClose }: { diagnost
   return <aside ref={ref} className="ws-execution-details" role="dialog" aria-label="Execution details" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); } }}>
     <div className="ws-history-popover-heading"><strong>{d.execution.side === "BUY" ? "Buy" : "Sell"} {d.execution.quantity} @ {d.execution.price.toFixed(2)}</strong><button aria-label="Close execution details" onClick={onClose}><X size={15} /></button></div>
     <p className={d.status === "matching" && !d.periodUnverified ? "positive" : "ws-diagnostic-warning"}>{executionDiagnosticLabel(d)}</p>
+    {d.execution.originalPrice !== undefined && <p>Split-adjusted chart position. Original execution: {d.execution.originalQuantity} @ {d.execution.originalPrice.toFixed(2)}. The trade record is unchanged.</p>}
     <dl className="ws-execution-time"><dt>{displayedTime.label}</dt><dd>{displayedTime.time}</dd>{displayedTime.utc && <><dt>UTC equivalent</dt><dd>{displayedTime.utc}</dd></>}</dl>
     {d.execution.provenance?.timezoneStatus === "user-confirmed" && <p>{executionTimezoneLabel(d.execution)}. The account confirmation supplies the timezone; archived source verification is unavailable for this report.</p>}
     {d.execution.provenance?.timezoneStatus === "verified" && <p>{d.execution.provenance.confirmationBasis?.toLowerCase().includes("user-confirmed") ? "Source timestamp matched; timezone user-confirmed." : executionTimezoneLabel(d.execution)}</p>}

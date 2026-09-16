@@ -19,7 +19,8 @@ import type { CandleCacheMetadata } from "@/lib/workstation/candle-ranges";
 
 export type ChartProviderMetadata = { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
 export type WorkstationCandles = LoadedCandles & { provider: ChartProviderMetadata; session?: CandleSession; cache?: CandleCacheMetadata };
-type Input = { purpose?: "benchmark"; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; signal?: AbortSignal; identity?: string | null; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete" };
+export type WorkstationCandleInput = { purpose?: "benchmark"; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; signal?: AbortSignal; identity?: string | null; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete" };
+type Input = WorkstationCandleInput;
 const yahooIdentity = "workstation:v1:yahoo:unverified";
 const day = 86400;
 const defaults: Record<CandleTimeframe, number> = { "5m": 60, "10m": 60, "15m": 60, "1h": 730, "1d": 3650, "1wk": 3650 };
@@ -56,9 +57,8 @@ async function yahoo(input: Input, warnings: string[], fallback: boolean): Promi
 }
 
 /** Only the authenticated workstation endpoint uses this policy. Ingestion and outcomes keep their existing loader. */
-export async function loadWorkstationCandles(input: Input): Promise<WorkstationCandles> {
+export async function loadWorkstationCandles(input: Input, policy = workstationCandlePolicy()): Promise<WorkstationCandles> {
   input.signal?.throwIfAborted();
-  const policy = workstationCandlePolicy();
   const pinnedYahoo = [yahooIdentity, `${yahooIdentity}:extended`, `${yahooIdentity}:regular:${REGULAR_HOUR_BASIS}`].includes(input.identity ?? "");
   if (input.mode === "cache" && (!cacheEnabled() || policy.provider !== "alpaca" || pinnedYahoo)) {
     const range = input.range ?? { from: 1, to: 1 };

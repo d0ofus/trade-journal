@@ -16,6 +16,8 @@ import { candleIdentity } from "@/lib/workstation/regular-hours";
 import type { CandleSession } from "@/lib/workstation/types";
 import * as workstationRead from "./trade-workstation";
 import * as cacheStore from "./workstation-cache-store";
+import * as stockSplits from "./workstation-stock-splits";
+import { loadSplitAdjustedWorkstationCandles } from "./workstation-split-candles";
 
 const from = Date.parse("2024-09-03T12:00:00Z") / 1000;
 const range = { from, to: from + 3600 }, source = "workstation:v1:alpaca:sip:raw:extended";
@@ -33,6 +35,21 @@ beforeEach(async () => {
 afterEach(async () => { await prisma.workstationCandleChunk.deleteMany(); await prisma.workstationCandleLease.deleteMany(); await prisma.workstationCandleJob.deleteMany(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("compact candle cache on isolated PostgreSQL", () => {
+  it("projects previously persisted raw candles without provider refills or rewriting database payloads", async () => {
+    const lease = await claimCacheLease(`series:${seriesKey(series)}`);
+    await persistCompactCandles(series, range, [candle()], lease!, false);
+    await releaseCacheLease(lease!);
+    const before = await prisma.workstationCandleChunk.findFirstOrThrow({ where: { symbol: series.symbol } });
+    vi.spyOn(stockSplits, "loadStockSplits").mockResolvedValue({ version: 1, asOf: "2026-09-16", splits: [{ time: range.to + 86400, ratio: 4 }] });
+    vi.mocked(fetch).mockClear();
+    const adjusted = await loadSplitAdjustedWorkstationCandles({ ...input, mode: "cache" });
+    expect(adjusted.candles[0].close).toBe(candle().close / 4);
+    expect(adjusted.candles[0].volume).toBe(candle().volume! * 4);
+    expect(adjusted.cache?.missing).toEqual([]); expect(fetch).not.toHaveBeenCalled();
+    const after = await prisma.workstationCandleChunk.findFirstOrThrow({ where: { symbol: series.symbol } });
+    expect(after.checksum).toBe(before.checksum); expect(after.payload).toEqual(before.payload);
+    expect((await readCompactCandles(series, range, 100)).candles[0]).toEqual(candle());
+  });
   it("lets supplementary work enter the provider queue before expensive storage accounting", async () => {
     const preflight = vi.spyOn(cacheStore, "cacheBudgetAvailable");
     const result = await loadWorkstationCandles({ ...input, purpose: "benchmark", mode: "complete" });

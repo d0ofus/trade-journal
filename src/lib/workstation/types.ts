@@ -17,6 +17,9 @@ export type Candle = {
   volume: number;
 };
 export type Execution = {
+  /** Display-only split projection; original records are never overwritten. */
+  originalPrice?: number;
+  originalQuantity?: number;
   id: string;
   time: number;
   side: "BUY" | "SELL";
@@ -151,6 +154,7 @@ export type WorkspacePreferences = {
   exportColumns: string[];
 };
 export type CandleResult = {
+  splitAdjustment?: import("./split-adjustment").SplitAdjustment;
   cache?: import("./candle-ranges").CandleCacheMetadata;
   identity?: string;
   candles: Candle[];

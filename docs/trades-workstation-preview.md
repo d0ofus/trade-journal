@@ -60,7 +60,7 @@ The workstation now has its own authenticated, feature-gated `/api/workstation/c
 | `TRADES_ALPACA_API_KEY_ID` | Alpaca key ID, secret in Vercel |
 | `TRADES_ALPACA_API_SECRET_KEY` | Alpaca secret key, secret in Vercel |
 | `TRADES_ALPACA_DATA_FEED` | `sip` (default); `iex` is also supported |
-| `TRADES_ALPACA_ADJUSTMENT` | `raw` (default); adjusted execution coordinates are not enabled and other values are rejected |
+| `TRADES_ALPACA_ADJUSTMENT` | `raw` (default) for canonical storage; charts apply the split-adjusted view described in [Stock splits](./workstation-stock-splits.md) |
 | `TRADES_ALPACA_DELAY_SECONDS` | Defaults to `900` for SIP and `0` for IEX; set SIP to `0` only after verifying recent-data entitlement |
 | `TRADES_CHART_YAHOO_FALLBACK` | Enabled by default; `0` disables fallback |
 | `TRADES_ALPACA_DATA_BASE_URL` | Optional; only `https://data.alpaca.markets` is accepted |
@@ -71,7 +71,7 @@ Use consolidated SIP history for US equity execution reviews. IEX covers one exc
 
 Chart cache rows use `MarketCandle.source = workstation:v1:alpaca:<feed>:<adjustment>`, leveraging the existing unique key without a new cache migration. Reads and writes use only that exact source; old `alpaca`/`demo` cache rows are not imported, relabelled or deleted. Complete matching intraday coverage can be served from cache; daily/weekly requests conservatively refresh from the provider, retaining the isolated cache as an outage fallback. Existing outcome readers do not consume these namespaced rows.
 
-Each response identifies provider, feed, adjustment, delay, cache/fallback status and series identity. History pages with a different identity cannot be appended to an existing series: previous candles and viewport are preserved, with Retry history / Reload chart controls. An initial Yahoo fallback is labelled with an **unverified** price basis and kept on Yahoo for subsequent pages. It is never described as equivalent to raw Alpaca data. Raw execution prices and drawings are not transformed. Adjusted views require validated corporate-action transformations before they can be enabled.
+Each response identifies provider, feed, adjustment, delay, cache/fallback status and series identity. History pages with a different identity cannot be appended to an existing series: previous candles and viewport are preserved, with Retry history / Reload chart controls. An initial Yahoo fallback is labelled with an **unverified** price basis and kept on Yahoo for subsequent pages. It is never described as equivalent to raw Alpaca data. The current chart view projects verified stock splits onto prices, volumes, executions and drawings while preserving canonical raw records; see [Stock splits](./workstation-stock-splits.md).
 
 ## Application adapter and production findings
 

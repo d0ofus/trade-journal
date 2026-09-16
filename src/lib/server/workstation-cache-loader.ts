@@ -50,7 +50,7 @@ export async function loadCompactWorkstationCandles(input: CompactInput, policy:
     candles: input.session === "regular" && !["1d", "1wk"].includes(input.timeframe) ? snapshot.candles.filter(c => isRegularUsSession(c.time)) : snapshot.candles,
     source: "alpaca", cacheKind: derived ? "derived-5m" : "native", cache: { ...snapshot.cache, timings },
     session: derived ? regularHourSession : { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" },
-    provider: { identity: source, provider: "alpaca", feed: policy.credentials!.feed, adjustment: "raw", delaySeconds: policy.delaySeconds, cached: !fetched, fallback: false },
+    provider: { identity: source, provider: "alpaca", feed: policy.credentials!.feed, adjustment: policy.credentials!.adjustment, delaySeconds: policy.delaySeconds, cached: !fetched, fallback: false },
     warnings: [...(derived ? ["Hourly candles aggregated from Alpaca 5m bars, aligned to the regular-session open."] : []), ...warnings, ...(snapshot.corrupt ? ["Damaged cache data was excluded and will be fetched again."] : [])] });
   const readOnly = range.to <= range.from || input.mode === "cache";
   input.signal?.throwIfAborted();

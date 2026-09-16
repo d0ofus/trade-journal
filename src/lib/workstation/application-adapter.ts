@@ -24,14 +24,14 @@ export function createApplicationAdapter(): WorkstationAdapter {
       const previous = legacy.get(key);
       if (mode !== "refresh" && previous && Date.now() - previous.at < 300000) return previous.result;
       return inflight.run(key, signal, async sharedSignal => {
-      const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, from: String(from), to: String(to), limit: "30000", mode });
+      const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, from: String(from), to: String(to), limit: "30000", adjustment: "split", mode });
       if (purpose) { params.set("purpose", purpose); if (mode === "fill") params.set("mode", "complete"); }
       if (identity) params.set("identity", identity);
       params.set("session", session);
-      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { cache?: CandleCacheMetadata; warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { priority: purpose ? "low" : "high", signal: AbortSignal.any([sharedSignal, AbortSignal.timeout(120000)]) });
+      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { splitAdjustment?: CandleResult["splitAdjustment"]; cache?: CandleCacheMetadata; warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { priority: purpose ? "low" : "high", signal: AbortSignal.any([sharedSignal, AbortSignal.timeout(120000)]) });
       sharedSignal.throwIfAborted();
       const providerLabel = response.provider ? `${response.provider.provider.toUpperCase()}${response.provider.feed ? ` ${response.provider.feed.toUpperCase()}` : ""} / ${response.provider.adjustment}${response.provider.cached ? " / cache" : ""}${response.provider.fallback ? " / fallback" : ""}` : response.source ?? "Provider";
-      const result: CandleResult = { cache: response.metadata?.cache, identity: response.provider?.identity, provider: response.provider, session: response.metadata?.session, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || (response.metadata?.cache?.enabled ? "" : "Provider history · UTC"), truncated: response.metadata?.truncated ?? false };
+      const result: CandleResult = { splitAdjustment: response.metadata?.splitAdjustment, cache: response.metadata?.cache, identity: response.provider?.identity, provider: response.provider, session: response.metadata?.session, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || (response.metadata?.cache?.enabled ? "" : "Provider history · UTC"), truncated: response.metadata?.truncated ?? false };
       cache.put(base, result);
       if (!result.cache?.enabled && result.candles.length && !result.truncated && !response.metadata?.warnings?.length) {
         if (legacy.size >= 48) legacy.delete(legacy.keys().next().value!);

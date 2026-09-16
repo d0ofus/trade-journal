@@ -1,0 +1,82 @@
+import { expect, test } from "@playwright/test";
+import { prisma } from "../../src/lib/prisma";
+import { defaultPreferences } from "../../src/lib/workstation/types";
+import { candleFixture } from "./candle-fixture";
+import { observePngExport } from "../workstation-png";
+import { writeFile } from "node:fs/promises";
+
+test.afterAll(() => prisma.$disconnect());
+test("split-adjusted charts align fills, edit raw stored drawings, and export the same projection", async ({ page, context }, info) => {
+  const trade = await prisma.closedTrade.findFirstOrThrow({ where: { account: { ibkrAccount: "DEMO-WORKSTATION" }, isStale: false }, orderBy: { closeTime: "desc" }, include: { executions: true } });
+  const splitTime = Math.floor(trade.closeTime.getTime() / 86400000) * 86400 + 2 * 86400;
+  const adjustment = { version: 1, asOf: "2026-09-16", splits: [{ time: splitTime, ratio: 4 }] };
+  const endpoint = `/api/closed-trades/${encodeURIComponent(trade.groupKey)}/workstation`;
+  const csrf = await (await context.request.get("/api/auth/csrf")).json();
+  await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true", callbackUrl: "http://127.0.0.1:3000/trades" } });
+  const original = await (await context.request.get(endpoint)).json();
+  const drawing = { id: "split-round-trip", tool: "horizontal", points: [{ time: trade.openTime.getTime() / 1000, price: trade.avgEntryPrice }], text: "Split anchor", color: "#a5b4fc", width: 1.5, dashed: false, locked: false, hidden: false, panel: null, createdAt: trade.openTime.getTime() / 1000 };
+  expect((await context.request.patch(endpoint, { data: { expectedRevision: original.revision, document: { ...original, drawings: [drawing] } } })).ok()).toBeTruthy();
+  await page.addInitScript(prefs => localStorage.setItem("execution-lab:workstation:preferences:application:v1", JSON.stringify(prefs)), { ...defaultPreferences(), panels: [{ id: "chart-1", interval: "5m", session: "regular" }], bottomCollapsed: false });
+  const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+  let requests = 0;
+  await page.route("**/api/workstation/candles?**", route => {
+    requests++;
+    expect(new URL(route.request().url()).searchParams.get("adjustment")).toBe("split");
+    const fixture = candleFixture(route.request().url());
+    const prices = trade.executions.map(e => e.price / 4);
+    return route.fulfill({ json: { ...fixture, candles: fixture.candles.map(c => ({ ...c, open: trade.avgEntryPrice / 4, close: trade.avgEntryPrice / 4, low: Math.min(...prices) * .98, high: Math.max(...prices) * 1.02, volume: c.volume * 4 })),
+      provider: { provider: "alpaca", feed: "sip", adjustment: "split", identity: "fixture:split:v1", cached: true, fallback: false, delaySeconds: 900 },
+      metadata: { ...fixture.metadata, splitAdjustment: adjustment } } });
+  });
+  await page.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${encodeURIComponent(trade.groupKey)}`);
+  await page.getByLabel("Number of charts", { exact: true }).selectOption("1");
+  const chart = page.locator('[data-chart-id="chart-1"]');
+  await expect(chart).toHaveAttribute("data-price-adjustment", "split");
+  await expect(chart).toHaveAttribute("data-visible-executions", /[1-9]/, { timeout: 30000 });
+  const object = page.locator(".ws-object-list button").filter({ hasText: "Split anchor" });
+  if (!await object.isVisible()) await page.getByRole("button", { name: /Drawings/ }).first().click();
+  await object.click();
+  await page.locator(".ws-coordinate-editor summary").click();
+  const price = page.getByLabel("Anchor 1 price", { exact: true });
+  await expect(price).toHaveValue(String(trade.avgEntryPrice / 4));
+  const edited = trade.avgEntryPrice / 4 + 2;
+  await price.fill(String(edited));
+  await expect.poll(async () => (await (await context.request.get(endpoint)).json()).drawings.find((d: { id: string }) => d.id === drawing.id)?.points[0].price, { timeout: 30000 }).toBe(edited * 4);
+  await page.reload();
+  await expect(chart).toHaveAttribute("data-visible-executions", /[1-9]/, { timeout: 30000 });
+  if (!await object.isVisible()) await page.getByRole("button", { name: /Drawings/ }).first().click();
+  await object.click();
+  await page.locator(".ws-coordinate-editor summary").click(); await expect(price).toHaveValue(String(edited));
+  const stableRequests = requests;
+  await chart.focus(); await page.keyboard.press("Shift+L"); await expect(chart).toHaveAttribute("data-label-mode", "compact");
+  await page.keyboard.press("Shift+L");
+  const exported = await observePngExport(page);
+  await page.evaluate(() => {
+    const target = window as Window & { splitLabels?: string[] }; target.splitLabels = [];
+    const original = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (...args: Parameters<CanvasRenderingContext2D["fillText"]>) {
+      if (/^\d+  (Buy|Sell)/.test(args[0])) target.splitLabels!.push(args[0]);
+      return original.apply(this, args);
+    };
+  });
+  await chart.getByRole("button", { name: "Export chart-1", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Active chart PNG", exact: true }).click();
+  await download;
+  const png = await exported();
+  await writeFile(info.outputPath("split-adjusted-export.png"), png);
+  const labels = await page.evaluate(() => (window as Window & { splitLabels?: string[] }).splitLabels ?? []);
+  expect(labels.some(label => trade.executions.some(e => label.includes(`@ ${(e.price / 4).toFixed(2)}`)))).toBe(true);
+  await info.attach("split-adjusted-export", { body: png, contentType: "image/png" });
+  expect(requests).toBe(stableRequests);
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.screenshot({ path: info.outputPath("split-adjusted-laptop.png"), fullPage: true });
+  await page.getByTitle("Appearance", { exact: true }).click();
+  await expect(chart.getByRole("button", { name: "Before entry chart-1", exact: true })).toBeDisabled();
+  await chart.focus(); await page.keyboard.press("Shift+B");
+  await expect(chart).toHaveAttribute("data-visible-executions", /[1-9]/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: info.outputPath("split-adjusted-mobile.png"), fullPage: true });
+  expect((await prisma.closedTrade.findUniqueOrThrow({ where: { groupKey: trade.groupKey } })).avgEntryPrice).toBe(trade.avgEntryPrice);
+  expect(errors).toEqual([]);
+});

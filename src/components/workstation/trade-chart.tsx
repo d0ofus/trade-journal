@@ -59,6 +59,7 @@ export type ChartHandle = {
   beforeTrade: () => void;
   toggleSession: () => void;
   toggleComparison: () => void;
+  toggleLabels: () => void;
   reveal: (target: ChartDateTarget) => void;
   view: () => HistoryRange | null;
 };
@@ -91,8 +92,10 @@ type Props = {
   fitTitle: string;
   sessionTitle: string;
   comparisonTitle: string;
+  labelsTitle: string;
   style?: CSSProperties;
   onToggleLabels: () => void;
+  onPriceAdjustment?: (adjustment: SplitAdjustment | undefined) => void;
   onHistoryReady?: (tradeId: string) => void;
   initialRange?: HistoryRange | null;
   onViewChange?: (range: HistoryRange) => void;
@@ -107,6 +110,7 @@ import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "@/
 import { executionColors, benchmarkColor, selectBenchmark, toggleBenchmark } from "@/lib/workstation/comparison";
 import { createBenchmarkLayer, benchmarkStyle, benchmarkScale } from "./benchmark-layer";
 import { useBenchmark } from "./use-benchmark";
+import { splitAdjustedDrawing, splitAdjustedTrade, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 
 const asTime = (time: number) => time as UTCTimestamp;
@@ -115,7 +119,14 @@ export function TradeChart(input: Props) {
   // A panel's session is part of its data identity. Sibling preference changes
   // must not recreate this trade object and restart its history session.
   const trade = useMemo(() => ({ ...input.trade, chartSession: tradeChartSession(input.trade, input.panel.session) }), [input.trade, input.panel.session]);
-  const props = { ...input, trade };
+  const [historyState, setHistoryState] = useState<HistoryState | null>(null);
+  const result = historyState?.result ?? { candles: [], warning: "", source: "" };
+  const adjustedTrade = useMemo(() => splitAdjustedTrade(trade, result.splitAdjustment), [trade, result.splitAdjustment]);
+  const drawings = useMemo(() => input.drawings.map(d => splitAdjustedDrawing(d, result.splitAdjustment)), [input.drawings, result.splitAdjustment]);
+  const props = { ...input, trade: adjustedTrade, drawings,
+    onDrawing: (drawing: Drawing) => input.onDrawing(splitAdjustedDrawing(drawing, result.splitAdjustment, true)) };
+  const adjustmentCallback = useRef(input.onPriceAdjustment); adjustmentCallback.current = input.onPriceAdjustment;
+  useEffect(() => { adjustmentCallback.current?.(result.splitAdjustment); }, [result.splitAdjustment]);
   const container = useRef<HTMLElement>(null);
   const ohlcHost = useRef<HTMLDivElement>(null);
   const ohlcLegend = useRef<ReturnType<typeof createOhlcLegend> | null>(null);
@@ -134,15 +145,9 @@ export function TradeChart(input: Props) {
   const bars = useRef<Candle[]>([]),
     hits = useRef<Hit[]>([]),
     paintRef = useRef<() => void>(() => {});
-  const [historyState, setHistoryState] = useState<HistoryState | null>(null);
   const history = useRef<CandleHistory | null>(null),
     checkHistory = useRef<() => void>(() => {}),
     autoPages = useRef(0);
-  const result = historyState?.result ?? {
-    candles: [],
-    warning: "",
-    source: "",
-  };
   const loading = (!!historyState?.interval && historyState.interval !== props.panel.interval) || ((!historyState || historyState.loading === "initial") && !result.candles.length);
   const failure = historyState?.failed === "initial" && !result.candles.length ? historyState.error : "";
   const [reload, setReload] = useState(0);
@@ -217,15 +222,15 @@ export function TradeChart(input: Props) {
   bars.current = data;
 
   useEffect(() => {
-    const changedTimeBasis = interpretationVersion.current !== props.trade.timeInterpretationVersion;
-    interpretationVersion.current = props.trade.timeInterpretationVersion;
+    const changedTimeBasis = interpretationVersion.current !== trade.timeInterpretationVersion;
+    interpretationVersion.current = trade.timeInterpretationVersion;
     if (changedTimeBasis) { focusedWindow.current = null; focusedTarget.current = null; beforeReplay.current = null; }
     const visible =
-      !changedTimeBasis && currentTrade.current === props.trade.id
+      !changedTimeBasis && currentTrade.current === trade.id
         ? chart.current?.timeScale().getVisibleRange()
         : null;
     const intervalContext =
-      (currentInterval.current !== props.panel.interval || currentSession.current !== props.trade.chartSession) &&
+      (currentInterval.current !== props.panel.interval || currentSession.current !== trade.chartSession) &&
       visible &&
       typeof visible.from === "number" &&
       typeof visible.to === "number"
@@ -233,17 +238,17 @@ export function TradeChart(input: Props) {
             time: (visible.from + visible.to) / 2,
             range: { from: visible.from, to: visible.to },
             fit: false,
-            trade: props.trade.id,
+            trade: trade.id,
           }
         : null;
     // A timezone confirmation changes markers and auto session, while a saved viewport stays put.
-    const requested: typeof navigation.current = changedTimeBasis && !latest.current.initialRange ? { time: props.trade.openTime, trade: props.trade.id, fit: true } :
-      navigation.current?.trade === props.trade.id
+    const requested: typeof navigation.current = changedTimeBasis && !latest.current.initialRange ? { time: trade.openTime, trade: trade.id, fit: true } :
+      navigation.current?.trade === trade.id
         ? navigation.current
-        : intervalContext ?? (latest.current.initialRange ? { time: (latest.current.initialRange.from + latest.current.initialRange.to) / 2, trade: props.trade.id, fit: false, range: latest.current.initialRange } : null);
+        : intervalContext ?? (latest.current.initialRange ? { time: (latest.current.initialRange.from + latest.current.initialRange.to) / 2, trade: trade.id, fit: false, range: latest.current.initialRange } : null);
     if (
-      currentTrade.current !== props.trade.id ||
-      currentInterval.current !== props.panel.interval || currentSession.current !== props.trade.chartSession
+      currentTrade.current !== trade.id ||
+      currentInterval.current !== props.panel.interval || currentSession.current !== trade.chartSession
     ) {
       focusedWindow.current = requested?.range ?? null;
       focusedTarget.current = requested?.reveal ?? null;
@@ -262,7 +267,7 @@ export function TradeChart(input: Props) {
         : null;
     dataReady.current = false;
     sessionBackground.current?.setData([], props.panel.interval, undefined, latest.current.preferences.theme === "light");
-    const nextOhlcContext = JSON.stringify([props.trade.id, props.panel.interval, props.trade.chartSession, props.trade.timeInterpretationVersion]);
+    const nextOhlcContext = JSON.stringify([trade.id, props.panel.interval, trade.chartSession, trade.timeInterpretationVersion]);
     if (ohlcContext.current !== nextOhlcContext) ohlcLegend.current?.reset();
     else ohlcLegend.current?.update(null);
     ohlcContext.current = nextOhlcContext;
@@ -273,11 +278,11 @@ export function TradeChart(input: Props) {
     let disposed = false;
     const session = new CandleHistory(
       props.adapter,
-      props.trade,
+      trade,
       props.panel.interval,
       // Restore the saved viewport itself. Recentring default context here would
       // expand a fully cached view and fetch an unnecessary new edge on reload.
-      requested?.range && !(intervalContext && beforeEntryActive.current) ? { from: requested.range.from, to: Math.min(requested.range.to, requested.range.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(props.trade, props.panel.interval, context),
+      requested?.range && !(intervalContext && beforeEntryActive.current) ? { from: requested.range.from, to: Math.min(requested.range.to, requested.range.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(trade, props.panel.interval, context),
       (state) => {
         setHistoryState(state);
         dataReady.current = state.result.candles.length > 0 || (!state.loading && !state.failed);
@@ -291,9 +296,9 @@ export function TradeChart(input: Props) {
       if (requested?.fit && session.state.result.candles.length) { destination.current = requested; }
       dataReady.current = session.state.result.candles.length > 0 || session.state.failed !== "initial";
       setHistoryState(session.state);
-      if (session.state.result.candles.length) latest.current.onHistoryReady?.(props.trade.id);
+      if (session.state.result.candles.length) latest.current.onHistoryReady?.(trade.id);
       if (started && !requested && !context && props.panel.interval === "1h") {
-        void session.preload(preloadHistoryRange(props.trade, props.panel.interval));
+        void session.preload(preloadHistoryRange(trade, props.panel.interval));
       }
     })();
     return () => {
@@ -301,7 +306,7 @@ export function TradeChart(input: Props) {
       session.dispose();
       if (history.current === session) history.current = null;
     };
-  }, [props.adapter, props.trade, props.panel.interval, reload]);
+  }, [props.adapter, trade, props.panel.interval, reload]);
 
   useEffect(() => {
     if (!historyOpen) return;
@@ -729,6 +734,7 @@ export function TradeChart(input: Props) {
         if (beforeEntryBoundary(p.trade, p.panel.interval, historyResult.current.session) === null) return;
         p.onPanel?.({ beforeEntry: !p.panel.beforeEntry });
       },
+      toggleLabels: () => latest.current.onToggleLabels(),
       toggleComparison: () => {
         const p = latest.current;
         p.onPanel?.(toggleBenchmark(p.panel));
@@ -921,7 +927,7 @@ export function TradeChart(input: Props) {
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
           ctx.font = "600 13px system-ui";
           ctx.fillText(
-            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · UTC${frozen.replay !== null ? " · REPLAY" : ""}`,
+            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · UTC${frozenHistory.splitAdjustment ? " \u00b7 SPLIT ADJUSTED" : ""}${frozen.replay !== null ? " · REPLAY" : ""}`,
             16,
             21,
           );
@@ -1134,7 +1140,7 @@ export function TradeChart(input: Props) {
     // Reconcile after setData; hover itself never enters React or the data effects.
     ohlcLegend.current?.reconcile(renderedData.current, visibleWindow?.to);
   }, [result.candles, props.panel.interval, props.replay, beforeEntry, visibleWindow, loading, failure]);
-  const benchmark = useBenchmark(props.adapter, props.trade, props.panel, visibleWindow ?? props.initialRange ?? null);
+  const benchmark = useBenchmark(props.adapter, trade, props.panel, visibleWindow ?? props.initialRange ?? null);
   useEffect(() => {
     if (!chart.current || loading || changingData.current) return;
     benchmarkLayer.current?.update({ primary: renderedData.current, benchmark: benchmark.candles, symbol: props.panel.benchmark === "off" ? "" : props.panel.benchmark ?? "", light: props.preferences.theme === "light", color: props.preferences.benchmarkColor });
@@ -1380,6 +1386,7 @@ export function TradeChart(input: Props) {
       data-chart-id={props.panel.id}
       style={props.fullscreen ? undefined : props.style}
       data-label-mode={props.labelMode}
+      data-price-adjustment={result.provider?.adjustment ?? "unverified"}
       data-session={props.trade.chartSession}
       onFocusCapture={props.onActive}
       onPointerDownCapture={(event) => {
@@ -1422,7 +1429,7 @@ export function TradeChart(input: Props) {
           <button className="ws-fill-toggle" aria-label={`Execution visibility ${props.panel.id}`} aria-expanded={fillsOpen} title={loading ? "Loading execution visibility" : visibilitySummary(currentVisibility)} onClick={() => setFillsOpen(v => !v)}>
             {loading ? "?" : `${currentVisibility.filter(r => r.reason === "visible").length}/${visibleExecutions.length}`} fills
           </button>
-          <button aria-label={`${props.labelMode === "labels" ? "Hide" : "Show"} execution labels ${props.panel.id}`} aria-pressed={props.labelMode === "labels"} title="Toggle labels on this chart; markers remain visible" onClick={props.onToggleLabels}>{props.labelMode === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}</button>
+          <button aria-label={`${props.labelMode === "labels" ? "Hide" : "Show"} execution labels ${props.panel.id}`} aria-pressed={props.labelMode === "labels"} title={props.labelsTitle} onClick={props.onToggleLabels}>{props.labelMode === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}</button>
           <button
             className={`ws-history-toggle ${historyWarning ? "ws-history-warning" : ""}`}
             aria-label={`Chart history ${props.panel.id}`}
