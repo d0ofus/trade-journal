@@ -11,6 +11,8 @@
     "src/lib/workstation/note-layout.test.ts",
     "src/lib/workstation/comparison-controls.test.ts",
     "tests/workstation-preview/annotation-comparison-controls.spec.ts",
+    "tests/workstation-preview/drawing-tools.spec.ts",
+    "src/lib/workstation/workstation.test.ts",
     "src/lib/server/workstation-cache.test.ts",
     "src/lib/server/workstation-cache-after.test.ts",
     "src/lib/workstation/history.test.ts",

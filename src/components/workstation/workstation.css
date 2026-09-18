@@ -1001,6 +1001,16 @@
   padding: 2px;
   flex: 0;
 }
+.ws-drawing-label-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ws-drawing-properties input[type="checkbox"] {
+  min-width: 0;
+  flex: none;
+}
 .ws-drawing-properties select {
   padding: 4px;
   font-size: 9px;

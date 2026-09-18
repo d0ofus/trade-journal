@@ -8,6 +8,7 @@ import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } fr
 import { splitAdjustedDrawing, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { restoreChartDisplay, restoreChartPanels } from "@/lib/workstation/chart-preferences";
+import { drawingStyle, drawingStyleFor, restoreDrawingStyles } from "@/lib/workstation/drawing-style";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
 import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
 import {
@@ -81,6 +82,8 @@ import {
 } from "lucide-react";
 import {
   Drawing,
+  DrawingStyle,
+  DrawingStyles,
   Interval,
   Tool,
   Trade,
@@ -141,6 +144,27 @@ const tools: { id: Tool; label: string; icon: typeof Crosshair }[] = [
   { id: "target", label: "Planned target", icon: Target },
   { id: "exit", label: "Planned exit", icon: Flag },
 ];
+function DrawingStyleSettings({ initialTool, styles, onChange }: {
+  initialTool: Drawing["tool"];
+  styles: DrawingStyles;
+  onChange: (tool: Drawing["tool"], style: DrawingStyle) => void;
+}) {
+  const [selectedTool, setSelectedTool] = useState(initialTool);
+  const style = drawingStyleFor(selectedTool, styles);
+  return <>
+    <label>
+      <span>Drawing tool defaults</span>
+      <select aria-label="Drawing tool defaults" value={selectedTool} onChange={event => setSelectedTool(event.target.value as Drawing["tool"])}>
+        {tools.filter(tool => tool.id !== "cursor").map(tool => <option key={tool.id} value={tool.id}>{tool.label}</option>)}
+      </select>
+    </label>
+    <label>
+      <span>Default drawing color</span>
+      <input type="color" aria-label="Default drawing color" value={style.color}
+        onChange={event => onChange(selectedTool, { ...style, color: event.target.value })} />
+    </label>
+  </>;
+}
 const names = {
   charts: "Charts",
   journal: "Journal",
@@ -486,10 +510,11 @@ export function TradesWorkstation({
     try {
       const raw = localStorage.getItem(preferenceKey);
       if (raw) {
-        const parsed = JSON.parse(raw);
+        const { style: legacyStyle, ...parsed } = JSON.parse(raw);
         setPreferences({
           ...defaultPreferences(),
           ...parsed,
+          drawingStyles: restoreDrawingStyles(parsed.drawingStyles, legacyStyle),
           chartLabels: restoreChartLabels(parsed.chartLabels, parsed.labels),
           dateLink: restoredDateLink(parsed.dateLink),
           chartSizing: restoreChartSizing(parsed.chartSizing),
@@ -1270,6 +1295,13 @@ export function TradesWorkstation({
               saveDrawing({ ...chosenDrawing, color: e.target.value })
             }
           />
+          {chosenDrawing.tool === "ray" && (
+            <label className="ws-drawing-label-toggle">
+              <input type="checkbox" checked={chosenDrawing.showDefaultLabel !== false} disabled={chosenDrawing.locked}
+                onChange={event => saveDrawing({ ...chosenDrawing, showDefaultLabel: event.target.checked })} />
+              Show automatic label
+            </label>
+          )}
           <select
             aria-label="Annotation width"
             value={chosenDrawing.width}
@@ -1312,19 +1344,18 @@ export function TradesWorkstation({
             ┄
           </button>
           <button
-            title="Save drawing style as default"
+            title={`Save drawing style as default for ${tools.find(t => t.id === chosenDrawing.tool)?.label}`}
             onClick={() => {
               changePreferences({
-                style: {
-                  color: chosenDrawing.color,
-                  width: chosenDrawing.width,
-                  dashed: chosenDrawing.dashed,
+                drawingStyles: {
+                  ...preferences.drawingStyles,
+                  [chosenDrawing.tool]: drawingStyle(chosenDrawing.tool, chosenDrawing),
                 },
                 favorites: [
                   ...new Set([...preferences.favorites, chosenDrawing.tool]),
                 ],
               });
-              notify("Drawing style saved as your default.");
+              notify(`${tools.find(t => t.id === chosenDrawing.tool)?.label} default style saved.`);
             }}
           >
             <Star size={14} />
@@ -2451,18 +2482,13 @@ export function TradesWorkstation({
                 }
               />
             </label>
-            <label>
-              <span>Default drawing color</span>
-              <input
-                type="color"
-                value={preferences.style.color}
-                onChange={(e) =>
-                  changePreferences({
-                    style: { ...preferences.style, color: e.target.value },
-                  })
-                }
-              />
-            </label>
+            <DrawingStyleSettings
+              initialTool={chosenDrawing?.tool ?? (tool === "cursor" ? "ray" : tool)}
+              styles={preferences.drawingStyles}
+              onChange={(drawingTool, style) => setPreferences(value => ({ ...value,
+                drawingStyles: { ...value.drawingStyles, [drawingTool]: style },
+              }))}
+            />
             <label>
               <span>Change all chart intervals</span>
               <select

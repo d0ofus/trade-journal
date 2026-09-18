@@ -3,6 +3,7 @@ import { executionVisibility } from "@/lib/workstation/execution-visibility";
 import type { CandleRange } from "@/lib/workstation/candle-ranges";
 import { measureText, riskReward } from "@/lib/workstation/math";
 import { defaultNoteEnd, noteLayout, type PixelPoint } from "@/lib/workstation/note-layout";
+import { ellipsizeDrawingText, wrapDrawingText } from "@/lib/workstation/drawing-label-text";
 
 export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; anchor?: PixelPoint; x: number; y: number; w: number; h: number };
 export type PaintOptions = { beforeEntry?: boolean; executionColors?: { buy: string; sell: string }; covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
@@ -15,14 +16,25 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
   const w = o.beforeEntry ? Math.max(0, Math.min(o.plotWidth, lastX === null ? 0 : lastX + (priorX === null ? 4 : (lastX - priorX) / 2))) : o.plotWidth;
   // Reserve the in-chart OHLC strip so labels never disappear beneath it.
   const topInset = o.export ? 3 : 24;
-  const label = (text: string, px: number, py: number, color: string, fill = o.light ? "#ffffff" : "#171d2a", maxWidth = 320) => {
+  if (w < 24 || h < topInset + 24) return hits;
+  const label = (text: string, px: number, py: number, color: string, fill = o.light ? "#ffffff" : "#171d2a", maxWidth = 320, note = "") => {
     ctx.font = "11px system-ui, sans-serif";
-    const width = Math.min(ctx.measureText(text).width + 18, maxWidth);
-    const left = Math.max(3, Math.min(w - width - 3, px)), top = Math.max(topInset, Math.min(h - 25, py));
+    const measure = (value: string) => ctx.measureText(value).width;
+    const width = Math.min(Math.max(measure(text), ...note.split(/\r?\n/).map(measure)) + 18, maxWidth, w - 6);
+    let notes = note ? wrapDrawingText(note, width - 16, measure) : [];
+    // Keep the calculated values visible even when a note exceeds the plot height.
+    const maxNotes = Math.max(0, Math.floor((h - topInset - 1 - 24) / 16));
+    if (notes.length > maxNotes) {
+      notes = notes.slice(0, maxNotes);
+      if (notes.length) notes[notes.length - 1] = ellipsizeDrawingText(notes[notes.length - 1], width - 16, measure);
+    }
+    const height = 24 + notes.length * 16;
+    const left = Math.max(3, Math.min(w - width - 3, px)), top = Math.max(topInset, Math.min(h - height - 1, py - notes.length * 16));
     ctx.fillStyle = fill; ctx.strokeStyle = color; ctx.lineWidth = .65; ctx.setLineDash([]);
-    ctx.beginPath(); ctx.roundRect(left, top, width, 24, 4); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = color; ctx.fillText(text, left + 8, top + 16, width - 16);
-    const rect = { x: left, y: top, w: width, h: 24 };
+    ctx.beginPath(); ctx.roundRect(left, top, width, height, 4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = color;
+    [...notes, text].forEach((value, index) => ctx.fillText(value, left + 8, top + 16 + index * 16, width - 16));
+    const rect = { x: left, y: top, w: width, h: height };
     occupied.push(rect);
     return rect;
   };
@@ -39,7 +51,7 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       const start = d.tool === "horizontal" ? 0 : a.x;
       line(start, a.y, w, a.y);
       const text = d.text || `${d.tool[0].toUpperCase() + d.tool.slice(1)} · ${d.points[0].price.toFixed(2)}`;
-      label(text, Math.max(start + 8, 12), a.y - 29, d.color);
+      if (d.text || d.tool !== "ray" || d.showDefaultLabel !== false) label(text, Math.max(start + 8, 12), a.y - 29, d.color);
       bounds = { x: Math.max(0, start), y: a.y - 6, w: w - Math.max(0, start), h: 12 };
     } else if (d.tool === "text" || d.tool === "price-note") {
       if (a.x < 0 || a.x > w || a.y < 0 || a.y > h) continue;
@@ -71,7 +83,8 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       if (d.tool === "measure" && d.points[1]) {
         ctx.setLineDash([3, 4]); line(a.x, a.y, b.x, a.y); line(b.x, a.y, b.x, b.y);
         const bars = o.candles.filter(c => c.time >= Math.min(d.points[0].time, d.points[1].time) && c.time <= Math.max(d.points[0].time, d.points[1].time)).length;
-        label(measureText(d.points[0], d.points[1], bars), (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color);
+        const box = label(measureText(d.points[0], d.points[1], bars), (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color, undefined, 320, d.text.trim());
+        hits.push({ ...box, id: d.id, kind: "drawing" });
       }
     }
     if (d.tool !== "text" && d.tool !== "price-note") hits.push({ ...bounds, id: d.id, kind: "drawing" });

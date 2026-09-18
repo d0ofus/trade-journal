@@ -78,11 +78,15 @@ export type Drawing = {
   color: string;
   width: number;
   dashed: boolean;
+  /** Horizontal rays only: missing values preserve the automatic price label. */
+  showDefaultLabel?: boolean;
   locked: boolean;
   hidden: boolean;
   panel: string | null;
   createdAt: number;
 };
+export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel">;
+export type DrawingStyles = Partial<Record<Drawing["tool"], DrawingStyle>>;
 export type Review = {
   notion?: import("./notion-template").NotionReview;
   setup: string;
@@ -149,7 +153,7 @@ export type WorkspacePreferences = {
   dock: unknown;
   presets: Record<string, unknown>;
   favorites: Tool[];
-  style: { color: string; width: number; dashed: boolean };
+  drawingStyles: DrawingStyles;
   templates: Record<string, Partial<Review>>;
   exportColumns: string[];
 };
@@ -236,7 +240,7 @@ export const defaultPreferences = (): WorkspacePreferences => ({
   dock: null,
   presets: {},
   favorites: ["ray", "text", "measure"],
-  style: { color: "#a5b4fc", width: 1.5, dashed: false },
+  drawingStyles: {},
   templates: {},
   exportColumns: [],
 });

@@ -44,6 +44,7 @@ import {
   preserveHistoryViewport,
 } from "@/lib/workstation/history";
 import { Hit, hitAt, PaintOptions, paintChart } from "./chart-paint";
+import { drawingStyleFor } from "@/lib/workstation/drawing-style";
 import {
   ChartDateTarget,
   dateTargetAnchor,
@@ -1221,7 +1222,7 @@ export function TradeChart(input: Props) {
     tool: props.tool === "cursor" ? "text" : props.tool,
     points,
     text: props.tool === "text" ? "New note" : "",
-    ...props.preferences.style,
+    ...drawingStyleFor(props.tool === "cursor" ? "text" : props.tool, props.preferences.drawingStyles),
     locked: false,
     hidden: false,
     panel: props.panel.id,

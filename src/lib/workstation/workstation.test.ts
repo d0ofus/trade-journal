@@ -4,13 +4,138 @@ import { unzipSync, strFromU8 } from "fflate";
 import { aggregateCandles, bucket, completedCandles, executionBar, percentageChange, riskReward, visibleDrawings } from "./math";
 import { createDemoAdapter, demoCandles, demoTrades, initialDemoDocument } from "./demo";
 import { csvCell, exportColumns, reviewArchive, reviewCsv } from "./export";
-import { intervals, Drawing, seconds } from "./types";
+import { intervals, Drawing, drawingTools, defaultPreferences, seconds } from "./types";
 import { workstationDocumentSchema } from "./schema";
-import { paintChart } from "../../components/workstation/chart-paint";
+import { hitAt, paintChart, type PaintOptions } from "../../components/workstation/chart-paint";
+import { drawingStyle, drawingStyleFor, restoreDrawingStyles } from "./drawing-style";
+import { wrapDrawingText } from "./drawing-label-text";
 import { dateTargetAnchor, dateTargetIsVisible, restoredDateLink } from "./date-link";
 import { createApplicationAdapter } from "./application-adapter";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES } from "./payload";
 import { emptyDocument } from "./types";
+
+test("tool defaults migrate once, validate saved entries, and copy only appearance", () => {
+  const legacy = { color: "#123456", width: 3, dashed: true };
+  const migrated = restoreDrawingStyles(undefined, legacy);
+  for (const tool of drawingTools) {
+    if (tool === "cursor") continue;
+    assert.deepEqual(drawingStyleFor(tool, migrated), { ...legacy, ...(tool === "ray" ? { showDefaultLabel: true } : {}) });
+  }
+  assert.notEqual(migrated.ray, migrated.measure);
+  const ray = { ...initialDemoDocument(demoTrades[0]).drawings[0], color: "#abcdef", showDefaultLabel: false };
+  migrated.ray = drawingStyle("ray", ray);
+  assert.deepEqual(Object.keys(migrated.ray).sort(), ["color", "dashed", "showDefaultLabel", "width"]);
+  assert.deepEqual(migrated.measure, legacy);
+  assert.deepEqual(drawingStyleFor("ray", JSON.parse(JSON.stringify(migrated))), migrated.ray);
+  assert.equal(drawingStyle("measure", ray).showDefaultLabel, undefined);
+  assert.equal(drawingStyleFor("ray", defaultPreferences().drawingStyles).showDefaultLabel, true);
+  for (const invalid of [null, [], {}, { ...legacy, width: NaN }, { ...legacy, width: 5 }, { ...legacy, width: .1 }, { ...legacy, color: "red" }, { ...legacy, dashed: "true" }, { ...legacy, showDefaultLabel: "false" }]) {
+    assert.deepEqual(restoreDrawingStyles({ ray: invalid }, legacy).ray, drawingStyle("ray"));
+  }
+  for (const map of [{}, null, [], { ray: migrated.ray, cursor: legacy, unknown: legacy }]) {
+    const restored = restoreDrawingStyles(map, legacy);
+    assert.deepEqual(restored.measure, drawingStyle("measure"));
+    assert.equal("cursor" in restored, false);
+    assert.equal("unknown" in restored, false);
+  }
+});
+
+function drawingPaint(drawing: Drawing, overrides: Partial<PaintOptions> = {}) {
+  const texts: { text: string; x: number; y: number; width: number }[] = [];
+  const boxes: { x: number; y: number; w: number; h: number }[] = [];
+  const context = new Proxy({
+    measureText: (text: string) => ({ width: Array.from(text).length * 6 }),
+    fillText: (text: string, x: number, y: number, width: number) => { texts.push({ text, x, y, width }); },
+    roundRect: (x: number, y: number, w: number, h: number) => { boxes.push({ x, y, w, h }); },
+  }, { get: (target, property) => property in target ? target[property as keyof typeof target] : () => {}, set: () => true }) as unknown as CanvasRenderingContext2D;
+  const trade = demoTrades[0];
+  const hits = paintChart(context, { width: 500, height: 400, plotWidth: 450, plotHeight: 375,
+    x: t => (t - trade.openTime) / 12 + 100, y: p => 250 - (p - trade.entry) * 20,
+    drawings: [drawing], trade: { ...trade, executions: [] }, candles: demoCandles(trade), interval: "5m",
+    labels: "labels", selected: drawing.id, selectedExecution: null, light: false, replay: null, ...overrides });
+  return { texts, boxes, hits };
+}
+
+test("ray labels default on, toggle independently of notes, and leave selectable lines", () => {
+  const ray = { ...initialDemoDocument(demoTrades[0]).drawings[0], text: "" };
+  for (const light of [false, true]) for (const exporting of [false, true]) {
+    for (const showDefaultLabel of [undefined, true, false]) {
+      const { texts, hits } = drawingPaint({ ...ray, showDefaultLabel }, { light, export: exporting });
+      assert.equal(texts.length, showDefaultLabel === false ? 0 : 1);
+      if (texts.length) assert.equal(texts[0].text, `Ray · ${ray.points[0].price.toFixed(2)}`);
+      const line = hits.find(h => h.kind === "drawing")!;
+      assert.equal(hitAt(hits, { x: line.x + 30, y: line.y + 6 })?.id, ray.id);
+      const note = drawingPaint({ ...ray, showDefaultLabel, text: "Keep my note" }, { light, export: exporting });
+      assert.equal(note.texts[0].text, "Keep my note");
+    }
+  }
+  assert.equal(drawingPaint({ ...ray, showDefaultLabel: false, locked: true }).hits.some(h => h.kind === "handle"), false);
+  assert.equal(drawingPaint({ ...ray, tool: "horizontal", showDefaultLabel: false }).texts.length, 1);
+});
+
+test("measurement notes wrap above metrics and stay inside the plot in live charts and exports", () => {
+  const trade = demoTrades[0];
+  const drawing: Drawing = { ...initialDemoDocument(trade).drawings[0], tool: "measure", text: "A measured move",
+    points: [{ time: trade.openTime, price: trade.entry }, { time: trade.openTime + 900, price: trade.entry + 2 }] };
+  for (const light of [false, true]) for (const exporting of [false, true]) {
+    const { texts, boxes, hits } = drawingPaint(drawing, { light, export: exporting });
+    assert.equal(texts[0].text, drawing.text);
+    assert.match(texts[1].text, /^\+2\.00 .*15m.*bars$/);
+    assert.ok(texts[0].y < texts[1].y);
+    const box = boxes[0];
+    assert.equal(box.h, 40);
+    assert.equal(hitAt(hits, { x: box.x + 5, y: box.y + 5 })?.id, drawing.id);
+    for (const text of ["", " \n  "]) assert.equal(drawingPaint({ ...drawing, text }, { light, export: exporting }).boxes[0].h, 24);
+    for (const y of [-20, 240]) {
+      const long = drawingPaint({ ...drawing, text: "Long measurement explanation ".repeat(18) }, {
+        light, export: exporting, plotWidth: 180, plotHeight: 170, x: () => 190, y: () => y,
+      });
+      const bounds = long.boxes[0];
+      assert.ok(bounds.x >= 3 && bounds.x + bounds.w <= 177);
+      assert.ok(bounds.y >= (exporting ? 3 : 24) && bounds.y + bounds.h <= 170);
+      assert.ok(long.texts.length > 2);
+      assert.ok(long.texts.at(-2)!.text.endsWith("…"));
+      assert.match(long.texts.at(-1)!.text, /bars$/);
+      for (const row of long.texts.slice(0, -1)) assert.ok(Array.from(row.text).length * 6 <= row.width);
+    }
+  }
+  assert.deepEqual(wrapDrawingText("one two\n雪雪雪雪雪", 18, s => Array.from(s).length * 6), ["one", "two", "雪雪雪", "雪雪"]);
+});
+
+test("execution labels avoid the full multiline measurement label", () => {
+  const trade = demoTrades[0];
+  const drawing: Drawing = { ...initialDemoDocument(trade).drawings[0], tool: "measure",
+    text: "An explanation of this measured move that wraps over several lines ".repeat(2),
+    points: [{ time: trade.openTime, price: trade.entry }, { time: trade.openTime + 900, price: trade.entry + 2 }] };
+  const { hits, boxes } = drawingPaint(drawing, { trade });
+  const box = boxes[0];
+  for (const hit of hits.filter(h => h.kind === "execution" && h.h === 24)) {
+    assert.ok(hit.x + hit.w <= box.x || box.x + box.w <= hit.x || hit.y + hit.h <= box.y || box.y + box.h <= hit.y);
+  }
+});
+
+test("schema and demo persistence preserve hidden automatic ray labels and measurement notes", async () => {
+  const storage = new Map<string, string>();
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  } });
+  try {
+    const adapter = createDemoAdapter(), trade = demoTrades[0], doc = await adapter.load(trade.id);
+    doc.drawings[0].showDefaultLabel = false;
+    doc.drawings.push({ ...doc.drawings[0], id: "measurement-note", tool: "measure", text: "Saved measurement note",
+      points: [doc.drawings[0].points[0], { time: trade.openTime, price: trade.entry }] });
+    const parsed = workstationDocumentSchema.parse(doc);
+    assert.equal(parsed.drawings[0].showDefaultLabel, false);
+    assert.equal(workstationDocumentSchema.safeParse({ ...doc, drawings: [{ ...doc.drawings[0], showDefaultLabel: "false" }] }).success, false);
+    await adapter.save(trade.id, parsed, doc.revision);
+    assert.deepEqual((await adapter.load(trade.id)).drawings, parsed.drawings);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
 
 test("application saves measure UTF-8 bytes and reject oversized reviews before HTTP", async () => {
   assert.equal(jsonBytes("界"), 5);
