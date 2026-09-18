@@ -4,6 +4,11 @@
     "incremental": false
   },
   "include": [
+    "src/lib/workstation/peers.test.ts",
+    "src/lib/server/peer-candles.test.ts",
+    "src/app/api/workstation/peer-candles/route.test.ts",
+    "src/app/api/journal/market-context/route.test.ts",
+    "tests/workstation-preview/peer-comparison.spec.ts",
     "src/lib/workstation/split-adjustment.test.ts",
     "src/lib/server/workstation-stock-splits.test.ts",
     "src/lib/server/workstation-split-candles.test.ts",

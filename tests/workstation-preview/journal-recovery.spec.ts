@@ -23,7 +23,7 @@ test("migrates old recovery safely, isolates screenshot-heavy typing, and restor
     localStorage.setItem(legacyKey, JSON.stringify(doc));
     localStorage.setItem("execution-lab:workstation:preferences:demo:v1", JSON.stringify({ ...prefs, journal: true, list: false }));
   }, { doc, legacyKey, prefs: defaultPreferences() });
-  await page.goto("/preview/trades"); const field = await reveal(page);
+  await page.goto("/preview/trades?groupKey=demo-nvda"); const field = await reveal(page);
   await expect(field).toHaveText("Migrated recovery");
   await expect.poll(() => page.evaluate(key => localStorage.getItem(key), legacyKey)).toBeNull();
   await expect(page.locator(".ws-journal-save")).toContainText("Saved on this device");
@@ -63,7 +63,7 @@ test("retains legacy localStorage when IndexedDB migration fails", async ({ page
     const original = IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put = function (value, key) { if (this.name === "drafts") throw new DOMException("Quota", "QuotaExceededError"); return original.call(this, value, key); };
   }, { doc, legacyKey, prefs: defaultPreferences() });
-  await page.goto("/preview/trades"); await expect(await reveal(page)).toHaveText("Do not lose this draft");
+  await page.goto("/preview/trades?groupKey=demo-nvda"); await expect(await reveal(page)).toHaveText("Do not lose this draft");
   expect(await page.evaluate(key => localStorage.getItem(key), legacyKey)).not.toBeNull();
   await expect(page.locator(".ws-error")).toContainText("Local recovery");
 });

@@ -5,18 +5,20 @@ function apiBase() {
   return process.env.MARKET_OVERVIEW_API_BASE?.replace(/\/+$/, "") ?? "";
 }
 
-async function fetchMarketOverview(path: string) {
+async function fetchMarketOverview(path: string, signal: AbortSignal) {
   const base = apiBase();
   if (!base) return { ok: false, error: "MARKET_OVERVIEW_API_BASE is not configured.", data: null };
   const headers: HeadersInit = {};
   if (process.env.MARKET_OVERVIEW_API_TOKEN) {
     headers.Authorization = `Bearer ${process.env.MARKET_OVERVIEW_API_TOKEN}`;
   }
-  const res = await fetch(`${base}${path}`, { headers, cache: "no-store" });
-  if (!res.ok) {
-    return { ok: false, error: `Market overview request failed (${res.status}).`, data: null };
+  try {
+    const res = await fetch(`${base}${path}`, { headers, cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(12000)]) });
+    if (!res.ok) return { ok: false, error: `Market overview request failed (${res.status}).`, data: null };
+    return { ok: true, error: null, data: await res.json() };
+  } catch {
+    return { ok: false, error: "Market overview is unavailable. Retry to load peer groups.", data: null };
   }
-  return { ok: true, error: null, data: await res.json() };
 }
 
 export async function GET(req: NextRequest) {
@@ -27,8 +29,8 @@ export async function GET(req: NextRequest) {
   if (!symbol) return NextResponse.json({ error: "symbol required" }, { status: 400 });
 
   const [detail, metrics] = await Promise.all([
-    fetchMarketOverview(`/api/peer-groups/ticker/${encodeURIComponent(symbol)}`),
-    fetchMarketOverview(`/api/peer-groups/ticker/${encodeURIComponent(symbol)}/metrics`),
+    fetchMarketOverview(`/api/peer-groups/ticker/${encodeURIComponent(symbol)}`, req.signal),
+    req.nextUrl.searchParams.get("membershipOnly") === "1" ? Promise.resolve({ data: null, error: null }) : fetchMarketOverview(`/api/peer-groups/ticker/${encodeURIComponent(symbol)}/metrics`, req.signal),
   ]);
 
   const webBase = process.env.MARKET_OVERVIEW_WEB_BASE?.replace(/\/+$/, "") ?? "https://market-overview-nu.vercel.app";

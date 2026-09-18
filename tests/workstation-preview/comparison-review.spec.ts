@@ -14,7 +14,8 @@ async function open(page: Page, panels = 1, journal = false) {
   await page.addInitScript(({ preferences, panels, journal }) => {
     localStorage.setItem("execution-lab:workstation:preferences:demo:v1", JSON.stringify({ ...preferences, journal, panels: ["5m", "1h", "1d", "1wk"].slice(0, panels).map((interval, i) => ({ id: `chart-${i + 1}`, interval, benchmark: "SPY" })) }));
   }, { preferences: defaultPreferences(), panels, journal });
-  await page.goto("/preview/trades");
+  // This fixture targets NVDA explicitly; initial selection now follows newest-open/ID order.
+  await page.goto("/preview/trades?groupKey=demo-nvda");
   await expect(page.locator(".ws-chart")).toHaveCount(panels);
   for (const chart of await page.locator(".ws-chart").all()) await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/);
   return { errors, requests };
@@ -63,13 +64,13 @@ test("trade selection cannot redirect an in-flight capture to another review", a
     window.requestAnimationFrame = callback => document.querySelector('[style*="-100000px"]') ? window.setTimeout(() => callback(performance.now()), 700) : raf(callback);
   });
   await page.getByRole("button", { name: "Attach current chart to Exit Screen", exact: true }).click();
-  await page.locator(".ws-trade-card").nth(1).click();
+  await page.locator(".ws-trade-card").filter({ hasText: "TSLA" }).click();
   const original = () => page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? "null") as TradeDocument | null, DEMO_PREFIX + demoTrades[0].id);
   await expect.poll(async () => (await original())?.review.notion?.sections.exit?.evidenceIds.length).toBe(1);
   const captured = (await original())!.evidence.at(-1)!;
   const other = await page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? "null") as TradeDocument | null, DEMO_PREFIX + demoTrades[1].id);
   expect(other?.evidence.some(e => e.id === captured.id) ?? false).toBe(false);
-  await expect(page.locator(".ws-trade-card").first()).toHaveClass(/active/);
+  await expect(page.locator(".ws-trade-card").filter({ hasText: "NVDA" })).toHaveClass(/active/);
 });
 
 test("failed attachment saves keep image and section together in the recovery draft", async ({ page }) => {

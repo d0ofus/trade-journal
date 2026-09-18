@@ -1,4 +1,6 @@
 import { notionBlocks, notionClipboard } from "./notion-export";
+import { assignedEvidenceIds, sectionEvidenceIds } from "./evidence";
+import type { ReviewSectionKey } from "./notion-template";
 import { notionProperties, propertyText, chartSections, analysisSections } from "./notion-template";
 import { richPlain, richMarkdown } from "./rich-text";
 import { metricEntries, type MarketMetrics } from "./market-metrics";
@@ -55,20 +57,19 @@ export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; ur
     const name = filename(row.trade), markdown = reviewMarkdown(row.trade, row.doc, row.url, row.metrics), attachments: string[] = [];
     for (const evidence of row.doc.evidence) { const path = `${name}/assets/${evidence.id.replace(/[^a-z0-9_-]/gi, "_")}.png`; const buffer = Uint8Array.from(atob(evidence.image.split(",")[1]), c => c.charCodeAt(0)); files[path] = buffer; attachments.push(path); }
     const blocks = row.doc.review.notion ? notionBlocks(row.trade, row.doc, row.metrics) : null;
-    const assigned = new Set(Object.values(row.doc.review.notion?.sections ?? {}).flatMap(s => s?.evidenceIds ?? []));
-    const sectionImages = (title: string) => {
-      const section = chartSections.find(([, label]) => label === title)?.[0];
-      return section ? row.doc.evidence.filter(e => row.doc.review.notion?.sections[section]?.evidenceIds.includes(e.id)) : [];
+    const assigned = assignedEvidenceIds(row.doc.review.notion);
+    const sectionImages = (key?: ReviewSectionKey) => {
+      return key ? row.doc.evidence.filter(e => sectionEvidenceIds(row.doc.review.notion, key).includes(e.id)) : [];
     };
     const assetPath = (id: string) => `assets/${id.replace(/[^a-z0-9_-]/gi, "_")}.png`;
     const mdImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `\n![${e.name.replace(/[\[\]]/g, "")} ](${assetPath(e.id)})\n`).join("");
     const htmlImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `<figure><img alt="${escapeHtml(e.name)}" src="${assetPath(e.id)}" style="max-width:100%"></figure>`).join("");
     const unassigned = row.doc.evidence.filter(e => !assigned.has(e.id));
-    const mappedMarkdown = blocks ? `# ${row.trade.symbol}\n\n` + blocks.map(b => `${"#".repeat(b.level)} ${b.title}\n\n${richMarkdown(b.html)}${mdImages(sectionImages(b.title))}`).join("\n\n") + `\n${row.url}\n` + mdImages(unassigned) : markdown + mdImages(row.doc.evidence);
-    const mappedHtml = blocks ? `<h1>${escapeHtml(row.trade.symbol)}</h1>` + blocks.map(b => `<h${b.level}>${escapeHtml(b.title)}</h${b.level}>${b.html}${htmlImages(sectionImages(b.title))}`).join("") + htmlImages(unassigned) : markdown.split("\n\n").map(p => p.startsWith("## ") ? `<h2>${escapeHtml(p.slice(3))}</h2>` : p.startsWith("# ") ? `<h1>${escapeHtml(p.slice(2))}</h1>` : `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`).join("") + htmlImages(row.doc.evidence);
+    const mappedMarkdown = blocks ? `# ${row.trade.symbol}\n\n` + blocks.map(b => `${"#".repeat(b.level)} ${b.title}\n\n${richMarkdown(b.html)}${mdImages(sectionImages(b.key))}`).join("\n\n") + `\n${row.url}\n` + mdImages(unassigned) : markdown + mdImages(row.doc.evidence);
+    const mappedHtml = blocks ? `<h1>${escapeHtml(row.trade.symbol)}</h1>` + blocks.map(b => `<h${b.level}>${escapeHtml(b.title)}</h${b.level}>${b.html}${htmlImages(sectionImages(b.key))}`).join("") + htmlImages(unassigned) : markdown.split("\n\n").map(p => p.startsWith("## ") ? `<h2>${escapeHtml(p.slice(3))}</h2>` : p.startsWith("# ") ? `<h1>${escapeHtml(p.slice(2))}</h1>` : `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`).join("") + htmlImages(row.doc.evidence);
     files[`${name}/review.md`] = strToU8(mappedMarkdown);
     files[`${name}/review.html`] = strToU8(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(row.trade.symbol)} review</title></head><body><article>${mappedHtml}</article></body></html>`);
-    files[`${name}/review.json`] = strToU8(JSON.stringify({ trade: row.trade, document: { ...row.doc, evidence: row.doc.evidence.map(e => ({ id: e.id, name: e.name, time: e.time, revision: e.revision, timeframe: e.timeframe, timeInterpretationVersion: e.timeInterpretationVersion ?? null, earlierTimestampBasis: e.timeInterpretationVersion !== (row.trade.timeInterpretationVersion ?? "original") })) } }, null, 2));
+    files[`${name}/review.json`] = strToU8(JSON.stringify({ trade: row.trade, document: { ...row.doc, evidence: row.doc.evidence.map(e => ({ ...e, image: undefined, timeInterpretationVersion: e.timeInterpretationVersion ?? null, earlierTimestampBasis: e.timeInterpretationVersion !== (row.trade.timeInterpretationVersion ?? "original") })) } }, null, 2));
     manifest.trades.push({ id: row.trade.id, revision: row.doc.revision, timeInterpretationVersion: row.trade.timeInterpretationVersion ?? "original", folder: name, attachments });
   }
   files["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));

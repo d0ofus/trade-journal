@@ -1,7 +1,11 @@
 "use client";
 import { executionColors, benchmarkColor } from "@/lib/workstation/comparison";
 import { attachEvidence, removeEvidence } from "@/lib/workstation/evidence";
-import { chartSections, type ChartSectionKey } from "@/lib/workstation/notion-template";
+import { reviewSections, emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
+import { newestTradesFirst } from "@/lib/workstation/trade-order";
+import type { PeerCapture, PeerView } from "@/lib/workstation/peers";
+import type { PeerGroupSelection } from "./peer-groups";
+import dynamic from "next/dynamic";
 import { notionImportCsv, notionPageArchive } from "@/lib/workstation/notion-import";
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
@@ -111,6 +115,7 @@ import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
 import { ChartHandle, TradeChart } from "./trade-chart";
 import { TradeMarketMetrics } from "./market-metrics-strip";
 import type { MarketMetrics } from "@/lib/workstation/market-metrics";
+import { metricIdentity } from "@/lib/workstation/share-eligibility";
 import { ConnectedReviewEditor, ConnectedSaveStatus } from "./review-editor";
 import { DrawingCoordinates } from "./drawing-coordinates";
 import { applyWorkspaceVisibility, reviewPanelIds } from "./workspace-layout";
@@ -124,9 +129,11 @@ import { WorkstationFilterControls } from "./trade-filter-controls";
 import { normalizeWorkstationFilters, tradeFilterError, type TradeFilterControls, type WorkstationTradeFilters } from "@/lib/workstation/trade-filters";
 import "dockview/dist/styles/dockview.css";
 import "./workstation.css";
+import "./peer-comparison.css";
 import { ResizableChartGrid } from "./resizable-chart-grid";
 import { defaultChartSizing, restoreChartSizing } from "@/lib/workstation/chart-sizing";
 
+const PeerComparison = dynamic(() => import("./peer-comparison").then(m => m.PeerComparison), { ssr: false });
 const tools: { id: Tool; label: string; icon: typeof Crosshair }[] = [
   { id: "cursor", label: "Select / pan", icon: MousePointer2 },
   { id: "horizontal", label: "Horizontal line", icon: Minus },
@@ -297,7 +304,7 @@ function Modal({
 }
 
 export function TradesWorkstation({
-  trades,
+  trades: inputTrades,
   adapter,
   initialId,
   journalView = false,
@@ -309,6 +316,9 @@ export function TradesWorkstation({
   journalView?: boolean;
   filterControls?: TradeFilterControls;
 }) {
+  const trades = useMemo(() => newestTradesFirst(inputTrades), [inputTrades]);
+  const [peerComparison, setPeerComparison] = useState<{ tradeId: string; selection: PeerGroupSelection; initial: PeerView } | null>(null);
+  const peerCaptureGeneration = useRef(0);
   const appearance = useAppearance(adapter.mode);
   const setAppearance = appearance.setTheme;
   const { registerSave, setFocused } = useApplicationShell();
@@ -341,7 +351,7 @@ export function TradesWorkstation({
   const preferences = useMemo(() => ({ ...savedPreferences, theme: appearance.theme }), [savedPreferences, appearance.theme]);
   const trade = selectedTrade;
   const marketMetrics = useRef<{ key: string; value?: MarketMetrics }>({ key: "" });
-  const metricKey = `${trade?.id}:${trade?.timeInterpretationVersion}`;
+  const metricKey = trade ? metricIdentity(trade) : "";
   const receiveMetrics = useCallback((key: string, value: MarketMetrics | undefined) => { marketMetrics.current = { key, value }; }, []);
   const getMarketMetrics = useCallback(() => marketMetrics.current.key === metricKey ? marketMetrics.current.value : undefined, [metricKey]);
   const prefRef = useRef(preferences);
@@ -392,8 +402,9 @@ export function TradesWorkstation({
     dockDispose = useRef<(() => void) | null>(null);
   const [notionPackage, setNotionPackage] = useState<{ csv: Blob; zip: Blob; name: string; revision: number } | null>(null);
   const operation = useRef(false);
-  const reviewContext = useRef({ id: trade?.id, generation: 0 });
-  if (reviewContext.current.id !== trade?.id) reviewContext.current = { id: trade?.id, generation: reviewContext.current.generation + 1 };
+  const reviewContext = useRef({ id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: 0 });
+  if (reviewContext.current.id !== trade?.id || reviewContext.current.timeVersion !== trade?.timeInterpretationVersion) reviewContext.current = { id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: reviewContext.current.generation + 1 };
+  useEffect(() => { peerCaptureGeneration.current++; setPeerComparison(null); }, [trade?.id, trade?.timeInterpretationVersion, replay]);
   useEffect(() => { setNotionPackage(null); setModal(value => value === "notion" || value === "attach" ? null : value); }, [trade?.id]);
   useEffect(() => () => { reviewContext.current.generation++; }, []);
   const pendingDate = useRef<{ tradeId: string; time: number; panel: string | null } | null>(null);
@@ -865,7 +876,7 @@ export function TradesWorkstation({
     if (!preferences.panels.slice(0, count).some((p) => p.id === activeChart))
       setActiveChart("chart-1");
   };
-  const capture = async (kind: "active" | "layout" | "copy" | "attach", destination?: ChartSectionKey) => {
+  const capture = async (kind: "active" | "layout" | "copy" | "attach", destination?: ReviewSectionKey) => {
     if (busy || operation.current) return;
     if (kind === "attach" && !destination) { setModal("attach"); return; }
     if (kind === "attach" && (trade.stale || replay !== null || !documentState)) { notify("Open an editable review before attaching a chart."); return; }
@@ -907,7 +918,7 @@ export function TradesWorkstation({
       else if (kind === "attach") {
         const evidence = {
           id: crypto.randomUUID(),
-          name: `${chartSections.find(([key]) => key === destination)?.[1]} · ${name}`,
+          name: `${reviewSections.find(([key]) => key === destination)?.[1]} · ${name}`,
           image: canvas.toDataURL("image/png"),
           time: replay ?? Date.now() / 1000,
           revision: persistence.getDocument()?.revision ?? 0,
@@ -931,6 +942,34 @@ export function TradesWorkstation({
       operation.current = false;
       setBusy("");
     }
+  };
+  const getPeerWorkspaceView = (): PeerView => {
+    const panel = preferences.panels.find(p => p.id === activeChart) ?? preferences.panels[0];
+    const range = handles.current.get(panel.id)?.view() ?? initialHistoryRange(trade, panel.interval);
+    return { range, interval: panel.interval, session: tradeChartSession(trade, panel.session), adjustment: chartAdjustments[panel.id] ? "split" : "raw", beforeEntry: panel.beforeEntry ?? false };
+  };
+  const selectPeerGroup = (peerGroupId: string) => {
+    if (!trade.stale && replay === null && persistence.getDocument()?.review.notion?.peerGroupId !== peerGroupId) persistence.change(d => ({ ...d, review: { ...d.review, notion: { ...d.review.notion ?? emptyNotionReview(), peerGroupId } } }));
+  };
+  const openPeers = (selection: PeerGroupSelection) => {
+    peerCaptureGeneration.current++;
+    selectPeerGroup(selection.group.id);
+    setPeerComparison({ tradeId: trade.id, selection, initial: getPeerWorkspaceView() });
+  };
+  const closePeers = () => { peerCaptureGeneration.current++; setPeerComparison(null); };
+  const capturePeer = async (canvas: HTMLCanvasElement, metadata: PeerCapture) => {
+    if (operation.current || trade.stale || replay !== null) throw new Error("Open an editable review and finish the current save before attaching.");
+    const generation = reviewContext.current.generation, peerGeneration = peerCaptureGeneration.current;
+    const assertCurrent = () => { if (generation !== reviewContext.current.generation || peerGeneration !== peerCaptureGeneration.current) throw new Error("Capture cancelled because the comparison or selected trade changed."); };
+    operation.current = true;
+    try {
+      if (!(await persistence.flush())) throw new Error("Save the review before attaching a comparison.");
+      assertCurrent();
+      const evidence = { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.now() / 1000, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata };
+      persistence.change(d => attachEvidence(d, evidence, "peers"));
+      if (!(await persistence.flush())) throw new Error("The chart remains in your recovery draft. Retry saving the review.");
+      assertCurrent(); notify("Comparison chart attached to Peers.");
+    } finally { operation.current = false; }
   };
   const prepareNotionExport = async () => {
     if (busy || operation.current || replay !== null || !documentState) return;
@@ -1501,6 +1540,7 @@ export function TradesWorkstation({
       onSaveNext={() => runCommand("review.next")}
       saveNextShortcut={shortcutLabel(shortcuts.value.bindings["review.next"])}
       onEvidence={section => void capture("attach", section)}
+      onComparePeers={openPeers}
       onNotionExport={() => void prepareNotionExport()}
       preferences={preferences}
       onPreferences={changePreferences}
@@ -2177,9 +2217,10 @@ export function TradesWorkstation({
           </button>
         </div>
       )}
+      {peerComparison?.tradeId === trade.id && replay === null && <PeerComparison key={`${trade.id}:${trade.timeInterpretationVersion}`} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
       {modal === "attach" && <Modal title="Attach current chart" onClose={closeModal}>
         <p>Choose the review section for the active chart.</p>
-        <div className="ws-export-actions">{chartSections.map(([key, label]) => <button key={key} disabled={!!busy} onClick={() => void capture("attach", key)}>{label}</button>)}</div>
+        <div className="ws-export-actions">{reviewSections.map(([key, label]) => <button key={key} disabled={!!busy} onClick={() => void capture("attach", key)}>{label}</button>)}</div>
         {busy && <p role="status">{busy}</p>}
       </Modal>}
       {modal === "notion" && notionPackage && <Modal title="Export review for Notion" onClose={closeModal}>

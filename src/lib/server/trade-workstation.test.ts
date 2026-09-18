@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { listWorkstationTrades, readWorkstationDocument, saveWorkstationDocument, WorkstationError } from "./trade-workstation";
 import { createJournalEntryFromClosedTrade, JournalStaleWriteError, updateJournalEntry } from "./journal";
 import { emptyDocument } from "@/lib/workstation/types";
+import { attachEvidence, assignSectionEvidence, sectionEvidenceIds, removeEvidence } from "@/lib/workstation/evidence";
+import { reviewSections } from "@/lib/workstation/notion-template";
 import { REVIEW_PACKAGE_MAX_BYTES } from "@/lib/workstation/payload";
 import { readTradeView, saveTradeView } from "./workstation-trade-view";
 import { tradeViewSchema } from "@/lib/workstation/trade-view";
@@ -49,6 +51,32 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("orders by opening time instead of closing time and retains stale trades in timestamp order", async () => {
+    const older = await fixture(false), newer = await fixture(false), tie = await fixture(false);
+    await prisma.closedTrade.update({ where: { groupKey: older }, data: { openTime: new Date("2024-09-09T23:00Z"), closeTime: new Date("2024-09-12T00:00Z") } });
+    await prisma.closedTrade.update({ where: { groupKey: newer }, data: { openTime: new Date("2024-09-10T14:30Z"), isStale: true } });
+    const ids = [older, newer, tie];
+    const result = (await listWorkstationTrades({ symbol: "WSTEST", includeStale: true })).filter(t => ids.includes(t.id));
+    expect(result.map(t => t.id)).toEqual([...([newer, tie].sort()), older]);
+    expect(result.find(t => t.id === newer)?.stale).toBe(true);
+  });
+  it("round-trips peer metadata, all attachment destinations and detachment through authenticated saves", async () => {
+    const key = await fixture(); const before = await readWorkstationDocument(key);
+    const capture = { source: "peer-comparison" as const, symbols: ["WSTEST", "AAPL"], groupId: "curated-1", groupName: "Original membership", interval: "1d" as const, session: "regular" as const, adjustment: "split" as const, ranges: { WSTEST: { from: 1, to: 2 }, AAPL: { from: 1, to: 2 } }, capturedAt: "2026-09-18T00:00:00.000Z", beforeEntry: false, entryTime: 1 };
+    const doc = attachEvidence(before, { id: "peer-snapshot", name: "Pair", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: before.revision, timeframe: "1d", peerCapture: capture }, "peers");
+    for (const [section] of reviewSections) doc.review.notion = assignSectionEvidence(doc.review.notion!, section, "peer-snapshot", true);
+    doc.review.notion!.peerGroupId = "curated-1";
+    expect((await PATCH(request(key, { document: doc, expectedRevision: before.revision }), params(key))).status).toBe(200);
+    let loaded = await readWorkstationDocument(key);
+    expect(loaded.evidence[0].peerCapture).toEqual(capture); expect(loaded.review.setup).toBe(before.review.setup);
+    expect(loaded.review.notion?.peerGroupId).toBe("curated-1");
+    for (const [section] of reviewSections) expect(sectionEvidenceIds(loaded.review.notion, section)).toEqual(["peer-snapshot"]);
+    loaded.review.notion = assignSectionEvidence(loaded.review.notion!, "takeaways", "peer-snapshot", false);
+    await saveWorkstationDocument(key, loaded, loaded.revision); loaded = await readWorkstationDocument(key);
+    expect(loaded.evidence).toHaveLength(1); expect(sectionEvidenceIds(loaded.review.notion, "takeaways")).toEqual([]);
+    await saveWorkstationDocument(key, removeEvidence(loaded, "peer-snapshot"), loaded.revision); loaded = await readWorkstationDocument(key);
+    expect(loaded.evidence).toEqual([]); for (const [section] of reviewSections) expect(sectionEvidenceIds(loaded.review.notion, section)).toEqual([]);
+  });
   it("round-trips ray label visibility and measurement notes through the save endpoint", async () => {
     const key = await fixture();
     const doc = await readWorkstationDocument(key);

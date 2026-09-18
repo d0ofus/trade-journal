@@ -8,6 +8,7 @@ import { lockClosedTradeForReview } from "./closed-trade-review-lock";
 import { buildClosedTradeWhere, TradeFilters } from "./closed-trade-filters";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "@/lib/workstation/payload";
 import { applyAccountTimePolicy } from "./execution-time-policy";
+import { newestTradesFirst } from "@/lib/workstation/trade-order";
 type Reader = Prisma.TransactionClient;
 export class WorkstationError extends Error { constructor(message: string, public status = 409) { super(message); } }
 
@@ -25,11 +26,11 @@ export async function listWorkstationTrades(filters: TradeFilters = {}, selected
   const byBatch = new Map(interpretations.map(row => [row.importBatchId, row]));
   // openingQuantity/closingQuantity are signed account-position baselines, not trade size.
   // Materialized ClosedTrade rows represent completed cycles, even when a separate carry position remains.
-  return groups.map(g => {
+  return newestTradesFirst(groups.map(g => {
     const executions = g.executions.map(e => applyAccountTimePolicy({ id: e.executionId, time: e.executedAt.getTime() / 1000, side: e.side === "BUY" ? "BUY" : "SELL", quantity: e.quantity, price: e.price, commission: e.commission, fees: e.fees, provenance: { timezoneStatus: "unverified", timezone: null, source: e.execution.importBatch?.sourceSection === "trades" ? "Imported broker execution" : "Stored execution", parserVersion: e.execution.importBatch?.parserVersion ?? null } }, e.execution.executedAt.getTime() === e.executedAt.getTime() && e.execution.importBatch ? { ...e.execution.importBatch, timeInterpretation: byBatch.get(e.execution.importBatch.id) ?? null } : null, policyByAccount.get(g.accountId), applicationByBatch.get(`${policyByAccount.get(g.accountId)?.id}:${e.execution.importBatch?.id}`)));
     const boundary = (time: Date) => { const index = g.executions.findIndex(e => e.executedAt.getTime() === time.getTime()); return index >= 0 ? executions[index].time : time.getTime() / 1000; };
     return { id: g.groupKey, assetType: g.instrument.assetType, symbol: g.symbol, name: g.symbol, account: g.account.ibkrAccount, currency: g.instrument.currency ?? "", direction: g.direction === "SHORT" ? "SHORT" as const : "LONG" as const, openTime: boundary(g.openTime), closeTime: boundary(g.closeTime), brokerTradeDate: g.tradeDate.toISOString().slice(0, 10), timeInterpretationVersion: createHash("sha256").update(executions.map(e => `${e.id}:${e.time}:${e.provenance?.interpretationStatus ?? "original"}:${e.provenance?.interpretationVersion ?? "0"}`).join("|")).digest("hex"), entry: g.avgEntryPrice, exit: g.avgExitPrice, pnl: g.realizedPnl, fees: g.totalCommission, quantity: g.totalQuantity, openQuantity: 0, stale: g.isStale, executions };
-  });
+  }));
 }
 export async function readWorkstationDocument(groupKey: string, db: Reader = prisma): Promise<TradeDocument> {
   const [trade, note, link] = await Promise.all([db.closedTrade.findUnique({ where: { groupKey }, include: { tags: { include: { tag: true } }, annotations: true } }), db.closedTradeNote.findUnique({ where: { groupKey } }), db.journalLink.findFirst({ where: { linkType: "REVIEW_SOURCE", targetType: "CLOSED_TRADE", targetId: groupKey }, include: { journalEntry: { include: { notionRelations: { include: { relationTag: true } } } } }, orderBy: { createdAt: "asc" } })]);

@@ -3,7 +3,8 @@ import { csvCell } from "./export";
 import { beforeEntryBoundary } from "./before-entry";
 import { firstExecution } from "./before-entry";
 import { notionBlocks } from "./notion-export";
-import { chartSections, notionProperties, stopLossPercent } from "./notion-template";
+import { notionProperties, stopLossPercent } from "./notion-template";
+import { assignedEvidenceIds, sectionEvidenceIds } from "./evidence";
 import { escapeHtml, richPlain } from "./rich-text";
 import type { Trade, TradeDocument } from "./types";
 import type { MarketMetrics } from "./market-metrics";
@@ -42,10 +43,9 @@ export function notionPageArchive({ trade, doc, url, metrics }: NotionImportRevi
     files[path] = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0));
     images.set(evidence.id, `<figure><img src="${path}" alt="${escapeHtml(evidence.name)}"><figcaption>${escapeHtml(evidence.name)}</figcaption></figure>`);
   });
-  const assigned = new Set(Object.values(doc.review.notion?.sections ?? {}).flatMap(section => section?.evidenceIds ?? []));
+  const assigned = assignedEvidenceIds(doc.review.notion);
   const blocks = notionBlocks(trade, doc, metrics).map(block => {
-    const section = chartSections.find(([, title]) => title === block.title)?.[0];
-    const figures = section ? (doc.review.notion?.sections[section]?.evidenceIds ?? []).map(id => images.get(id) ?? "").join("") : "";
+    const figures = block.key ? sectionEvidenceIds(doc.review.notion, block.key).map(id => images.get(id) ?? "").join("") : "";
     return `<h${block.level}>${escapeHtml(block.title)}</h${block.level}>${block.html}${figures}`;
   }).join("");
   const unassigned = doc.evidence.filter(e => !assigned.has(e.id));

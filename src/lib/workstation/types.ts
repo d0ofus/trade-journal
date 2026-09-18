@@ -103,6 +103,7 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  peerCapture?: import("./peers").PeerCapture;
   timeInterpretationVersion?: string;
   id: string;
   name: string;
