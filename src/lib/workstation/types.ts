@@ -85,12 +85,17 @@ export type Drawing = {
   extendRight?: boolean;
   /** Planned entry/exit markers: missing values preserve the price label. */
   showPrice?: boolean;
+  /** Measurement label components; absent flags remain enabled. */
+  showValues?: boolean;
+  showPercent?: boolean;
+  showInterval?: boolean;
+  showBars?: boolean;
   locked: boolean;
   hidden: boolean;
   panel: string | null;
   createdAt: number;
 };
-export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel" | "extendLeft" | "extendRight" | "showPrice">;
+export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel" | "extendLeft" | "extendRight" | "showPrice" | "showValues" | "showPercent" | "showInterval" | "showBars">;
 export type DrawingStyles = Partial<Record<Drawing["tool"], DrawingStyle>>;
 export type Review = {
   notion?: import("./notion-template").NotionReview;
@@ -108,6 +113,7 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  origin?: "upload" | "clipboard";
   peerCapture?: import("./peers").PeerCapture;
   timeInterpretationVersion?: string;
   id: string;

@@ -1,6 +1,8 @@
 "use client";
 import { executionColors, benchmarkColor } from "@/lib/workstation/comparison";
-import { attachEvidence, removeEvidence } from "@/lib/workstation/evidence";
+import { assignSectionEvidence, attachEvidence, earlierTimestampBasis, evidenceSource, removeEvidence, sectionEvidenceIds } from "@/lib/workstation/evidence";
+import { ImageAttachment } from "./image-attachment";
+import type { ImportedImage } from "@/lib/workstation/image-import";
 import { reviewSections, emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
 import { newestTradesFirst } from "@/lib/workstation/trade-order";
 import type { PeerCapture, PeerView } from "@/lib/workstation/peers";
@@ -110,7 +112,7 @@ import {
   reviewCsv,
   reviewMarkdown,
 } from "@/lib/workstation/export";
-import { measureText, riskReward } from "@/lib/workstation/math";
+import { measurementLabels, measureText, riskReward } from "@/lib/workstation/math";
 import { useTradeDocument } from "./use-trade-document";
 import { useTradeView } from "./use-trade-view";
 import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
@@ -122,7 +124,6 @@ import { ConnectedReviewEditor, ConnectedSaveStatus } from "./review-editor";
 import { DrawingCoordinates } from "./drawing-coordinates";
 import { applyWorkspaceVisibility, reviewPanelIds } from "./workspace-layout";
 import { ChartDateTarget, restoredDateLink } from "@/lib/workstation/date-link";
-import Image from "next/image";
 import { commands, defaultShortcuts, matchCommand, shortcutLabel, typingTarget } from "@/lib/workstation/shortcuts";
 import { ShortcutSettings, useShortcutPreferences } from "./shortcut-settings";
 import { useAppearance } from "@/lib/workstation/appearance";
@@ -175,6 +176,9 @@ function DrawingStyleSettings({ initialTool, styles, onChange }: {
     {selectedTool === "measure" && (["extendLeft", "extendRight"] as const).map(flag => <label key={flag}>
       <span>{flag === "extendLeft" ? "Extend left" : "Extend right"}</span>
       <input type="checkbox" checked={style[flag] === true} onChange={event => onChange(selectedTool, { ...style, [flag]: event.target.checked })} />
+    </label>)}
+    {selectedTool === "measure" && measurementLabels.map(([flag, label]) => <label key={flag}>
+      <span>{label}</span><input type="checkbox" checked={style[flag] !== false} onChange={event => onChange(selectedTool, { ...style, [flag]: event.target.checked })} />
     </label>)}
     {(selectedTool === "entry" || selectedTool === "exit") && <label>
       <span>Show price</span>
@@ -375,6 +379,11 @@ export function TradesWorkstation({
     [tool, setTool] = useState<Tool>("cursor"),
     [selectedDrawing, setSelectedDrawing] = useState<string | null>(null),
     [selectedExecution, setSelectedExecution] = useState<string | null>(null);
+  const [drawingsHidden, setDrawingsHidden] = useState(false);
+  const [imageDestination, setImageDestination] = useState<ReviewSectionKey>("entry");
+  const imageGeneration = useRef(0);
+  const imageEditable = useRef(false);
+  useEffect(() => { setDrawingsHidden(false); }, [trade?.id]);
   const [query, setQuery] = useState(""),
     [filter, setFilter] = useState("All trades"),
     [checked, setChecked] = useState<string[]>([]);
@@ -386,12 +395,13 @@ export function TradesWorkstation({
   const tradeListRef = useRef<HTMLElement>(null);
   useEffect(() => { setFilterDraft(JSON.parse(appliedFilterKey)); setFilterError(tradeFilterError(JSON.parse(appliedFilterKey))); }, [appliedFilterKey]);
   const [modal, setModal] = useState<
-      "export" | "notion" | "attach" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
+      "export" | "notion" | "attach" | "image" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
     >(null),
     [notice, setNotice] = useState("");
   const [replay, setReplay] = useState<number | null>(null),
     [playing, setPlaying] = useState(false),
     [speed, setSpeed] = useState(1);
+  imageEditable.current = !!trade && !trade.stale && replay === null;
   useEffect(() => { setPlaying(false); setReplay(null); }, [selectedTrade?.id, selectedTrade?.timeInterpretationVersion]);
   const [undo, setUndo] = useState<Drawing[][]>([]),
     [redo, setRedo] = useState<Drawing[][]>([]);
@@ -416,12 +426,13 @@ export function TradesWorkstation({
   if (reviewContext.current.id !== trade?.id || reviewContext.current.timeVersion !== trade?.timeInterpretationVersion) reviewContext.current = { id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: reviewContext.current.generation + 1 };
   useEffect(() => { peerCaptureGeneration.current++; setPeerComparison(null); }, [trade?.id, trade?.timeInterpretationVersion, replay]);
   useEffect(() => { setNotionPackage(null); setModal(value => value === "notion" || value === "attach" ? null : value); }, [trade?.id]);
+  useEffect(() => { imageGeneration.current++; setModal(value => value === "image" ? null : value); }, [trade?.id, trade?.timeInterpretationVersion, trade?.stale, replay]);
   useEffect(() => () => { reviewContext.current.generation++; }, []);
   const pendingDate = useRef<{ tradeId: string; time: number; panel: string | null } | null>(null);
   const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
   const notify = useCallback((message: string) => setNotice(message), []),
-    closeModal = useCallback(() => setModal(null), []);
+    closeModal = useCallback(() => { imageGeneration.current++; setModal(null); }, []);
   const changePreferences = useCallback(
     (patch: Partial<WorkspacePreferences>) => {
       if (patch.theme && !setAppearance(patch.theme)) setNotice("Appearance could not be saved on this device.");
@@ -683,6 +694,7 @@ export function TradesWorkstation({
     const command = commands.find(c => c.id === id);
     if (command?.tool) {
       handles.current.forEach(handle => handle.cancel());
+      if (command.tool !== "cursor") setDrawingsHidden(false);
       setTool(command.tool);
       handles.current.get(chartId)?.focus();
     } else if (id === "chart.fullscreen") {
@@ -981,6 +993,27 @@ export function TradesWorkstation({
       if (!(await persistence.flush())) throw new Error("The chart remains in your recovery draft. Retry saving the review.");
       assertCurrent(); notify("Comparison chart attached to Peers.");
     } finally { operation.current = false; }
+  };
+  const imageToken = imageGeneration.current;
+  const validateImported = (image: ImportedImage) => {
+    const doc = persistence.getDocument();
+    if (!doc) throw new Error("Open an editable review before attaching an image.");
+    if (!doc.evidence.some(e => e.id === image.id)) attachEvidence(doc, { ...image, time: Date.now() / 1000, timeframe: "", revision: doc.revision }, imageDestination);
+  };
+  const attachImported = async (image: ImportedImage) => {
+    if (operation.current || !imageEditable.current) throw new Error("Open an editable review and finish the current save before attaching.");
+    const generation = reviewContext.current.generation;
+    const assertCurrent = () => {
+      if (generation !== reviewContext.current.generation || imageToken !== imageGeneration.current || !imageEditable.current) throw new Error("Image import cancelled because the review or attachment dialog changed.");
+    };
+    assertCurrent(); operation.current = true; setBusy("Saving image…");
+    try {
+      if (!(await persistence.flush())) throw new Error("Save the review before attaching an image.");
+      assertCurrent(); validateImported(image);
+      persistence.change(d => d.evidence.some(e => e.id === image.id) ? d : attachEvidence(d, { ...image, time: Date.now() / 1000, timeframe: "", revision: d.revision }, imageDestination));
+      if (!(await persistence.flush())) throw new Error("The image remains in your recovery draft. Retry saving the review.");
+      assertCurrent(); setModal(null); showPanel("evidence"); notify("Image attached to this review.");
+    } finally { operation.current = false; setBusy(""); }
   };
   const prepareNotionExport = async () => {
     if (busy || operation.current || replay !== null || !documentState) return;
@@ -1283,6 +1316,7 @@ export function TradesWorkstation({
               adapter={adapter}
               preferences={preferences}
               drawings={documentState?.drawings ?? []}
+              drawingsHidden={drawingsHidden}
               selected={selectedDrawing}
               selectedExecution={selectedExecution}
               tool={tool}
@@ -1359,6 +1393,10 @@ export function TradesWorkstation({
               {flag === "extendLeft" ? "Extend left" : "Extend right"}
             </label>
           ))}
+          {chosenDrawing.tool === "measure" && measurementLabels.map(([flag, label]) => <label key={flag} className="ws-drawing-label-toggle">
+            <input type="checkbox" checked={chosenDrawing[flag] !== false} disabled={chosenDrawing.locked || trade.stale}
+              onChange={event => saveDrawing({ ...chosenDrawing, [flag]: event.target.checked })} />{label}
+          </label>)}
           {(chosenDrawing.tool === "entry" || chosenDrawing.tool === "exit") && (
             <label className="ws-drawing-label-toggle">
               <input type="checkbox" checked={chosenDrawing.showPrice !== false} disabled={chosenDrawing.locked}
@@ -1424,6 +1462,12 @@ export function TradesWorkstation({
           >
             <Star size={14} />
           </button>
+          <button
+            title={chosenDrawing.hidden ? "Show drawing" : "Hide drawing"}
+            aria-label={chosenDrawing.hidden ? "Show drawing" : "Hide drawing"}
+            disabled={trade.stale}
+            onClick={() => saveDrawing({ ...chosenDrawing, hidden: !chosenDrawing.hidden })}
+          >{chosenDrawing.hidden ? <EyeOff size={14} /> : <Eye size={14} />}</button>
           <button
             title="Duplicate drawing"
             onClick={() => {
@@ -1564,6 +1608,7 @@ export function TradesWorkstation({
       onSaveNext={() => runCommand("review.next")}
       saveNextShortcut={shortcutLabel(shortcuts.value.bindings["review.next"])}
       onEvidence={section => void capture("attach", section)}
+      onImage={section => { if (!trade.stale && replay === null) { imageGeneration.current++; setImageDestination(section); setModal("image"); } }}
       onComparePeers={openPeers}
       onNotionExport={() => void prepareNotionExport()}
       preferences={preferences}
@@ -1678,8 +1723,8 @@ export function TradesWorkstation({
   const evidenceContent = (
     <div className="ws-evidence">
       <div className="ws-executions-toolbar">
-        <span>Charts saved with this review</span>
-        <button onClick={() => void capture("attach")}>
+        <span>Evidence saved with this review</span>
+        <button disabled={trade.stale || replay !== null} onClick={() => void capture("attach")}>
           <Camera size={14} /> Capture chart
         </button>
       </div>
@@ -1698,17 +1743,21 @@ export function TradesWorkstation({
             .map((e) => (
               <div key={e.id}>
                 <a href={e.image} download={e.name}>
-                  <Image
-                    unoptimized
+                  {/* Embedded PNG evidence needs no remote image optimizer. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
                     width={160}
                     height={85}
+                    loading="lazy"
                     src={e.image}
-                    alt={`Annotated ${trade.symbol} ${e.timeframe} chart`}
+                    alt={e.name}
                   />
                 </a>
+                <strong className="ws-evidence-name">{e.name}</strong>
+                <small className="ws-evidence-source">{evidenceSource(e)}</small>
                 <span>
-                  {e.timeframe} · r{e.revision}
-                  {e.timeInterpretationVersion !== (trade.timeInterpretationVersion ?? "original") && (e.timeInterpretationVersion || trade.executions.some(fill => fill.provenance?.interpretationStatus === "applied")) && <small>Earlier timestamp basis</small>}
+                  {e.origin ? "Imported image" : e.timeframe} · r{e.revision}
+                  {earlierTimestampBasis(e, trade.timeInterpretationVersion ?? "original") && (e.timeInterpretationVersion || trade.executions.some(fill => fill.provenance?.interpretationStatus === "applied")) && <small>Earlier timestamp basis</small>}
                   <button
                     title="Download chart"
                     onClick={() => {
@@ -1722,13 +1771,19 @@ export function TradesWorkstation({
                   </button>
                   <button
                     title="Remove attachment"
+                    disabled={trade.stale || replay !== null}
                     onClick={() =>
-                      persistence.change(d => removeEvidence(d, e.id))
+                      { if (!trade.stale && replay === null) persistence.change(d => removeEvidence(d, e.id)); }
                     }
                   >
                     <Trash2 size={12} />
                   </button>
                 </span>
+                <p className="ws-evidence-assignments">{reviewSections.filter(([key]) => sectionEvidenceIds(documentState.review.notion, key).includes(e.id)).map(([, label]) => label).join(", ") || "Unassigned"}</p>
+                <details className="ws-evidence-sections"><summary>Assign sections</summary>
+                  {reviewSections.map(([key, label]) => <label key={key}><input type="checkbox" checked={sectionEvidenceIds(documentState.review.notion, key).includes(e.id)} disabled={trade.stale || replay !== null}
+                    onChange={event => { const checked = event.target.checked; if (!trade.stale && replay === null) persistence.change(d => ({ ...d, review: { ...d.review, notion: assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked) } })); }} />{label}</label>)}
+                </details>
               </div>
             ))}
         </div>
@@ -1737,6 +1792,9 @@ export function TradesWorkstation({
   );
   const drawingsContent = (
     <div className="ws-object-list">
+      <header className="ws-drawings-visibility"><button aria-pressed={drawingsHidden} onClick={() => { handles.current.forEach(handle => handle.cancel()); setTool("cursor"); setDrawingsHidden(value => !value); }}>
+        {drawingsHidden ? <EyeOff size={14} /> : <Eye size={14} />}{drawingsHidden ? "Show drawings" : "Hide all drawings"}
+      </button>{drawingsHidden && <small>Temporarily hidden in charts and captures</small>}</header>
       {documentState?.drawings
         .filter((d) => replay === null || d.createdAt <= replay)
         .map((d) => {
@@ -2246,6 +2304,9 @@ export function TradesWorkstation({
         <p>Choose the review section for the active chart.</p>
         <div className="ws-export-actions">{reviewSections.map(([key, label]) => <button key={key} disabled={!!busy} onClick={() => void capture("attach", key)}>{label}</button>)}</div>
         {busy && <p role="status">{busy}</p>}
+      </Modal>}
+      {modal === "image" && imageEditable.current && <Modal title="Attach image" onClose={closeModal}>
+        <ImageAttachment key={`${trade.id}:${imageToken}`} sectionLabel={reviewSections.find(([key]) => key === imageDestination)![1]} validate={validateImported} onAttach={attachImported} />
       </Modal>}
       {modal === "notion" && notionPackage && <Modal title="Export review for Notion" onClose={closeModal}>
         <p>Both downloads contain saved review revision {notionPackage.revision}.</p>

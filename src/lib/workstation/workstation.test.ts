@@ -14,6 +14,10 @@ import { createApplicationAdapter } from "./application-adapter";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES } from "./payload";
 import { emptyDocument } from "./types";
 import { indicatorWarmupRange } from "./history";
+import { measurementLabels, measureText, logicalTimeIndex } from "./math";
+import { translateMeasurement } from "./measurement-drag";
+import { validateImageDimensions, validateImageFile, validateImageSignature } from "./image-import";
+import { splitAdjustedDrawing } from "./split-adjustment";
 
 test("saved-view indicator history pads only the left edge and bounds requested periods", () => {
   const range = { from: 1780000000, to: 1780003600 };
@@ -38,7 +42,7 @@ test("tool defaults migrate once, validate saved entries, and copy only appearan
   const ray = { ...initialDemoDocument(demoTrades[0]).drawings[0], color: "#abcdef", showDefaultLabel: false };
   migrated.ray = drawingStyle("ray", ray);
   assert.deepEqual(Object.keys(migrated.ray).sort(), ["color", "dashed", "showDefaultLabel", "width"]);
-  assert.deepEqual(migrated.measure, { ...legacy, extendLeft: false, extendRight: false });
+  assert.deepEqual(migrated.measure, { ...legacy, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
   assert.deepEqual(drawingStyleFor("ray", JSON.parse(JSON.stringify(migrated))), migrated.ray);
   assert.equal(drawingStyle("measure", ray).showDefaultLabel, undefined);
   assert.equal(drawingStyleFor("ray", defaultPreferences().drawingStyles).showDefaultLabel, true);
@@ -73,6 +77,68 @@ function drawingPaint(drawing: Drawing, overrides: Partial<PaintOptions> = {}) {
     labels: "labels", selected: drawing.id, selectedExecution: null, light: false, replay: null, ...overrides });
   return { texts, boxes, hits, paths };
 }
+
+test("measurement metrics support all combinations, legacy defaults and note-only captures", () => {
+  const trade = demoTrades[0], drawing: Drawing = { ...initialDemoDocument(trade).drawings[0], tool: "measure", text: "", points: [{ time: trade.openTime, price: 100 }, { time: trade.openTime + 1800, price: 102 }] };
+  for (let mask = 0; mask < 16; mask++) {
+    const flags = Object.fromEntries(measurementLabels.map(([key], i) => [key, !!(mask & (1 << i))]));
+    const text = measureText(drawing.points[0], drawing.points[1], 7, flags);
+    assert.equal(text.includes("+2.00 ("), (mask & 3) === 3);
+    assert.equal(text.includes("%"), !!(mask & 2));
+    assert.equal(text.includes("30m"), !!(mask & 4));
+    assert.equal(text.includes("7 bars"), !!(mask & 8));
+    assert.ok(!text.startsWith(" · ") && !text.endsWith(" · "));
+    for (const light of [false, true]) for (const exporting of [false, true]) {
+      const painted = drawingPaint({ ...drawing, ...flags }, { light, export: exporting });
+      assert.equal(painted.texts.length, mask ? 1 : 0);
+      const noted = drawingPaint({ ...drawing, ...flags, text: "Keep annotation" }, { light, export: exporting });
+      assert.equal(noted.texts[0].text, "Keep annotation");
+      assert.equal(noted.texts.length, mask ? 2 : 1);
+    }
+    assert.deepEqual(drawingStyle("measure", { ...drawing, ...flags }), { ...drawingStyle("measure", drawing), ...flags });
+    assert.deepEqual(workstationDocumentSchema.parse({ ...emptyDocument(), drawings: [{ ...drawing, ...flags }] }).drawings[0], { ...drawing, ...flags });
+  }
+  assert.equal(measureText(drawing.points[0], drawing.points[1], 7), "+2.00 (+2.00%) · 30m · 7 bars");
+  assert.equal(measureText({ time: 0, price: 0 }, { time: 0, price: 2 }, 1, { showValues: false, showInterval: false, showBars: false }), "N/A");
+  assert.equal(drawingStyle("measure", { ...drawing, showBars: "false" }).showBars, true);
+});
+
+test("whole measurements preserve logical spacing across gaps, reversed anchors, limits and splits", () => {
+  const candles = [1000, 1300, 1600, 260000, 260300, 260600].map(time => ({ time, open: 10, high: 12, low: 9, close: 11, volume: 1 }));
+  const points = [{ time: 1300, price: 10 }, { time: 1600, price: 12 }];
+  for (const original of [points, [...points].reverse(), points.map(p => ({ ...p, price: 10 }))]) {
+    const moved = translateMeasurement(original, candles, "5m", 1, 3);
+    assert.equal(moved[1].price - moved[0].price, original[1].price - original[0].price);
+    assert.equal(logicalTimeIndex(moved[1].time, candles, "5m") - logicalTimeIndex(moved[0].time, candles, "5m"), logicalTimeIndex(original[1].time, candles, "5m") - logicalTimeIndex(original[0].time, candles, "5m"));
+    assert.notEqual(Math.abs(moved[1].time - moved[0].time), 300);
+  }
+  assert.deepEqual(translateMeasurement(points, candles, "5m", 100, 0, 1600), points);
+  assert.equal(Math.min(...translateMeasurement(points, candles, "5m", -100, 0).map(p => p.time)), 0);
+  const adjusted = { version: 1 as const, asOf: "2026-09-20", splits: [{ time: 260000, ratio: 2 }] };
+  const drawing = { ...initialDemoDocument(demoTrades[0]).drawings[0], points };
+  const display = splitAdjustedDrawing(drawing, adjusted);
+  display.points = translateMeasurement(display.points, candles, "5m", 2, 1);
+  assert.deepEqual(splitAdjustedDrawing(splitAdjustedDrawing(display, adjusted, true), adjusted).points, display.points);
+});
+
+test("measurement line hits leave empty rectangle space available for panning", () => {
+  const trade = demoTrades[0], drawing: Drawing = { ...initialDemoDocument(trade).drawings[0], tool: "measure", text: "", points: [{ time: trade.openTime, price: trade.entry }, { time: trade.openTime + 1200, price: trade.entry + 5 }] };
+  const { hits } = drawingPaint(drawing);
+  assert.equal(hitAt(hits, { x: 150, y: 200 })?.id, drawing.id);
+  assert.equal(hitAt(hits, { x: 120, y: 200 }), undefined);
+  assert.equal(hitAt(hits, { x: 100, y: 250 })?.kind, "handle");
+});
+
+test("image import validation rejects unsupported, oversized and invalid inputs", () => {
+  validateImageSignature(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), "image/png");
+  validateImageSignature(new Uint8Array([255, 216, 255]), "image/jpeg");
+  validateImageSignature(new TextEncoder().encode("RIFFxxxxWEBP"), "image/webp");
+  assert.throws(() => validateImageSignature(new TextEncoder().encode("<svg></svg>"), "image/png"));
+  for (const type of ["image/png", "image/jpeg", "image/webp"]) validateImageFile({ type, size: 4_000_000 });
+  for (const file of [{ type: "application/pdf", size: 1 }, { type: "image/svg+xml", size: 1 }, { type: "image/png", size: 0 }, { type: "image/png", size: 4_000_001 }]) assert.throws(() => validateImageFile(file));
+  validateImageDimensions(4000, 4000);
+  for (const [w, h] of [[0, 1], [NaN, 1], [1.5, 2], [4001, 4000]]) assert.throws(() => validateImageDimensions(w, h));
+});
 
 test("planned triangles preserve anchors, labels and local hit targets in charts and captures", () => {
   const base = initialDemoDocument(demoTrades[0]).drawings[0];
@@ -119,7 +185,7 @@ test("new drawing defaults validate flags without copying unrelated tool setting
   assert.equal(drawingStyle("exit").color, "#ef4444");
   const style = { color: "#123456", width: 2, dashed: false, showPrice: false, extendLeft: true, extendRight: true };
   assert.deepEqual(drawingStyle("entry", style), { color: style.color, width: 2, dashed: false, showPrice: false });
-  assert.deepEqual(drawingStyle("measure", style), { color: style.color, width: 2, dashed: false, extendLeft: true, extendRight: true });
+  assert.deepEqual(drawingStyle("measure", style), { color: style.color, width: 2, dashed: false, extendLeft: true, extendRight: true, showValues: true, showPercent: true, showInterval: true, showBars: true });
   assert.equal(drawingStyle("entry", { ...style, showPrice: "false" }).showPrice, true);
   assert.equal(drawingStyle("measure", { ...style, extendLeft: "true" }).extendLeft, false);
 });

@@ -53,7 +53,9 @@ test("authenticated peer captures persist, recover offline, export, and leave ca
   const saved = await (await context.request.get(endpoint())).json();
   expect(saved.evidence.at(-1).peerCapture).toMatchObject({ symbols: [symbol, "AAPL"], groupId: "peer-auth" });
   await page.locator("summary").filter({ hasText: /^Takeaways$/ }).click();
-  await page.locator(".ws-template-section").filter({ has: page.locator("summary", { hasText: /^Takeaways$/ }) }).getByRole("checkbox").last().check();
+  await page.getByRole("button", { name: "Show Evidence", exact: true }).click();
+  await page.locator(".ws-evidence-sections").last().locator("summary").click();
+  await page.locator(".ws-evidence-sections").last().getByLabel("Takeaways", { exact: true }).check();
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).review.notion.sectionEvidence?.takeaways).toContain(saved.evidence.at(-1).id);
   await page.getByRole("button", { name: "Export review for Notion", exact: true }).click();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Review page ZIP", exact: true }).click();

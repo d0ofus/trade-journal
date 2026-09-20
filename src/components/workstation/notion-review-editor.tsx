@@ -24,7 +24,7 @@ function Choices({ label, value, options, multiple, onChange }: { label: string;
   </div>;
 }
 
-export function NotionReviewEditor({ trade, document, onChange, onEvidence, onComparePeers, mode }: { trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ReviewSectionKey) => void; onComparePeers: (selection: PeerGroupSelection) => void; mode: "demo" | "application" }) {
+export function NotionReviewEditor({ trade, document, onChange, onEvidence, onImage, onComparePeers, mode }: { trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ReviewSectionKey) => void; onImage: (section: ReviewSectionKey) => void; onComparePeers: (selection: PeerGroupSelection) => void; mode: "demo" | "application" }) {
   const review = document.review, notion = review.notion ?? emptyNotionReview();
   const change = (update: (current: NotionReview) => NotionReview) => onChange(current => ({ ...current, notion: update(current.notion ?? emptyNotionReview()) }));
   const property = (key: PropertyKey, value: NotionValue) => change(current => ({ ...current, properties: { ...current.properties, [key]: value } }));
@@ -43,17 +43,17 @@ export function NotionReviewEditor({ trade, document, onChange, onEvidence, onCo
           {p.key === "stopLossPercent" && <div className="ws-stop-inputs">{(["plannedEntry", "plannedStop"] as const).map(key => <label key={key}>{key === "plannedEntry" ? "Planned entry" : "Planned stop"}<input type="number" min="0.000001" step="any" aria-label={key === "plannedEntry" ? "Planned entry" : "Planned stop"} value={typeof notion.properties[key] === "number" ? notion.properties[key] : ""} onChange={e => property(key, Number(e.target.value) > 0 ? Number(e.target.value) : null)} /></label>)}</div>}
         </div>;
       })}</div>
-      <SectionAttachments section="properties" document={document} onChange={onChange} onEvidence={onEvidence} />
+      <SectionAttachments section="properties" document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} />
     </Section>
     {chartSections.map(([key, label]) => {
       const section = notion.sections[key] ?? { html: "", evidenceIds: [] };
       return <Section title={label} key={key}><FormattedField label={`${label} commentary`} value={section.html} onChange={html => change(current => ({ ...current, sections: { ...current.sections, [key]: { ...current.sections[key] ?? { evidenceIds: [] }, html } } }))} />
         {key === "peers" && <PeerGroups symbol={trade.symbol} savedId={notion.peerGroupId} mode={mode} onSelect={peerGroupId => change(current => ({ ...current, peerGroupId }))} onCompare={onComparePeers} />}
-        <SectionAttachments section={key} document={document} onChange={onChange} onEvidence={onEvidence} />
+        <SectionAttachments section={key} document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} />
       </Section>;
     })}
     <h3>Setup Analysis</h3>
-    {analysisSections.map(([key, label]) => <Section title={label} key={key}><FormattedField label={label} value={notion.analysis[key] ?? ""} onChange={html => change(current => ({ ...current, analysis: { ...current.analysis, [key]: html } }))} /><SectionAttachments section={key} document={document} onChange={onChange} onEvidence={onEvidence} /></Section>)}
-    <Section title="Takeaways"><FormattedField label="Takeaways" value={review.takeaway} onChange={takeaway => onChange(current => ({ ...current, takeaway }))} /><SectionAttachments section="takeaways" document={document} onChange={onChange} onEvidence={onEvidence} /></Section>
+    {analysisSections.map(([key, label]) => <Section title={label} key={key}><FormattedField label={label} value={notion.analysis[key] ?? ""} onChange={html => change(current => ({ ...current, analysis: { ...current.analysis, [key]: html } }))} /><SectionAttachments section={key} document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} /></Section>)}
+    <Section title="Takeaways"><FormattedField label="Takeaways" value={review.takeaway} onChange={takeaway => onChange(current => ({ ...current, takeaway }))} /><SectionAttachments section="takeaways" document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} /></Section>
   </div>;
 }

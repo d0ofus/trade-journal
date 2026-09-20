@@ -1477,6 +1477,21 @@
   overflow: auto;
   padding: 5px 10px;
 }
+.ws-drawings-visibility { display: grid; gap: 6px; padding: 8px; border-bottom: 1px solid var(--ws-border); }
+.ws-drawings-visibility button { display: flex; align-items: center; gap: 7px; }
+.ws-section-attachment-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ws-evidence-name, .ws-evidence-source { display: block; padding: 4px 8px; overflow-wrap: anywhere; }
+.ws-evidence-assignments { padding: 4px 8px; font-size: 11px; overflow-wrap: anywhere; }
+.ws-evidence-sections { padding: 8px; font-size: 12px; }
+.ws-evidence-sections summary { cursor: pointer; }
+.ws-evidence-sections label { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.ws-image-import { display: grid; gap: 12px; }
+.ws-image-import label { display: grid; gap: 8px; }
+.ws-image-import figure { margin: 0; }
+.ws-image-import img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; }
+.ws-image-import figcaption { overflow-wrap: anywhere; font-size: 12px; }
+.ws-image-paste { padding: 24px 12px; border: 1px dashed var(--ws-border); border-radius: 6px; }
+.ws-image-paste:focus { outline: 2px solid var(--ws-accent); }
 .ws-object-list > div {
   display: flex;
   align-items: center;
@@ -2785,8 +2800,6 @@
 .ws-template-choices button { font-size: 9px; text-align: left; overflow-wrap: anywhere; padding: 3px 5px; background: #7c8fea20; border-radius: 3px; }
 .ws-stop-inputs { grid-column: 1 / -1; display: flex; gap: 10px; }
 .ws-stop-inputs label { flex: 1; min-width: 0; color: var(--ws-muted); }
-.ws-section-evidence { border: 0; padding: 0; font-size: 10px; }
-.ws-section-evidence label { display: flex; gap: 6px; align-items: start; margin: 6px 0; overflow-wrap: anywhere; }
 .ws-notion-review h3 { font-size: 12px; margin: 16px 0 3px; }
 .ws-format { flex-wrap: wrap; }
 .ws-format button { min-width: 25px; font-size: 10px; }

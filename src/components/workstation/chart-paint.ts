@@ -5,7 +5,7 @@ import { measureText, riskReward } from "@/lib/workstation/math";
 import { defaultNoteEnd, noteLayout, type PixelPoint } from "@/lib/workstation/note-layout";
 import { ellipsizeDrawingText, wrapDrawingText } from "@/lib/workstation/drawing-label-text";
 
-export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; anchor?: PixelPoint; x: number; y: number; w: number; h: number };
+export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; anchor?: PixelPoint; segment?: [PixelPoint, PixelPoint]; x: number; y: number; w: number; h: number };
 export type PaintOptions = { beforeEntry?: boolean; executionColors?: { buy: string; sell: string }; covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
 export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
@@ -28,17 +28,22 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       notes = notes.slice(0, maxNotes);
       if (notes.length) notes[notes.length - 1] = ellipsizeDrawingText(notes[notes.length - 1], width - 16, measure);
     }
-    const height = 24 + notes.length * 16;
+    const height = (text ? 24 : 8) + notes.length * 16;
     const left = Math.max(3, Math.min(w - width - 3, px)), top = Math.max(topInset, Math.min(h - height - 1, py - notes.length * 16));
     ctx.fillStyle = fill; ctx.strokeStyle = color; ctx.lineWidth = .65; ctx.setLineDash([]);
     ctx.beginPath(); ctx.roundRect(left, top, width, height, 4); ctx.fill(); ctx.stroke();
     ctx.fillStyle = color;
-    [...notes, text].forEach((value, index) => ctx.fillText(value, left + 8, top + 16 + index * 16, width - 16));
+    [...notes, ...(text ? [text] : [])].forEach((value, index) => ctx.fillText(value, left + 8, top + 16 + index * 16, width - 16));
     const rect = { x: left, y: top, w: width, h: height };
     occupied.push(rect);
     return rect;
   };
   const line = (ax: number, ay: number, bx: number, by: number) => { ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); };
+  const lineHit = (id: string, a: PixelPoint, b: PixelPoint) => {
+    const left = Math.max(0, Math.min(a.x, b.x) - 5), top = Math.max(0, Math.min(a.y, b.y) - 5);
+    const right = Math.min(w, Math.max(a.x, b.x) + 5), bottom = Math.min(h, Math.max(a.y, b.y) + 5);
+    if (right >= left && bottom >= top) hits.push({ id, kind: "drawing", segment: [a, b], x: left, y: top, w: right - left, h: bottom - top });
+  };
   ctx.save(); ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
   for (const d of o.drawings) {
     const points = d.points.map(p => ({ x: x(p.time), y: y(p.price) }));
@@ -90,6 +95,9 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       if (d.tool === "arrow") { const angle = Math.atan2(b.y - a.y, b.x - a.x); line(b.x, b.y, b.x - 10 * Math.cos(angle - .4), b.y - 10 * Math.sin(angle - .4)); line(b.x, b.y, b.x - 10 * Math.cos(angle + .4), b.y - 10 * Math.sin(angle + .4)); }
       if (d.tool === "measure" && d.points[1]) {
         ctx.setLineDash([3, 4]); line(a.x, a.y, b.x, a.y); line(b.x, a.y, b.x, b.y);
+        lineHit(d.id, a, b);
+        lineHit(d.id, a, { x: b.x, y: a.y });
+        lineHit(d.id, { x: b.x, y: a.y }, b);
         if (d.extendLeft || d.extendRight) {
           const left = Math.max(0, d.extendLeft ? 0 : Math.min(a.x, b.x));
           const right = Math.min(w, d.extendRight ? w : Math.max(a.x, b.x));
@@ -97,15 +105,18 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
             if (level < 0 || level > h) continue;
             line(left, level, right, level);
             // Only the boundary lines are selectable outside the measured rectangle.
-            hits.push({ id: d.id, kind: "drawing", x: left, y: Math.max(0, level - 5), w: right - left, h: Math.min(h, level + 5) - Math.max(0, level - 5) });
+            lineHit(d.id, { x: left, y: level }, { x: right, y: level });
           }
         }
         const bars = o.candles.filter(c => c.time >= Math.min(d.points[0].time, d.points[1].time) && c.time <= Math.max(d.points[0].time, d.points[1].time)).length;
-        const box = label(measureText(d.points[0], d.points[1], bars), (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color, undefined, 320, d.text.trim());
-        hits.push({ ...box, id: d.id, kind: "drawing" });
+        const metrics = measureText(d.points[0], d.points[1], bars, d);
+        if (metrics || d.text.trim()) {
+          const box = label(metrics, (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color, undefined, 320, d.text.trim());
+          hits.push({ ...box, id: d.id, kind: "drawing" });
+        }
       }
     }
-    if (d.tool !== "text" && d.tool !== "price-note") hits.push({ ...bounds, id: d.id, kind: "drawing" });
+    if (d.tool !== "text" && d.tool !== "price-note" && d.tool !== "measure") hits.push({ ...bounds, id: d.id, kind: "drawing" });
     if (d.id === o.selected && !o.export) {
       for (let i = 0; i < points.length; i++) { const p = points[i]; if (p.x === null || p.y === null) continue; ctx.setLineDash([]); ctx.fillStyle = o.light ? "#fff" : "#121722"; ctx.strokeStyle = d.color; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); if (!d.locked) hits.push({ id: d.id, kind: "handle", point: i, x: p.x - 9, y: p.y - 9, w: 18, h: 18 }); }
     }
@@ -136,4 +147,14 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
   }
   ctx.restore(); return hits;
 }
-export function hitAt(hits: Hit[], point: { x: number; y: number }): Hit | undefined { return [...hits].reverse().find(h => point.x >= h.x && point.x <= h.x + h.w && point.y >= h.y && point.y <= h.y + h.h); }
+export function hitAt(hits: Hit[], point: PixelPoint): Hit | undefined {
+  const contains = (h: Hit) => {
+    if (point.x < h.x || point.x > h.x + h.w || point.y < h.y || point.y > h.y + h.h) return false;
+    if (!h.segment) return true;
+    const [a, b] = h.segment, dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(point.x - a.x - t * dx, point.y - a.y - t * dy) <= 5;
+  };
+  const reversed = [...hits].reverse();
+  return reversed.find(h => h.kind === "handle" && contains(h)) ?? reversed.find(contains);
+}

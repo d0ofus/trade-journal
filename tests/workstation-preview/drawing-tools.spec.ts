@@ -11,6 +11,7 @@ declare global {
     drawingExportText: string[];
     drawingRayLine?: { x: number; y: number };
     drawingTriangle?: { x: number; y: number };
+    measurementStroke?: { x: number; y: number; endX: number; endY: number };
   }
 }
 
@@ -52,6 +53,10 @@ async function open(page: Page, drawings?: Drawing[], legacyStyle?: { color: str
     };
     prototype.lineTo = function(x, y) {
       const start = moves.get(this);
+      if (this.canvas.classList.contains("ws-chart-overlay") && this.strokeStyle === "#d0ab12" && start && start.x !== x && start.y !== y) {
+        const rect = this.canvas.getBoundingClientRect();
+        window.measurementStroke = { x: rect.left + start.x, y: rect.top + start.y, endX: rect.left + x, endY: rect.top + y };
+      }
       if (this.canvas.classList.contains("ws-chart-overlay") && start && start.y === y && x - start.x > 350) {
         const rect = this.canvas.getBoundingClientRect();
         window.drawingRayLine = { x: rect.left + Math.max(30, start.x + 30), y: rect.top + y };
@@ -66,6 +71,60 @@ async function open(page: Page, drawings?: Drawing[], legacyStyle?: { color: str
 const saved = (page: Page) => page.evaluate(key => JSON.parse(localStorage.getItem(key)!) as TradeDocument, documentKey);
 const preferences = (page: Page) => page.evaluate(key => JSON.parse(localStorage.getItem(key)!) as WorkspacePreferences, preferenceKey);
 const liveText = (page: Page) => page.evaluate(() => window.drawingLiveText.map(row => row.text));
+test("measurement label controls, rigid dragging, cancellation, visibility and captures", async ({ page }) => {
+  const trade = demoTrades[0];
+  const measurement: Drawing = { ...initialDemoDocument(trade).drawings[0], id: "rigid-measure", tool: "measure", color: "#d0ab12", text: "Rigid move",
+    points: [{ time: trade.openTime, price: trade.entry }, { time: trade.openTime + 1800, price: trade.entry + 2 }] };
+  const errors = await open(page, [measurement]);
+  const stroke = () => page.evaluate(() => window.measurementStroke!);
+  await expect.poll(stroke).toBeTruthy();
+  let line = await stroke();
+  const initialWidth = line.endX - line.x;
+  const midpoint = () => ({ x: (line.x + line.endX) / 2, y: (line.y + line.endY) / 2 });
+  let middle = midpoint();
+  await page.mouse.move(middle.x, middle.y); await page.mouse.down(); await page.mouse.move(middle.x + 45, middle.y - 30, { steps: 8 }); await page.mouse.up();
+  await expect.poll(async () => (await saved(page)).drawings[0].points[0].price).not.toBe(trade.entry);
+  const moved = (await saved(page)).drawings[0].points;
+  expect(moved[1].price - moved[0].price).toBeCloseTo(2, 8);
+  line = await stroke();
+  expect(line.endX - line.x).toBeCloseTo(initialWidth, 1);
+  await page.locator(".ws-chart").focus(); await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await saved(page)).drawings[0].points).toEqual(measurement.points);
+  await page.keyboard.press("Control+Shift+z");
+  await expect.poll(async () => (await saved(page)).drawings[0].points).toEqual(moved);
+  line = await stroke(); middle = midpoint();
+  await page.mouse.move(middle.x, middle.y); await page.mouse.down(); await page.mouse.move(middle.x - 20, middle.y + 10, { steps: 4 });
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  expect((await saved(page)).drawings[0].points).toEqual(moved);
+  await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
+  await page.locator(".ws-object-list > div").first().getByRole("button").first().click();
+  for (const name of ["Values", "Percent", "Interval", "Number of bars"]) await page.getByLabel(name, { exact: true }).uncheck();
+  await expect.poll(() => liveText(page)).toEqual(["Rigid move"]);
+  await page.getByTitle("Save drawing style as default for Price & time measurement", { exact: true }).click();
+  await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toMatchObject({ showValues: false, showPercent: false, showInterval: false, showBars: false });
+  await page.getByTitle("Hide drawing", { exact: true }).click();
+  await expect(page.locator(".ws-drawing-properties")).toBeVisible();
+  await expect.poll(() => liveText(page)).toEqual([]);
+  await page.getByTitle("Show drawing", { exact: true }).click();
+  await expect.poll(() => liveText(page)).toEqual(["Rigid move"]);
+  await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
+  await page.getByRole("button", { name: "Hide all drawings", exact: true }).click();
+  await expect.poll(() => liveText(page)).toEqual([]);
+  expect((await saved(page)).drawings[0].hidden).toBe(false);
+  await page.evaluate(() => { window.drawingExportText = []; });
+  await page.getByRole("button", { name: "Export chart-1", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Active chart PNG", exact: true }).click(); await download;
+  expect(await page.evaluate(() => window.drawingExportText)).not.toContain("Rigid move");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.reload();
+  await expect.poll(() => liveText(page)).toEqual(["Rigid move"]);
+  await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
+  await page.getByRole("button", { name: "Hide all drawings", exact: true }).click();
+  await page.getByRole("button", { name: "Price & time measurement", exact: true }).click();
+  await expect.poll(() => liveText(page)).toEqual(["Rigid move"]);
+  expect(errors).toEqual([]);
+});
 async function selectRay(page: Page) {
   await expect.poll(() => page.evaluate(() => window.drawingRayLine)).toBeTruthy();
   const point = (await page.evaluate(() => window.drawingRayLine))!;
@@ -114,10 +173,45 @@ test("ray automatic labels toggle without hiding notes, with undo, duplication, 
   expect(errors).toEqual([]);
 });
 
+test("whole measurements respect locks, snapping and Before entry in fullscreen", async ({ page }, info) => {
+  const trade = demoTrades[0], points = [{ time: trade.openTime - 900, price: trade.entry - .3 }, { time: trade.openTime - 600, price: trade.entry + .2 }];
+  const drawing: Drawing = { ...initialDemoDocument(trade).drawings[0], tool: "measure", color: "#d0ab12", text: "Before entry measure", points, locked: true };
+  const errors = await open(page, [drawing]);
+  await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
+  await page.locator(".ws-object-list > div").first().getByRole("button").first().click();
+  const dragLine = async (dx: number, dy: number) => {
+    const line = await page.evaluate(() => window.measurementStroke!);
+    const x = (line.x + line.endX) / 2, y = (line.y + line.endY) / 2;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + dx, y + dy, { steps: 8 }); await page.mouse.up();
+  };
+  await expect(page.getByLabel("Values", { exact: true })).toBeDisabled();
+  await dragLine(20, -10);
+  expect((await saved(page)).drawings[0].points).toEqual(points);
+  await page.getByTitle("Unlock drawing", { exact: true }).click();
+  await page.getByRole("button", { name: "Magnet to OHLC", exact: true }).click();
+  await dragLine(30, 8);
+  await expect.poll(async () => (await saved(page)).drawings[0].points[0].time).not.toBe(points[0].time);
+  const snapped = (await saved(page)).drawings[0].points;
+  expect(snapped[0].time % 300).toBe(0);
+  expect(snapped[1].price - snapped[0].price).toBeCloseTo(.5, 8);
+  await page.getByRole("button", { name: "Undo drawing", exact: true }).click();
+  await expect.poll(async () => (await saved(page)).drawings[0].points).toEqual(points);
+  await page.locator(".ws-chart").focus(); await page.keyboard.press("Shift+B");
+  await expect(page.locator(".ws-chart")).toHaveAttribute("data-visible-executions", "0");
+  await page.getByTitle("Appearance", { exact: true }).click();
+  await page.locator(".ws-chart").focus(); await page.keyboard.press("f");
+  await expect(page.locator(".ws-chart-fullscreen")).toBeVisible();
+  await dragLine(300, 0);
+  await expect.poll(async () => (await saved(page)).drawings[0].points[1].time).toBe(trade.openTime - 300);
+  expect((await saved(page)).drawings[0].points[1].price - (await saved(page)).drawings[0].points[0].price).toBeCloseTo(.5, 8);
+  await page.screenshot({ path: info.outputPath("measurement-before-entry-fullscreen.png"), fullPage: true });
+  expect(errors).toEqual([]);
+});
+
 test("migrated defaults and saved styles stay independent across tool creation, settings and reload", async ({ page }) => {
   const legacy = { color: "#123456", width: 3, dashed: true };
   const errors = await open(page, undefined, legacy);
-  await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, extendLeft: false, extendRight: false });
+  await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
   await selectRay(page);
   await page.getByLabel("Annotation color", { exact: true }).fill("#ff3344");
   await page.getByLabel("Annotation width", { exact: true }).selectOption("2");
@@ -125,7 +219,7 @@ test("migrated defaults and saved styles stay independent across tool creation, 
   await page.getByTitle("Save drawing style as default for Horizontal ray", { exact: true }).click();
   const rayStyle = { color: "#ff3344", width: 2, dashed: true, showDefaultLabel: false };
   await expect.poll(async () => (await preferences(page)).drawingStyles.ray).toEqual(rayStyle);
-  expect((await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, extendLeft: false, extendRight: false });
+  expect((await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
   await place(page, "r");
   await expect.poll(async () => (await saved(page)).drawings.length).toBe(2);
   expect((await saved(page)).drawings.at(-1)).toMatchObject(rayStyle);
@@ -137,7 +231,7 @@ test("migrated defaults and saved styles stay independent across tool creation, 
   await page.getByLabel("Annotation color", { exact: true }).fill("#22aa88");
   await page.getByTitle("Toggle dashed line", { exact: true }).click();
   await page.getByTitle("Save drawing style as default for Price & time measurement", { exact: true }).click();
-  const measureStyle = { ...legacy, color: "#22aa88", dashed: false, extendLeft: false, extendRight: false };
+  const measureStyle = { ...legacy, color: "#22aa88", dashed: false, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true };
   await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toEqual(measureStyle);
   expect((await preferences(page)).drawingStyles.ray).toEqual(rayStyle);
   await page.getByRole("button", { name: "Chart settings", exact: true }).click();

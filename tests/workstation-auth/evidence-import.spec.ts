@@ -1,0 +1,38 @@
+import { expect, test } from "@playwright/test";
+import { prisma } from "../../src/lib/prisma";
+import { defaultPreferences } from "../../src/lib/workstation/types";
+import { candleFixture } from "./candle-fixture";
+import { readFileSync } from "node:fs";
+import { strFromU8, unzipSync } from "fflate";
+
+test.afterAll(() => prisma.$disconnect());
+test("authenticated external evidence saves, reloads and exports multiple section assignments", async ({ page, context }) => {
+  const trade = await prisma.closedTrade.findFirstOrThrow({ where: { account: { ibkrAccount: "DEMO-WORKSTATION" }, isStale: false }, orderBy: { openTime: "desc" } });
+  const { csrfToken } = await (await context.request.get("/api/auth/csrf")).json();
+  await context.request.post("/api/auth/callback/credentials", { form: { csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true" } });
+  expect((await (await context.request.get("/api/auth/session")).json()).user.name).toBe("phase2-reviewer");
+  const endpoint = `/api/closed-trades/${encodeURIComponent(trade.groupKey)}/workstation`;
+  const before = await (await context.request.get(endpoint)).json();
+  await page.addInitScript(prefs => localStorage.setItem("execution-lab:workstation:preferences:application:v1", JSON.stringify({ ...prefs, journal: true, panels: [{ id: "chart-1", interval: "5m" }] })), defaultPreferences());
+  await context.route("**/api/workstation/candles?**", route => route.fulfill({ json: candleFixture(route.request().url()) }));
+  await page.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${encodeURIComponent(trade.groupKey)}`);
+  await page.locator("summary").filter({ hasText: /^Takeaways$/ }).click();
+  await page.getByRole("button", { name: "Attach image", exact: true }).click();
+  const png = await page.evaluate(() => { const canvas = document.createElement("canvas"); canvas.width = 20; canvas.height = 20; return canvas.toDataURL().split(",")[1]; });
+  const dialog = page.getByRole("dialog", { name: "Attach image", exact: true });
+  await dialog.getByLabel("Choose image").setInputFiles({ name: "authenticated-external.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+  await dialog.getByRole("button", { name: "Attach image to Takeaways" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(async () => (await (await context.request.get(endpoint)).json()).evidence.length).toBe(before.evidence.length + 1);
+  const item = page.locator(".ws-evidence-grid > div").last();
+  await item.locator("summary").click(); await item.getByLabel("Peers", { exact: true }).check();
+  await expect.poll(async () => (await (await context.request.get(endpoint)).json()).review.notion.sections.peers.evidenceIds.length).toBe((before.review.notion?.sections.peers?.evidenceIds.length ?? 0) + 1);
+  await page.reload(); await page.getByRole("button", { name: "Show Evidence", exact: true }).click();
+  await expect(item).toContainText("Uploaded image"); await expect(item).toContainText("Peers, Takeaways");
+  await page.getByRole("button", { name: "Export review for Notion", exact: true }).click();
+  const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Review page ZIP", exact: true }).click();
+  const zip = unzipSync(readFileSync((await (await download).path())!));
+  const html = strFromU8(zip["review.html"]);
+  expect(Object.keys(zip).filter(name => name.startsWith("assets/"))).toHaveLength(before.evidence.length + 1);
+  expect(html.slice(html.indexOf("<h2>Takeaways"))).toContain("authenticated-external.png");
+});

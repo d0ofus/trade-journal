@@ -45,6 +45,7 @@ import {
   preserveHistoryViewport,
 } from "@/lib/workstation/history";
 import { Hit, hitAt, PaintOptions, paintChart } from "./chart-paint";
+import { translateMeasurement } from "@/lib/workstation/measurement-drag";
 import { drawingStyleFor } from "@/lib/workstation/drawing-style";
 import {
   ChartDateTarget,
@@ -72,6 +73,7 @@ type Props = {
   preferences: WorkspacePreferences;
   labelMode: WorkspacePreferences["labels"];
   drawings: Drawing[];
+  drawingsHidden?: boolean;
   selected: string | null;
   selectedExecution: string | null;
   tool: Tool;
@@ -196,7 +198,7 @@ export function TradeChart(input: Props) {
   );
   const pending = useRef<Point | null>(null),
     draft = useRef<Drawing | null>(null),
-    drag = useRef<{ drawing: Drawing; point: number; offset?: { x: number; y: number } } | null>(null);
+    drag = useRef<{ drawing: Drawing; point?: number; offset?: { x: number; y: number }; whole?: { start: { x: number; y: number }; candles: Candle[] } } | null>(null);
   const dimensions = useRef({ width: 0, height: 0 }),
     currentInterval = useRef<Interval>(props.panel.interval),
     currentSession = useRef(props.trade.chartSession),
@@ -452,7 +454,7 @@ export function TradeChart(input: Props) {
       ),
       x,
       y: (price) => candles.priceToCoordinate(price),
-      drawings: [
+      drawings: latest.current.drawingsHidden ? [] : [
         ...visibleDrawings(
           beforeEntryActive.current ? beforeEntryDrawings(latest.current.drawings, bars.current, latest.current.panel.interval, historyResult.current.session) : latest.current.drawings,
           p.panel.id,
@@ -1172,6 +1174,7 @@ export function TradeChart(input: Props) {
     paintRef.current();
   }, [
     props.drawings,
+    props.drawingsHidden,
     props.selected,
     props.selectedExecution,
     props.labelMode,
@@ -1182,8 +1185,9 @@ export function TradeChart(input: Props) {
   useEffect(() => {
     pending.current = null;
     draft.current = null;
+    drag.current = null;
     paintRef.current();
-  }, [props.tool, props.trade.id, props.panel.interval]);
+  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, beforeEntry, props.replay, props.drawingsHidden, result.splitAdjustment]);
 
   const pointer = (event: React.PointerEvent) => {
     const rect = host.current!.getBoundingClientRect();
@@ -1259,9 +1263,17 @@ export function TradeChart(input: Props) {
           };
         else {
           props.onSelect(hit.id);
+          const wholeDrawing = props.drawings.find(d => d.id === hit.id);
+          if (hit.point === undefined && wholeDrawing?.tool === "measure" && !wholeDrawing.locked && !props.trade.stale) {
+            const logical = chart.current?.timeScale().coordinateToLogical(pos.x), price = series.current?.coordinateToPrice(pos.y);
+            if (logical != null && price != null) {
+              drag.current = { drawing: wholeDrawing, whole: { start: pos, candles: [...bars.current] } };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }
+          }
           if (hit.point !== undefined) {
             let drawing = props.drawings.find((d) => d.id === hit.id);
-            if (drawing && !drawing.locked) {
+            if (drawing && !drawing.locked && !props.trade.stale) {
               const note = drawing.tool === "text" || drawing.tool === "price-note";
               // Materialize a legacy note's implicit box anchor only when it is moved.
               const box = note ? hits.current.find(h => h.id === hit.id && h.point === 1 && h.anchor)?.anchor : undefined;
@@ -1336,6 +1348,29 @@ export function TradeChart(input: Props) {
       click.moved = true;
     if (click?.moved && click.target && event.buttons === 1 && props.tool === "cursor") autoPages.current = 3;
     if (!dataReady.current) return;
+    const current = drag.current;
+    if (current?.whole) {
+      event.preventDefault(); event.stopPropagation();
+      const pos = pointer(event), state = current.whole;
+      if (Math.hypot(pos.x - state.start.x, pos.y - state.start.y) < 4 && !draft.current) return;
+      const logical = chart.current?.timeScale().coordinateToLogical(pos.x), price = series.current?.coordinateToPrice(pos.y);
+      // Selection may resize the plot when the properties banner opens. Compute
+      // both pointer coordinates against the current scale to avoid a jump.
+      const startLogical = chart.current?.timeScale().coordinateToLogical(state.start.x), startPrice = series.current?.coordinateToPrice(state.start.y);
+      if (logical == null || price == null || startLogical == null || startPrice == null) return;
+      let logicalDelta = logical - startLogical, priceDelta = price - startPrice;
+      if (props.preferences.magnet) {
+        const referenceIndex = logicalTimeIndex(current.drawing.points[0].time, state.candles, props.panel.interval);
+        const snapped = Math.max(0, Math.min(state.candles.length - 1, Math.round(referenceIndex + logicalDelta)));
+        logicalDelta = snapped - referenceIndex;
+        const bar = state.candles[snapped], desired = current.drawing.points[0].price + priceDelta;
+        priceDelta = [bar.open, bar.high, bar.low, bar.close].sort((a, b) => Math.abs(a - desired) - Math.abs(b - desired))[0] - current.drawing.points[0].price;
+      }
+      const maximum = beforeEntry || props.replay !== null ? state.candles.at(-1)?.time : undefined;
+      draft.current = { ...current.drawing, points: translateMeasurement(current.drawing.points, state.candles, props.panel.interval, logicalDelta, priceDelta, maximum) };
+      paintRef.current();
+      return;
+    }
     const pos = pointer(event), offset = drag.current?.offset;
     const point = pointAt(offset ? { x: pos.x - offset.x, y: pos.y - offset.y } : pos, !!offset);
     if (!point) return;
@@ -1353,7 +1388,7 @@ export function TradeChart(input: Props) {
     }
   };
   const up = () => {
-    if (drag.current && draft.current) props.onDrawing(draft.current);
+    if (drag.current && draft.current && draft.current.points.some((p, i) => p.time !== drag.current!.drawing.points[i]?.time || p.price !== drag.current!.drawing.points[i]?.price)) props.onDrawing(draft.current);
     drag.current = null;
     draft.current = null;
     paintRef.current();
@@ -1496,6 +1531,9 @@ export function TradeChart(input: Props) {
           drag.current = null;
           draft.current = null;
           paintRef.current();
+        }}
+        onLostPointerCapture={() => {
+          clickGesture.current = null; drag.current = null; draft.current = null; paintRef.current();
         }}
       >
       <div className="ws-ohlc" ref={ohlcHost}>

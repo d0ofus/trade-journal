@@ -7,7 +7,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
 /** Validate and copy only appearance fields; never copy a drawing's content or anchors. */
 export function drawingStyle(tool: Drawing["tool"], value?: unknown): DrawingStyle {
   const flags = tool === "ray" ? { showDefaultLabel: true }
-    : tool === "measure" ? { extendLeft: false, extendRight: false }
+    : tool === "measure" ? { extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true }
     : tool === "entry" || tool === "exit" ? { showPrice: true } : {};
   const fallback = { ...builtInStyle, ...flags,
     ...(tool === "entry" ? { color: "#22c55e" } : tool === "exit" ? { color: "#ef4444" } : {}) };
@@ -17,7 +17,7 @@ export function drawingStyle(tool: Drawing["tool"], value?: unknown): DrawingSty
     || Object.keys(flags).some(key => value[key] !== undefined && typeof value[key] !== "boolean")) return fallback;
   return { color: value.color, width: value.width, dashed: value.dashed,
     ...(tool === "ray" ? { showDefaultLabel: value.showDefaultLabel !== false } : {}),
-    ...(tool === "measure" ? { extendLeft: value.extendLeft === true, extendRight: value.extendRight === true } : {}),
+    ...(tool === "measure" ? { extendLeft: value.extendLeft === true, extendRight: value.extendRight === true, showValues: value.showValues !== false, showPercent: value.showPercent !== false, showInterval: value.showInterval !== false, showBars: value.showBars !== false } : {}),
     ...(tool === "entry" || tool === "exit" ? { showPrice: value.showPrice !== false } : {}) };
 }
 

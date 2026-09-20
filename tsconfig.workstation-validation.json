@@ -4,6 +4,7 @@
     "incremental": false
   },
   "include": [
+    "tests/workstation-preview/evidence-import.spec.ts",
     "src/lib/workstation/peers.test.ts",
     "src/lib/server/peer-candles.test.ts",
     "src/app/api/workstation/peer-candles/route.test.ts",

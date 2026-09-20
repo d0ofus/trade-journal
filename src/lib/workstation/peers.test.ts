@@ -3,7 +3,7 @@ import { strFromU8, unzipSync } from "fflate";
 import { demoTrades } from "./demo";
 import { emptyDocument, type Evidence } from "./types";
 import { reviewSections } from "./notion-template";
-import { assignSectionEvidence, attachEvidence, removeEvidence, sectionEvidenceIds } from "./evidence";
+import { assignSectionEvidence, attachEvidence, earlierTimestampBasis, removeEvidence, sameEvidenceAssignments, sectionEvidenceIds } from "./evidence";
 import { workstationDocumentSchema } from "./schema";
 import { notionPageArchive } from "./notion-import";
 import { reviewArchive } from "./export";
@@ -119,7 +119,28 @@ describe("section attachments and stable exports", () => {
   });
   it("enforces count and package limits before changing the document", () => {
     const doc = emptyDocument(); doc.evidence = Array(30).fill(evidence);
-    expect(() => attachEvidence(doc, evidence, "peers")).toThrow("30 charts");
+    expect(() => attachEvidence(doc, evidence, "peers")).toThrow("30 images");
     expect(() => attachEvidence(emptyDocument(), { ...evidence, image: `data:image/png;base64,${"A".repeat(4 * 1024 * 1024)}` }, "properties")).toThrow(/large|4 MB/i);
+  });
+  it("external image origins and multi-section assignments survive exports without invented chart metadata", async () => {
+    for (const origin of ["upload", "clipboard"] as const) {
+      const image = { ...evidence, peerCapture: undefined, origin, timeframe: "" };
+      const doc = attachEvidence(emptyDocument(), image, "properties");
+      const before = doc.review.notion;
+      doc.review.notion = assignSectionEvidence(before!, "takeaways", image.id, true);
+      expect(sameEvidenceAssignments(before, doc.review.notion)).toBe(false);
+      expect(sameEvidenceAssignments(doc.review.notion, { ...doc.review.notion, analysis: { fundamentals: "Text only" } })).toBe(true);
+      expect(earlierTimestampBasis(image, "changed-trade-time")).toBe(false);
+      expect(workstationDocumentSchema.parse(doc).evidence[0].origin).toBe(origin);
+      const args = { trade: demoTrades[0], doc, url: "" };
+      const portable = unzipSync(new Uint8Array(await (await reviewArchive([args], [], {})).arrayBuffer()));
+      const notion = unzipSync(new Uint8Array(await notionPageArchive(args).arrayBuffer()));
+      for (const files of [portable, notion]) {
+        expect(Object.keys(files).filter(p => p.endsWith(".png"))).toHaveLength(1);
+        expect(strFromU8(files[Object.keys(files).find(p => p.endsWith("review.html"))!]).match(/<img /g)).toHaveLength(2);
+      }
+      const json = JSON.parse(strFromU8(portable[Object.keys(portable).find(p => p.endsWith("review.json"))!]));
+      expect(json.document.evidence[0]).toMatchObject({ origin, timeframe: "", earlierTimestampBasis: false });
+    }
   });
 });

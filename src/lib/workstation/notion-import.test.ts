@@ -43,7 +43,7 @@ describe("Notion file import", () => {
     const doc = emptyDocument(); doc.evidence = [{ ...evidence, image: "https://example.test/private.png" }];
     expect(() => notionPageArchive({ trade: demoTrades[0], doc, url: "" })).toThrow("Unable to include chart");
     doc.review.notion = emptyNotionReview(); doc.review.notion.sections.exit = { html: "keep", evidenceIds: Array.from({ length: 30 }, (_, i) => String(i)) };
-    expect(() => attachEvidence(doc, evidence, "exit")).toThrow("30 charts");
+    expect(() => attachEvidence(doc, evidence, "exit")).toThrow("30 images");
     expect(doc.evidence).toHaveLength(1);
   });
 });

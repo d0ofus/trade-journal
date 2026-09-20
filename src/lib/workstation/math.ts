@@ -2,12 +2,15 @@ import { Candle, CandleSession, Drawing, Execution, Interval, Point, seconds } f
 import { candlePeriod, containingExecutionCandle } from "./execution-diagnostics";
 
 export function percentageChange(start: number, end: number): number | null { return start > 0 ? ((end - start) / start) * 100 : null; }
-export function measureText(a: Point, b: Point, bars?: number) {
+export const measurementLabels = [["showValues", "Values"], ["showPercent", "Percent"], ["showInterval", "Interval"], ["showBars", "Number of bars"]] as const;
+export function measureText(a: Point, b: Point, bars?: number, options: Pick<Drawing, "showValues" | "showPercent" | "showInterval" | "showBars"> = {}) {
   const pct = percentageChange(a.price, b.price);
   const change = b.price - a.price;
   const hours = Math.abs(b.time - a.time) / 3600;
   const duration = hours >= 24 ? `${(hours / 24).toFixed(1)}d` : hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round(hours * 60)}m`;
-  return `${change >= 0 ? "+" : ""}${change.toFixed(2)} (${pct === null ? "N/A" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}) · ${duration}${bars === undefined ? "" : ` · ${bars} bars`}`;
+  const value = options.showValues !== false ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}` : "";
+  const percent = options.showPercent !== false ? pct === null ? "N/A" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%` : "";
+  return [value && percent ? `${value} (${percent})` : value || percent, options.showInterval !== false ? duration : "", options.showBars !== false && bars !== undefined ? `${bars} bars` : ""].filter(Boolean).join(" · ");
 }
 export function bucket(time: number, interval: Interval) {
   // Weekly bars begin on Monday, in UTC. Intraday demo bars use UTC bucket boundaries.

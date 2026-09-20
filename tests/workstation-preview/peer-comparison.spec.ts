@@ -66,7 +66,9 @@ test("50-peer virtualization, isolated linked navigation, paired capture, reuse,
   expect(await mainState(page)).toEqual(before);
   const takeaways = page.locator("details").filter({ has: page.locator("summary", { hasText: /^Takeaways$/ }) });
   await takeaways.locator("summary").click();
-  await takeaways.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "Show Evidence", exact: true }).click();
+  await page.locator(".ws-evidence-sections summary").click();
+  await page.locator(".ws-evidence-sections").getByLabel("Takeaways", { exact: true }).check();
   await expect.poll(async () => (await doc(page))?.review.notion.sectionEvidence?.takeaways).toEqual([saved.evidence[0].id]);
   await page.reload();
   await page.locator("summary").filter({ hasText: /^Peers$/ }).click();

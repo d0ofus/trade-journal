@@ -81,12 +81,15 @@ describe("workstation persistence against isolated PostgreSQL", () => {
     const key = await fixture();
     const doc = await readWorkstationDocument(key);
     const ray = { ...doc.drawings[0], id: "ray-label", tool: "ray" as const, showDefaultLabel: false, text: "Keep this note" };
-    const measurement = { ...ray, id: "measurement-note", tool: "measure" as const, extendLeft: true, extendRight: false, text: "Measured breakout", points: [ray.points[0], { time: ray.points[0].time + 900, price: ray.points[0].price + 2 }] };
+    const measurement = { ...ray, id: "measurement-note", tool: "measure" as const, hidden: true, extendLeft: true, extendRight: false, showValues: false, showPercent: true, showInterval: false, showBars: true, text: "Measured breakout", points: [ray.points[0], { time: ray.points[0].time + 900, price: ray.points[0].price + 2 }] };
     const entry = { ...ray, id: "planned-entry", tool: "entry" as const, showPrice: false, color: "#22c55e" };
     const exit = { ...ray, id: "planned-exit", tool: "exit" as const, showPrice: true, color: "#ef4444" };
-    const response = await PATCH(request(key, { expectedRevision: doc.revision, document: { ...doc, drawings: [ray, measurement, entry, exit] } }), params(key));
+    let withImages = attachEvidence(doc, { id: "uploaded", origin: "upload", name: "My image.png", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: doc.revision, timeframe: "" }, "takeaways");
+    withImages = attachEvidence(withImages, { id: "pasted", origin: "clipboard", name: "Screenshot.png", image: "data:image/png;base64,aGVsbG8=", time: 2, revision: doc.revision, timeframe: "" }, "previousReview");
+    const response = await PATCH(request(key, { expectedRevision: doc.revision, document: { ...withImages, drawings: [ray, measurement, entry, exit] } }), params(key));
     expect(response.status).toBe(200);
     expect((await readWorkstationDocument(key)).drawings).toEqual([ray, measurement, entry, exit]);
+    expect((await readWorkstationDocument(key)).evidence).toEqual(withImages.evidence);
   });
   it("persists both note anchors without rewriting other review fields", async () => {
     const key = await fixture();

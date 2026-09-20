@@ -1,5 +1,5 @@
 import { notionBlocks, notionClipboard } from "./notion-export";
-import { assignedEvidenceIds, sectionEvidenceIds } from "./evidence";
+import { assignedEvidenceIds, earlierTimestampBasis, sectionEvidenceIds } from "./evidence";
 import type { ReviewSectionKey } from "./notion-template";
 import { notionProperties, propertyText, chartSections, analysisSections } from "./notion-template";
 import { richPlain, richMarkdown } from "./rich-text";
@@ -69,7 +69,7 @@ export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; ur
     const mappedHtml = blocks ? `<h1>${escapeHtml(row.trade.symbol)}</h1>` + blocks.map(b => `<h${b.level}>${escapeHtml(b.title)}</h${b.level}>${b.html}${htmlImages(sectionImages(b.key))}`).join("") + htmlImages(unassigned) : markdown.split("\n\n").map(p => p.startsWith("## ") ? `<h2>${escapeHtml(p.slice(3))}</h2>` : p.startsWith("# ") ? `<h1>${escapeHtml(p.slice(2))}</h1>` : `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`).join("") + htmlImages(row.doc.evidence);
     files[`${name}/review.md`] = strToU8(mappedMarkdown);
     files[`${name}/review.html`] = strToU8(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(row.trade.symbol)} review</title></head><body><article>${mappedHtml}</article></body></html>`);
-    files[`${name}/review.json`] = strToU8(JSON.stringify({ trade: row.trade, document: { ...row.doc, evidence: row.doc.evidence.map(e => ({ ...e, image: undefined, timeInterpretationVersion: e.timeInterpretationVersion ?? null, earlierTimestampBasis: e.timeInterpretationVersion !== (row.trade.timeInterpretationVersion ?? "original") })) } }, null, 2));
+    files[`${name}/review.json`] = strToU8(JSON.stringify({ trade: row.trade, document: { ...row.doc, evidence: row.doc.evidence.map(e => ({ ...e, image: undefined, timeInterpretationVersion: e.timeInterpretationVersion ?? null, earlierTimestampBasis: earlierTimestampBasis(e, row.trade.timeInterpretationVersion ?? "original") })) } }, null, 2));
     manifest.trades.push({ id: row.trade.id, revision: row.doc.revision, timeInterpretationVersion: row.trade.timeInterpretationVersion ?? "original", folder: name, attachments });
   }
   files["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));

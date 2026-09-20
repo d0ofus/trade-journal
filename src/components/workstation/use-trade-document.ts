@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TradeDocument, WorkstationAdapter } from "@/lib/workstation/types";
 import { Autosave, type SaveState } from "@/lib/journal/autosave";
 import { RecoveryStore } from "@/lib/journal/recovery";
+import { sameEvidenceAssignments } from "@/lib/workstation/evidence";
 
 export function documentSaveStatus(state: SaveState<TradeDocument>, mode: string) {
   if (state.error) return /conflict|another tab/i.test(state.error) ? "Conflict \u00b7 draft preserved" : "Save paused \u00b7 draft preserved";
@@ -58,7 +59,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
         if (own !== generation.current) return;
         const next = session.getSnapshot().value, previous = published.current;
         // Text subscribers update immediately; charts only see structural changes.
-        if (!previous || previous.drawings !== next.drawings || previous.evidence !== next.evidence || previous.review.status !== next.review.status) {
+        if (!previous || previous.drawings !== next.drawings || previous.evidence !== next.evidence || previous.review.status !== next.review.status || !sameEvidenceAssignments(previous.review.notion, next.review.notion)) {
           published.current = next; setDocument(next);
         }
         emit();
