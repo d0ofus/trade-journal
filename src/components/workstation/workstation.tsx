@@ -11,7 +11,8 @@ import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
 import { splitAdjustedDrawing, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
-import { restoreChartDisplay, restoreChartPanels } from "@/lib/workstation/chart-preferences";
+import { restoreChartDisplay, restoreChartPanels, restoreMovingAveragePeriods } from "@/lib/workstation/chart-preferences";
+import { MovingAverageSettings } from "./moving-average-settings";
 import { drawingStyle, drawingStyleFor, restoreDrawingStyles } from "@/lib/workstation/drawing-style";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
 import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
@@ -79,6 +80,7 @@ import {
   Target,
   Trash2,
   TrendingUp,
+  Triangle,
   Type,
   Undo2,
   UnlockKeyhole,
@@ -146,10 +148,10 @@ const tools: { id: Tool; label: string; icon: typeof Crosshair }[] = [
   { id: "measure", label: "Price & time measurement", icon: Ruler },
   { id: "long", label: "Long risk / reward", icon: ArrowUpRight },
   { id: "short", label: "Short risk / reward", icon: ArrowDownRight },
-  { id: "entry", label: "Planned entry", icon: Plus },
+  { id: "entry", label: "Planned entry", icon: Triangle },
   { id: "stop", label: "Planned stop", icon: Minus },
   { id: "target", label: "Planned target", icon: Target },
-  { id: "exit", label: "Planned exit", icon: Flag },
+  { id: "exit", label: "Planned exit", icon: Triangle },
 ];
 function DrawingStyleSettings({ initialTool, styles, onChange }: {
   initialTool: Drawing["tool"];
@@ -170,6 +172,14 @@ function DrawingStyleSettings({ initialTool, styles, onChange }: {
       <input type="color" aria-label="Default drawing color" value={style.color}
         onChange={event => onChange(selectedTool, { ...style, color: event.target.value })} />
     </label>
+    {selectedTool === "measure" && (["extendLeft", "extendRight"] as const).map(flag => <label key={flag}>
+      <span>{flag === "extendLeft" ? "Extend left" : "Extend right"}</span>
+      <input type="checkbox" checked={style[flag] === true} onChange={event => onChange(selectedTool, { ...style, [flag]: event.target.checked })} />
+    </label>)}
+    {(selectedTool === "entry" || selectedTool === "exit") && <label>
+      <span>Show price</span>
+      <input type="checkbox" checked={style.showPrice !== false} onChange={event => onChange(selectedTool, { ...style, showPrice: event.target.checked })} />
+    </label>}
   </>;
 }
 const names = {
@@ -530,6 +540,7 @@ export function TradesWorkstation({
           dateLink: restoredDateLink(parsed.dateLink),
           chartSizing: restoreChartSizing(parsed.chartSizing),
           panels: restoreChartPanels(parsed.panels, parsed.chartSession),
+          averages: restoreMovingAveragePeriods(parsed.averages),
           ...restoreChartDisplay(parsed),
         });
         if (parsed.exportColumns?.length) setColumns(parsed.exportColumns);
@@ -1221,7 +1232,7 @@ export function TradesWorkstation({
               aria-pressed={tool === t.id}
               onClick={() => runCommand(`tool.${t.id}`)}
             >
-              <t.icon size={17} />
+              <t.icon size={17} style={t.id === "exit" ? { transform: "rotate(180deg)" } : undefined} />
               {preferences.favorites.includes(t.id) && <i />}
             </button>
           ))}
@@ -1339,6 +1350,20 @@ export function TradesWorkstation({
               <input type="checkbox" checked={chosenDrawing.showDefaultLabel !== false} disabled={chosenDrawing.locked}
                 onChange={event => saveDrawing({ ...chosenDrawing, showDefaultLabel: event.target.checked })} />
               Show automatic label
+            </label>
+          )}
+          {chosenDrawing.tool === "measure" && (["extendLeft", "extendRight"] as const).map(flag => (
+            <label key={flag} className="ws-drawing-label-toggle">
+              <input type="checkbox" checked={chosenDrawing[flag] === true} disabled={chosenDrawing.locked}
+                onChange={event => saveDrawing({ ...chosenDrawing, [flag]: event.target.checked })} />
+              {flag === "extendLeft" ? "Extend left" : "Extend right"}
+            </label>
+          ))}
+          {(chosenDrawing.tool === "entry" || chosenDrawing.tool === "exit") && (
+            <label className="ws-drawing-label-toggle">
+              <input type="checkbox" checked={chosenDrawing.showPrice !== false} disabled={chosenDrawing.locked}
+                onChange={event => saveDrawing({ ...chosenDrawing, showPrice: event.target.checked })} />
+              Show price
             </label>
           )}
           <select
@@ -1522,7 +1547,6 @@ export function TradesWorkstation({
 
           </>
         )}
-        <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer" title="TradingView Lightweight Charts">TradingView</a>
       </div>
     </div>
   );
@@ -2501,28 +2525,7 @@ export function TradesWorkstation({
                 }
               />
             </label>
-            <label>
-              <span>Moving averages</span>
-              <input
-                aria-label="Moving average periods"
-                key={preferences.averages.join(",")}
-                defaultValue={preferences.averages.join(", ")}
-                onBlur={(e) =>
-                  changePreferences({
-                    averages: [
-                      ...new Set(
-                        e.target.value
-                          .split(",")
-                          .map(Number)
-                          .filter(
-                            (n) => Number.isInteger(n) && n > 0 && n <= 500,
-                          ),
-                      ),
-                    ].slice(0, 4),
-                  })
-                }
-              />
-            </label>
+            <MovingAverageSettings periods={preferences.averages} onChange={averages => changePreferences({ averages })} />
             <DrawingStyleSettings
               initialTool={chosenDrawing?.tool ?? (tool === "cursor" ? "ray" : tool)}
               styles={preferences.drawingStyles}
@@ -2745,6 +2748,7 @@ export function TradesWorkstation({
             </li>
           </ol>
           <button className="ws-primary" onClick={() => setModal("shortcuts")}>Keyboard shortcuts & customization</button>
+          <p className="ws-help">Charts powered by <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>.</p>
           <p className="ws-help">
             Demo candles are synthetic. Replay uses completed candles only;
             coarser charts may have no new completed candle yet. Drawing

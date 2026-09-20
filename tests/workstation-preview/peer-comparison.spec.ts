@@ -5,7 +5,7 @@ import { DEMO_PREFIX } from "../../src/lib/workstation/demo";
 const prefKey = "execution-lab:workstation:preferences:demo:v1";
 async function open(page: Page) {
   const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
-  await page.addInitScript(({ prefs, key }) => { if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...prefs, journal: true, panels: [{ id: "chart-1", interval: "1d", session: "regular" }] })); }, { prefs: defaultPreferences(), key: prefKey });
+  await page.addInitScript(({ prefs, key }) => { if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...prefs, averages: [5, 10, 20, 50], journal: true, panels: [{ id: "chart-1", interval: "1d", session: "regular" }] })); }, { prefs: defaultPreferences(), key: prefKey });
   await page.goto("/preview/trades?groupKey=demo-nvda");
   await expect(page.locator(".ws-chart").first()).toHaveAttribute("data-visible-from", /\d+/);
   if (await page.locator(".ws-mobile-tabs").isVisible()) await page.locator(".ws-mobile-tabs").getByRole("button", { name: "Journal", exact: true }).click();
@@ -22,6 +22,15 @@ test("50-peer virtualization, isolated linked navigation, paired capture, reuse,
   await page.getByRole("button", { name: "Compare peers", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Peer comparison", exact: true });
   await expect(dialog.locator('[data-peer-symbol="PEER01"] button', { hasText: "Attach comparison" })).toBeEnabled();
+  await expect.poll(() => dialog.locator('[data-peer-symbol="PEER01"] canvas').evaluateAll(elements => {
+    const colours = new Set<string>();
+    for (const element of elements) {
+      const canvas = element as HTMLCanvasElement;
+      const pixels = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 3] > 200) colours.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
+    }
+    return ["245,158,11", "96,165,250", "192,132,252", "244,114,182"].every(rgb => colours.has(rgb));
+  })).toBe(true);
   expect(await dialog.locator("[data-peer-canvas]").count()).toBeLessThanOrEqual(11);
   await expect(dialog).toContainText("50 peers");
   await dialog.locator(".ws-peer-scroll").evaluate(e => { e.scrollTop = e.scrollHeight; });

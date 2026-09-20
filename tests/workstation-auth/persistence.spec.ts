@@ -6,6 +6,7 @@ import { candleFixture } from "./candle-fixture";
 const username = "phase2-reviewer", password = "phase2-local-test-only";
 let groupKey: string;
 let tradeQuantity: number;
+let tradeOpenTime: number;
 const endpoint = () => `/api/closed-trades/${encodeURIComponent(groupKey)}/workstation`;
 async function login(context: BrowserContext) {
   const csrf = await (await context.request.get("/api/auth/csrf")).json();
@@ -26,6 +27,7 @@ test.beforeAll(async () => {
   const trade = await prisma.closedTrade.findFirstOrThrow({ where: { account: { ibkrAccount: "DEMO-WORKSTATION" }, isStale: false }, orderBy: { closeTime: "desc" } });
   groupKey = trade.groupKey;
   tradeQuantity = trade.totalQuantity;
+  tradeOpenTime = trade.openTime.getTime() / 1000;
   const executions = await prisma.closedTradeExecution.findMany({ where: { closedTradeGroupKey: groupKey }, orderBy: { sortOrder: "asc" } });
   expect(trade.openTime.toISOString()).toBe(executions[0].executedAt.toISOString());
   expect(trade.closeTime.toISOString()).toBe(executions.at(-1)!.executedAt.toISOString());
@@ -59,8 +61,11 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).review.takeaway).toBe(`<p>${value}</p>`);
   await expect(page.locator(".ws-journal-save").getByText("All changes saved", { exact: true })).toBeVisible();
   const doc = await (await context.request.get(endpoint())).json();
-  const drawing = { id: "phase2-measurement", tool: "measure", points: [{ time: 1781789400, price: 100 }, { time: 1781791200, price: 103 }], text: "3% measured move", color: "#a5b4fc", width: 1.5, dashed: false, locked: false, hidden: false, panel: null, createdAt: 1781791200 };
-  const update = await context.request.patch(endpoint(), { data: { expectedRevision: doc.revision, document: { ...doc, drawings: [...doc.drawings.filter((d: { id: string }) => d.id !== drawing.id), drawing] } } });
+  const drawing = { id: "phase2-measurement", tool: "measure", points: [{ time: tradeOpenTime, price: 100 }, { time: tradeOpenTime + 1800, price: 103 }], text: "3% measured move", color: "#a5b4fc", width: 1.5, dashed: false, extendLeft: true, extendRight: true, locked: false, hidden: false, panel: null, createdAt: tradeOpenTime };
+  const entry = { ...drawing, id: "phase2-entry", tool: "entry", points: [drawing.points[0]], showPrice: false, color: "#22c55e", text: "Planned entry" };
+  const exit = { ...entry, id: "phase2-exit", tool: "exit", showPrice: true, color: "#ef4444" };
+  const annotations = [drawing, entry, exit];
+  const update = await context.request.patch(endpoint(), { data: { expectedRevision: doc.revision, document: { ...doc, drawings: [...doc.drawings.filter((d: { id: string }) => !annotations.some(a => a.id === d.id)), ...annotations] } } });
   expect(update.status()).toBe(200);
   await page.reload();
   await revealTakeaways(page);
@@ -72,6 +77,8 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).evidence.length).toBeGreaterThan(doc.evidence.length);
   const saved = await (await context.request.get(endpoint())).json();
   expect(saved.drawings).toContainEqual(drawing);
+  expect(saved.drawings).toContainEqual(entry);
+  expect(saved.drawings).toContainEqual(exit);
   expect(saved.review.notion.sections.exit.evidenceIds).toContain(saved.evidence.at(-1).id);
   expect(saved.evidence.at(-1).image).toMatch(/^data:image\/png;base64,/);
   await page.goto(`/journal?entryId=${saved.journalEntryId}`);

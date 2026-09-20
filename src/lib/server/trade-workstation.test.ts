@@ -81,10 +81,12 @@ describe("workstation persistence against isolated PostgreSQL", () => {
     const key = await fixture();
     const doc = await readWorkstationDocument(key);
     const ray = { ...doc.drawings[0], id: "ray-label", tool: "ray" as const, showDefaultLabel: false, text: "Keep this note" };
-    const measurement = { ...ray, id: "measurement-note", tool: "measure" as const, text: "Measured breakout", points: [ray.points[0], { time: ray.points[0].time + 900, price: ray.points[0].price + 2 }] };
-    const response = await PATCH(request(key, { expectedRevision: doc.revision, document: { ...doc, drawings: [ray, measurement] } }), params(key));
+    const measurement = { ...ray, id: "measurement-note", tool: "measure" as const, extendLeft: true, extendRight: false, text: "Measured breakout", points: [ray.points[0], { time: ray.points[0].time + 900, price: ray.points[0].price + 2 }] };
+    const entry = { ...ray, id: "planned-entry", tool: "entry" as const, showPrice: false, color: "#22c55e" };
+    const exit = { ...ray, id: "planned-exit", tool: "exit" as const, showPrice: true, color: "#ef4444" };
+    const response = await PATCH(request(key, { expectedRevision: doc.revision, document: { ...doc, drawings: [ray, measurement, entry, exit] } }), params(key));
     expect(response.status).toBe(200);
-    expect((await readWorkstationDocument(key)).drawings).toEqual([ray, measurement]);
+    expect((await readWorkstationDocument(key)).drawings).toEqual([ray, measurement, entry, exit]);
   });
   it("persists both note anchors without rewriting other review fields", async () => {
     const key = await fixture();

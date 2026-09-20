@@ -80,12 +80,17 @@ export type Drawing = {
   dashed: boolean;
   /** Horizontal rays only: missing values preserve the automatic price label. */
   showDefaultLabel?: boolean;
+  /** Measurement boundaries: missing values leave extensions disabled. */
+  extendLeft?: boolean;
+  extendRight?: boolean;
+  /** Planned entry/exit markers: missing values preserve the price label. */
+  showPrice?: boolean;
   locked: boolean;
   hidden: boolean;
   panel: string | null;
   createdAt: number;
 };
-export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel">;
+export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel" | "extendLeft" | "extendRight" | "showPrice">;
 export type DrawingStyles = Partial<Record<Drawing["tool"], DrawingStyle>>;
 export type Review = {
   notion?: import("./notion-template").NotionReview;

@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { restoreChartDisplay, restoreChartPanels } from "./chart-preferences";
+import { parseMovingAveragePeriods, restoreMovingAveragePeriods, restoreChartDisplay, restoreChartPanels } from "./chart-preferences";
 import { volumeMovingAverage } from "./math";
 import { tradeViewSchema, viewPreferences } from "./trade-view";
 import { defaultPreferences, type Candle } from "./types";
 
 describe("chart session and display preferences", () => {
+  it("accepts four unique SMA periods, blank slots and safe legacy restoration", () => {
+    expect(parseMovingAveragePeriods(["10", "20", "50", "200"])).toEqual({ periods: [10, 20, 50, 200] });
+    expect(parseMovingAveragePeriods(["1", "", "500", " "])).toEqual({ periods: [1, 500] });
+    expect(parseMovingAveragePeriods(["", "", "", ""])).toEqual({ periods: [] });
+    for (const fields of [["20", "020"], ["0"], ["501"], ["1.5"], ["NaN"], ["1e2"], ["1", "2", "3", "4", "5"]]) expect(parseMovingAveragePeriods(fields).error).toBeTruthy();
+    expect(restoreMovingAveragePeriods(undefined)).toEqual([20, 50]);
+    expect(restoreMovingAveragePeriods([])).toEqual([]);
+    expect(restoreMovingAveragePeriods([10, 20, 50, 200])).toEqual([10, 20, 50, 200]);
+    expect(restoreMovingAveragePeriods([0, 20, 20, "50", 50, 200, 500, 501, 10])).toEqual([20, 50, 200, 500]);
+  });
   it("migrates global sessions without overwriting independent panels", () => {
     const panels = [{ id: "chart-1", interval: "5m" }, { id: "chart-2", interval: "1h", session: "regular" }];
     expect(restoreChartPanels(panels, "extended").map(p => p.session)).toEqual(["extended", "regular"]);

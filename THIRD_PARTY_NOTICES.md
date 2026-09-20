@@ -5,4 +5,4 @@
 TradingView Lightweight Charts™
 Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/
 
-Distributed under the Apache License, Version 2.0. The workstation includes a linked attribution outside the chart plotting area, and chart image exports retain a textual credit.
+Distributed under the Apache License, Version 2.0. The workstation Help dialog and peer-comparison footer include linked attribution outside the chart plotting area, and chart image exports retain a textual credit.

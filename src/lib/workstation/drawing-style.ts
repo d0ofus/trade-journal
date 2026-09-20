@@ -6,13 +6,19 @@ const record = (value: unknown): value is Record<string, unknown> =>
 
 /** Validate and copy only appearance fields; never copy a drawing's content or anchors. */
 export function drawingStyle(tool: Drawing["tool"], value?: unknown): DrawingStyle {
-  const fallback = { ...builtInStyle, ...(tool === "ray" ? { showDefaultLabel: true } : {}) };
+  const flags = tool === "ray" ? { showDefaultLabel: true }
+    : tool === "measure" ? { extendLeft: false, extendRight: false }
+    : tool === "entry" || tool === "exit" ? { showPrice: true } : {};
+  const fallback = { ...builtInStyle, ...flags,
+    ...(tool === "entry" ? { color: "#22c55e" } : tool === "exit" ? { color: "#ef4444" } : {}) };
   if (!record(value) || typeof value.color !== "string" || !/^#[a-f\d]{6}$/i.test(value.color)
     || typeof value.width !== "number" || !Number.isFinite(value.width) || value.width < .5 || value.width > 4
     || typeof value.dashed !== "boolean"
-    || (tool === "ray" && value.showDefaultLabel !== undefined && typeof value.showDefaultLabel !== "boolean")) return fallback;
+    || Object.keys(flags).some(key => value[key] !== undefined && typeof value[key] !== "boolean")) return fallback;
   return { color: value.color, width: value.width, dashed: value.dashed,
-    ...(tool === "ray" ? { showDefaultLabel: value.showDefaultLabel !== false } : {}) };
+    ...(tool === "ray" ? { showDefaultLabel: value.showDefaultLabel !== false } : {}),
+    ...(tool === "measure" ? { extendLeft: value.extendLeft === true, extendRight: value.extendRight === true } : {}),
+    ...(tool === "entry" || tool === "exit" ? { showPrice: value.showPrice !== false } : {}) };
 }
 
 export function drawingStyleFor(tool: Drawing["tool"], styles: DrawingStyles): DrawingStyle {

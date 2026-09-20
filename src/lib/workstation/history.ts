@@ -7,6 +7,17 @@ export const MAX_HISTORY_CANDLES = 100_000;
 const DAY = 86400;
 const pageDays: Record<Interval, number> = { "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 };
 
+/** Fetch context for indicators without changing the user's saved visible dates. */
+export function indicatorWarmupRange(range: HistoryRange, interval: Interval, periods: number): HistoryRange {
+  if (!Number.isFinite(periods) || periods <= 1) return range;
+  const bars = Math.min(500, Math.ceil(periods)) - 1;
+  // Calendar padding allows for weekends/holidays and regular-session intraday bars.
+  const padding = interval === "1wk" ? (bars * 7 + 14) * DAY
+    : interval === "1d" ? Math.ceil(bars * 1.7 + 4) * DAY
+    : Math.ceil(bars * seconds[interval] / 23400 * 1.7 + 4) * DAY;
+  return { from: Math.max(1, range.from - padding), to: range.to };
+}
+
 /** Fit includes complete coarse candles and the full holding period, even across weekends. */
 export function fitTradeHistoryRange(trade: Trade, interval: Interval): HistoryRange {
   const padding = Math.max(DAY, seconds[interval] * 10, (trade.closeTime - trade.openTime) * .35);

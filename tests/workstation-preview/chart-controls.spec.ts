@@ -11,7 +11,7 @@ async function open(page: Page, count = 3) {
   await page.addInitScript(({ preferences, count, key }) => {
     if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...preferences, panels: ["5m", "1h", "1d", "1wk"].slice(0, count).map((interval, i) => ({ id: `chart-${i + 1}`, interval, session: i % 2 ? "extended" : "regular" })) }));
   }, { preferences: defaultPreferences(), count, key: preferenceKey });
-  await page.goto("/preview/trades");
+  await page.goto("/preview/trades?groupKey=demo-nvda");
   await expect(page.locator(".ws-chart")).toHaveCount(count);
   for (const chart of await page.locator(".ws-chart").all()) await expect(chart).toHaveAttribute("data-visible-from", /\d+/);
   return { errors, requests };
@@ -28,6 +28,64 @@ async function colorPixels(chart: Locator, color: number[]) {
     return sum;
   }, 0), color);
 }
+
+test("four explicit SMA fields validate, persist, render all colours and keep attribution in Help", async ({ page }, info) => {
+  const { errors, requests } = await open(page, 1);
+  const dialog = await settings(page);
+  for (let i = 1; i <= 4; i++) await expect(dialog.getByLabel(`Moving average ${i} period`, { exact: true })).toHaveValue(i === 1 ? "20" : i === 2 ? "50" : "");
+  await dialog.getByLabel("Moving average 3 period").fill("20");
+  await dialog.getByLabel("Moving average 3 period").press("Tab");
+  await expect(dialog.getByRole("alert")).toContainText("different period");
+  await dialog.getByLabel("Moving average 3 period").fill("501");
+  await dialog.getByLabel("Moving average 3 period").press("Tab");
+  await expect(dialog.getByRole("alert")).toContainText("1 to 500");
+  for (const [slot, value] of [[1, "5"], [2, "10"], [3, "20"], [4, "50"]] as const) {
+    await dialog.getByLabel(`Moving average ${slot} period`).fill(value);
+    await dialog.getByLabel(`Moving average ${slot} period`).press("Tab");
+  }
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await expect(page.locator(".ws-indicator-legend")).toHaveText("SMA 5SMA 10SMA 20SMA 50");
+  const chart = page.locator(".ws-chart");
+  for (const color of [[196, 163, 108], [138, 138, 200], [96, 159, 206], [186, 121, 151]]) await expect.poll(() => colorPixels(chart, color)).toBeGreaterThan(0);
+  const visibleDates = [await chart.getAttribute("data-visible-from"), await chart.getAttribute("data-visible-to")];
+  await page.reload();
+  await expect(page.locator(".ws-indicator-legend")).toHaveText("SMA 5SMA 10SMA 20SMA 50");
+  for (const color of [[196, 163, 108], [138, 138, 200], [96, 159, 206], [186, 121, 151]]) await expect.poll(() => colorPixels(chart, color)).toBeGreaterThan(0);
+  expect([await chart.getAttribute("data-visible-from"), await chart.getAttribute("data-visible-to")]).toEqual(visibleDates);
+  await chart.getByRole("button", { name: "Export chart-1", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Active chart PNG", exact: true }).click();
+  await (await download).saveAs(info.outputPath("four-moving-averages.png"));
+  const encoded = (await readFile(info.outputPath("four-moving-averages.png"))).toString("base64");
+  const capturedColors = await page.evaluate(async data => {
+    const image = new Image(); image.src = `data:image/png;base64,${data}`; await image.decode();
+    const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext("2d")!; context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    return [[196, 163, 108], [138, 138, 200], [96, 159, 206], [186, 121, 151]].map(rgb => {
+      let count = 0;
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] === rgb[0] && pixels[i + 1] === rgb[1] && pixels[i + 2] === rgb[2]) count++;
+      return count;
+    });
+  }, encoded);
+  expect(capturedColors.every(count => count > 0)).toBe(true);
+  await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
+  await expect(page.getByRole("link", { name: "TradingView", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
+  await expect(page.locator(".ws-fullscreen-credit")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Help & shortcuts", exact: true }).click();
+  await expect(page.getByRole("dialog").getByRole("link", { name: "TradingView Lightweight Charts", exact: true })).toHaveAttribute("href", "https://www.tradingview.com/");
+  await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await settings(page);
+  await expect(dialog.getByLabel("Moving average 4 period")).toBeVisible();
+  await dialog.getByLabel("Moving average 4 period").scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: info.outputPath("four-moving-average-settings-mobile.png"), fullPage: true });
+  expect(errors).toEqual([]); expect(requests).toEqual([]);
+});
 
 for (const count of [1, 2, 3, 4]) test(`${count} charts retain independent sessions and explicitly apply to all`, async ({ page }) => {
   const { errors, requests } = await open(page, count);

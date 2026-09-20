@@ -14,7 +14,7 @@ import { interpretBrokerTimestamp } from "../src/lib/workstation/timestamp-inter
 async function main() {
   assertTestDatabaseSafety(process.env);
   const url = new URL(process.env.DATABASE_URL!);
-  if (url.hostname !== "127.0.0.1" || url.port !== "55439" || url.pathname !== "/trades_workstation_auth_test") throw new Error("Use the isolated workstation preview database.");
+  if (url.hostname !== "127.0.0.1" || !["55439", "15439"].includes(url.port) || url.pathname !== "/trades_workstation_auth_test") throw new Error("Use the isolated workstation preview database.");
   const id = "DEMO-NVDA-TIMING-V2", accountCode = "DEMO-WORKSTATION";
   if (await prisma.importBatch.findUnique({ where: { id } })) { console.log("Synthetic timestamp preview already exists."); return; }
   const content = "AccountId,Symbol,DateTime,Buy/Sell,Quantity,TradePrice,IBExecID\n" + timingFills.map(([raw, side, quantity, price], i) => `${accountCode},NVDA,${raw},${side},${quantity},${price},nvda-demo-fill-${i}`).join("\n");

@@ -13,19 +13,32 @@ import { dateTargetAnchor, dateTargetIsVisible, restoredDateLink } from "./date-
 import { createApplicationAdapter } from "./application-adapter";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES } from "./payload";
 import { emptyDocument } from "./types";
+import { indicatorWarmupRange } from "./history";
+
+test("saved-view indicator history pads only the left edge and bounds requested periods", () => {
+  const range = { from: 1780000000, to: 1780003600 };
+  for (const interval of intervals) {
+    const padded = indicatorWarmupRange(range, interval, 50);
+    assert.equal(padded.to, range.to);
+    assert.ok(padded.from < range.from - seconds[interval] * 49);
+    assert.deepEqual(indicatorWarmupRange(range, interval, 501), indicatorWarmupRange(range, interval, 500));
+    assert.equal(indicatorWarmupRange({ from: 1, to: 100 }, interval, 500).from, 1);
+  }
+  for (const period of [0, 1, NaN]) assert.deepEqual(indicatorWarmupRange(range, "5m", period), range);
+});
 
 test("tool defaults migrate once, validate saved entries, and copy only appearance", () => {
   const legacy = { color: "#123456", width: 3, dashed: true };
   const migrated = restoreDrawingStyles(undefined, legacy);
   for (const tool of drawingTools) {
     if (tool === "cursor") continue;
-    assert.deepEqual(drawingStyleFor(tool, migrated), { ...legacy, ...(tool === "ray" ? { showDefaultLabel: true } : {}) });
+    assert.deepEqual(drawingStyleFor(tool, migrated), { ...drawingStyle(tool), ...legacy });
   }
   assert.notEqual(migrated.ray, migrated.measure);
   const ray = { ...initialDemoDocument(demoTrades[0]).drawings[0], color: "#abcdef", showDefaultLabel: false };
   migrated.ray = drawingStyle("ray", ray);
   assert.deepEqual(Object.keys(migrated.ray).sort(), ["color", "dashed", "showDefaultLabel", "width"]);
-  assert.deepEqual(migrated.measure, legacy);
+  assert.deepEqual(migrated.measure, { ...legacy, extendLeft: false, extendRight: false });
   assert.deepEqual(drawingStyleFor("ray", JSON.parse(JSON.stringify(migrated))), migrated.ray);
   assert.equal(drawingStyle("measure", ray).showDefaultLabel, undefined);
   assert.equal(drawingStyleFor("ray", defaultPreferences().drawingStyles).showDefaultLabel, true);
@@ -43,7 +56,12 @@ test("tool defaults migrate once, validate saved entries, and copy only appearan
 function drawingPaint(drawing: Drawing, overrides: Partial<PaintOptions> = {}) {
   const texts: { text: string; x: number; y: number; width: number }[] = [];
   const boxes: { x: number; y: number; w: number; h: number }[] = [];
+  const paths: { x: number; y: number }[][] = [];
+  let path: { x: number; y: number }[] = [];
   const context = new Proxy({
+    beginPath: () => { path = []; paths.push(path); },
+    moveTo: (x: number, y: number) => { path.push({ x, y }); },
+    lineTo: (x: number, y: number) => { path.push({ x, y }); },
     measureText: (text: string) => ({ width: Array.from(text).length * 6 }),
     fillText: (text: string, x: number, y: number, width: number) => { texts.push({ text, x, y, width }); },
     roundRect: (x: number, y: number, w: number, h: number) => { boxes.push({ x, y, w, h }); },
@@ -53,8 +71,71 @@ function drawingPaint(drawing: Drawing, overrides: Partial<PaintOptions> = {}) {
     x: t => (t - trade.openTime) / 12 + 100, y: p => 250 - (p - trade.entry) * 20,
     drawings: [drawing], trade: { ...trade, executions: [] }, candles: demoCandles(trade), interval: "5m",
     labels: "labels", selected: drawing.id, selectedExecution: null, light: false, replay: null, ...overrides });
-  return { texts, boxes, hits };
+  return { texts, boxes, hits, paths };
 }
+
+test("planned triangles preserve anchors, labels and local hit targets in charts and captures", () => {
+  const base = initialDemoDocument(demoTrades[0]).drawings[0];
+  for (const tool of ["entry", "exit"] as const) for (const light of [false, true]) for (const exporting of [false, true]) {
+    const drawing = { ...base, tool, points: [{ time: demoTrades[0].openTime, price: demoTrades[0].entry }], text: "" };
+    const painted = drawingPaint(drawing, { light, export: exporting });
+    assert.deepEqual(painted.paths.find(p => p.length === 3), [{ x: 100, y: 250 }, { x: 94, y: tool === "entry" ? 260 : 240 }, { x: 106, y: tool === "entry" ? 260 : 240 }]);
+    assert.equal(painted.texts[0].text, drawing.points[0].price.toFixed(2));
+    const hidden = drawingPaint({ ...drawing, showPrice: false }, { light, export: exporting });
+    assert.equal(hidden.texts.length, 0);
+    assert.equal(hitAt(hidden.hits, { x: 110, y: 250 })?.id, drawing.id);
+    assert.equal(hitAt(hidden.hits, { x: 400, y: 250 }), undefined);
+    const note = drawingPaint({ ...drawing, text: "Keep my note", showPrice: false }, { light, export: exporting });
+    assert.equal(note.texts[0].text, "Keep my note");
+    assert.equal(hitAt(note.hits, { x: note.boxes[0].x + 5, y: note.boxes[0].y + 5 })?.id, drawing.id);
+    assert.equal(drawingPaint({ ...drawing, locked: true }).hits.some(h => h.kind === "handle"), false);
+    assert.equal(drawingPaint(drawing, { x: () => -20 }).texts.length, 0);
+  }
+});
+
+test("measurement boundaries extend independently, reverse safely and have narrow clipped hit targets", () => {
+  const trade = demoTrades[0];
+  const base: Drawing = { ...initialDemoDocument(trade).drawings[0], tool: "measure", text: "",
+    points: [{ time: trade.openTime, price: trade.entry }, { time: trade.openTime + 1200, price: trade.entry + 5 }] };
+  for (const extendLeft of [false, true]) for (const extendRight of [false, true]) for (const reversed of [false, true]) for (const exporting of [false, true]) {
+    const drawing = { ...base, extendLeft, extendRight, points: reversed ? [...base.points].reverse() : base.points };
+    const { hits, paths } = drawingPaint(drawing, { export: exporting });
+    for (const level of [150, 250]) {
+      assert.equal(hitAt(hits, { x: 20, y: level })?.id, extendLeft ? base.id : undefined);
+      assert.equal(hitAt(hits, { x: 420, y: level })?.id, extendRight ? base.id : undefined);
+      if (extendLeft || extendRight) assert.ok(paths.some(p => p.length === 2 && p[0].x === (extendLeft ? 0 : 100) && p[1].x === (extendRight ? 450 : 200) && p.every(point => point.y === level)));
+    }
+    assert.equal(hitAt(hits, { x: 20, y: 200 }), undefined);
+    assert.equal(hitAt(hits, { x: 420, y: 200 }), undefined);
+  }
+  const flat = drawingPaint({ ...base, extendLeft: true, extendRight: true, points: base.points.map(p => ({ ...p, price: trade.entry })) });
+  assert.equal(flat.paths.filter(p => p.length === 2 && p[0].x === 0 && p[1].x === 450).length, 1);
+  const clipped = drawingPaint({ ...base, extendRight: true }, { beforeEntry: true, candles: demoCandles(trade).filter(c => c.time <= trade.openTime) });
+  assert.equal(hitAt(clipped.hits, { x: 420, y: 250 }), undefined);
+});
+
+test("new drawing defaults validate flags without copying unrelated tool settings", () => {
+  assert.equal(drawingStyle("entry").color, "#22c55e");
+  assert.equal(drawingStyle("exit").color, "#ef4444");
+  const style = { color: "#123456", width: 2, dashed: false, showPrice: false, extendLeft: true, extendRight: true };
+  assert.deepEqual(drawingStyle("entry", style), { color: style.color, width: 2, dashed: false, showPrice: false });
+  assert.deepEqual(drawingStyle("measure", style), { color: style.color, width: 2, dashed: false, extendLeft: true, extendRight: true });
+  assert.equal(drawingStyle("entry", { ...style, showPrice: "false" }).showPrice, true);
+  assert.equal(drawingStyle("measure", { ...style, extendLeft: "true" }).extendLeft, false);
+});
+
+test("portable review JSON preserves marker prices, measurement extensions and legacy colours", async () => {
+  const trade = demoTrades[0], doc = initialDemoDocument(trade), base = doc.drawings[0];
+  doc.drawings = [
+    { ...base, tool: "entry", showPrice: false, color: "#abcdef" },
+    { ...base, id: "exit-marker", tool: "exit", showPrice: true },
+    { ...base, id: "extensions", tool: "measure", extendLeft: true, extendRight: false, points: [base.points[0], { time: trade.openTime, price: trade.entry }] },
+  ];
+  const archive = await reviewArchive([{ trade, doc, url: "http://localhost/preview/trades" }], exportColumns, {});
+  const files = unzipSync(new Uint8Array(await archive.arrayBuffer()));
+  const restored = JSON.parse(strFromU8(Object.entries(files).find(([name]) => name.endsWith("review.json"))![1])).document;
+  assert.deepEqual(workstationDocumentSchema.parse(restored).drawings, doc.drawings);
+});
 
 test("ray labels default on, toggle independently of notes, and leave selectable lines", () => {
   const ray = { ...initialDemoDocument(demoTrades[0]).drawings[0], text: "" };
@@ -124,11 +205,13 @@ test("schema and demo persistence preserve hidden automatic ray labels and measu
   try {
     const adapter = createDemoAdapter(), trade = demoTrades[0], doc = await adapter.load(trade.id);
     doc.drawings[0].showDefaultLabel = false;
-    doc.drawings.push({ ...doc.drawings[0], id: "measurement-note", tool: "measure", text: "Saved measurement note",
+    doc.drawings.push({ ...doc.drawings[0], id: "measurement-note", tool: "measure", extendLeft: true, extendRight: false, text: "Saved measurement note",
       points: [doc.drawings[0].points[0], { time: trade.openTime, price: trade.entry }] });
+    doc.drawings.push({ ...doc.drawings[0], id: "planned-entry", tool: "entry", showPrice: false });
     const parsed = workstationDocumentSchema.parse(doc);
     assert.equal(parsed.drawings[0].showDefaultLabel, false);
     assert.equal(workstationDocumentSchema.safeParse({ ...doc, drawings: [{ ...doc.drawings[0], showDefaultLabel: "false" }] }).success, false);
+    for (const flag of ["extendLeft", "extendRight", "showPrice"]) assert.equal(workstationDocumentSchema.safeParse({ ...doc, drawings: [{ ...doc.drawings[0], [flag]: "false" }] }).success, false);
     await adapter.save(trade.id, parsed, doc.revision);
     assert.deepEqual((await adapter.load(trade.id)).drawings, parsed.drawings);
   } finally {

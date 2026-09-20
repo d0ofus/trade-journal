@@ -89,7 +89,7 @@ test("label toggle keeps selectable markers, works in fullscreen, and removes pl
   await expect(page.getByRole("dialog", { name: "Execution details", exact: true })).toBeVisible();
   await page.getByLabel("Close execution details").click();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
-  await expect(page.locator(".ws-fullscreen-credit")).toBeVisible();
+  await expect(page.locator(".ws-fullscreen-credit")).toHaveCount(0);
   await page.locator(".ws-chart-fullscreen").getByRole("button", { name: "Show execution labels chart-1", exact: true }).click();
   await expect(page.locator(".ws-chart-fullscreen")).toHaveAttribute("data-label-mode", "labels");
   await expect(page.locator(".ws-chart-canvas a")).toHaveCount(0);

@@ -46,7 +46,15 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
     const a = points[0] as { x: number; y: number }, b = points[1] && points[1].x !== null && points[1].y !== null ? points[1] as { x: number; y: number } : a;
     ctx.strokeStyle = d.color; ctx.fillStyle = d.color; ctx.lineWidth = d.width; ctx.setLineDash(d.dashed ? [6, 5] : []);
     let bounds = { x: Math.min(a.x, b.x) - 5, y: Math.min(a.y, b.y) - 5, w: Math.abs(b.x - a.x) + 10, h: Math.abs(b.y - a.y) + 10 };
-    if (["horizontal", "ray", "entry", "stop", "target", "exit"].includes(d.tool)) {
+    if (d.tool === "entry" || d.tool === "exit") {
+      if (a.x < 0 || a.x > w || a.y < 0 || a.y > h) continue;
+      const baseY = a.y + (d.tool === "entry" ? 10 : -10);
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x - 6, baseY); ctx.lineTo(a.x + 6, baseY); ctx.closePath(); ctx.fill(); ctx.stroke();
+      bounds = { x: Math.max(0, a.x - 12), y: Math.max(0, a.y - 12), w: Math.min(w, a.x + 12) - Math.max(0, a.x - 12), h: Math.min(h, a.y + 12) - Math.max(0, a.y - 12) };
+      const text = [d.text.trim(), d.showPrice !== false ? d.points[0].price.toFixed(2) : ""].filter(Boolean).join(" · ");
+      if (text) hits.push({ ...label(text, a.x + 12, d.tool === "entry" ? a.y + 14 : a.y - 38, d.color), id: d.id, kind: "drawing" });
+    } else if (["horizontal", "ray", "stop", "target"].includes(d.tool)) {
       if (a.y < 0 || a.y > h || (d.tool !== "horizontal" && a.x > w)) continue;
       const start = d.tool === "horizontal" ? 0 : a.x;
       line(start, a.y, w, a.y);
@@ -82,6 +90,16 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       if (d.tool === "arrow") { const angle = Math.atan2(b.y - a.y, b.x - a.x); line(b.x, b.y, b.x - 10 * Math.cos(angle - .4), b.y - 10 * Math.sin(angle - .4)); line(b.x, b.y, b.x - 10 * Math.cos(angle + .4), b.y - 10 * Math.sin(angle + .4)); }
       if (d.tool === "measure" && d.points[1]) {
         ctx.setLineDash([3, 4]); line(a.x, a.y, b.x, a.y); line(b.x, a.y, b.x, b.y);
+        if (d.extendLeft || d.extendRight) {
+          const left = Math.max(0, d.extendLeft ? 0 : Math.min(a.x, b.x));
+          const right = Math.min(w, d.extendRight ? w : Math.max(a.x, b.x));
+          if (right > left) for (const level of new Set([a.y, b.y])) {
+            if (level < 0 || level > h) continue;
+            line(left, level, right, level);
+            // Only the boundary lines are selectable outside the measured rectangle.
+            hits.push({ id: d.id, kind: "drawing", x: left, y: Math.max(0, level - 5), w: right - left, h: Math.min(h, level + 5) - Math.max(0, level - 5) });
+          }
+        }
         const bars = o.candles.filter(c => c.time >= Math.min(d.points[0].time, d.points[1].time) && c.time <= Math.max(d.points[0].time, d.points[1].time)).length;
         const box = label(measureText(d.points[0], d.points[1], bars), (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color, undefined, 320, d.text.trim());
         hits.push({ ...box, id: d.id, kind: "drawing" });

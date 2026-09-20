@@ -39,6 +39,7 @@ import {
   HistoryRange,
   HistoryState,
   initialHistoryRange,
+  indicatorWarmupRange,
   preloadHistoryRange,
   fitTradeHistoryRange,
   preserveHistoryViewport,
@@ -277,13 +278,16 @@ export function TradeChart(input: Props) {
     autoPages.current = 0;
     setHistoryState(null);
     let disposed = false;
+    const indicatorPeriods = Math.max(0, ...latest.current.preferences.averages,
+      latest.current.preferences.volume && latest.current.preferences.volumeAverage.enabled ? latest.current.preferences.volumeAverage.period : 0);
+    const restoredHistory = requested?.range ? indicatorWarmupRange(requested.range, props.panel.interval, indicatorPeriods) : null;
     const session = new CandleHistory(
       props.adapter,
       trade,
       props.panel.interval,
-      // Restore the saved viewport itself. Recentring default context here would
-      // expand a fully cached view and fetch an unnecessary new edge on reload.
-      requested?.range && !(intervalContext && beforeEntryActive.current) ? { from: requested.range.from, to: Math.min(requested.range.to, requested.range.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(trade, props.panel.interval, context),
+      // Restore the exact viewport, including bounded indicator warm-up context
+      // so longer averages do not disappear after a narrow saved view is reloaded.
+      restoredHistory && !(intervalContext && beforeEntryActive.current) ? { from: restoredHistory.from, to: Math.min(restoredHistory.to, restoredHistory.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(trade, props.panel.interval, context),
       (state) => {
         setHistoryState(state);
         dataReady.current = state.result.candles.length > 0 || (!state.loading && !state.failed);
@@ -1536,7 +1540,6 @@ export function TradeChart(input: Props) {
           </div>
         )}
       </div>
-      {props.fullscreen && <a className="ws-fullscreen-credit" href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a>}
       {fillsOpen && <div className="ws-history-popover ws-fill-popover" role="dialog" aria-label={`Execution visibility details ${props.panel.id}`} onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); setFillsOpen(false); } }}>
         <div className="ws-history-popover-heading"><strong>Execution visibility</strong><button autoFocus aria-label="Close execution visibility" onClick={() => setFillsOpen(false)}><X size={14} /></button></div>
         <p>{loading ? "Loading candles?" : visibilitySummary(currentVisibility)}</p>

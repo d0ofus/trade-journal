@@ -2736,7 +2736,12 @@
 .ws-diagnostic-list { display:grid; gap:5px; margin:10px 0; }
 .ws-diagnostic-list button { display:flex; justify-content:space-between; gap:8px; text-align:left; padding:6px; border:1px solid var(--ws-border); border-radius:4px; }
 .ws-diagnostic-list span { color:var(--ws-muted); font-size:10px; }
-.ws-fullscreen-credit { flex:0 0 21px; font-size:9px; line-height:21px; text-align:right; padding:0 10px; color:var(--ws-muted); }
+.ws-moving-average-settings { min-width: 0; margin: 12px 0; padding: 10px; border: 1px solid var(--ws-border); border-radius: 6px; }
+.ws-moving-average-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ws-moving-average-fields label { display: grid; gap: 6px; min-width: 0; }
+.ws-settings .ws-moving-average-fields input { width: 100%; min-width: 0; }
+.ws-average-error { color: #ef4444; font-size: 12px; margin-top: 8px; }
+@media (max-width: 480px) { .ws-moving-average-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .ws-has-fullscreen .ws-chart-grid.ws-resizable-grid { overflow:visible; }
 @media (prefers-reduced-motion:reduce) { .ws-chart-divider span { transition:none; } }
 
