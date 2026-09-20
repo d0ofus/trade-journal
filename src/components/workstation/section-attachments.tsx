@@ -1,8 +1,9 @@
 "use client";
 import { assignSectionEvidence, sectionEvidenceIds } from "@/lib/workstation/evidence";
-import { emptyNotionReview, reviewSections, type ReviewSectionKey } from "@/lib/workstation/notion-template";
+import { emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
 import type { Review, TradeDocument } from "@/lib/workstation/types";
 import { EvidenceDownload, EvidenceThumbnail } from "./evidence-preview";
+import { useJournalSections } from "./use-template-layout";
 
 export function SectionAttachments({ section, document, onChange, onEvidence, onImage, readOnly = false }: {
   section: ReviewSectionKey; document: TradeDocument;
@@ -11,7 +12,7 @@ export function SectionAttachments({ section, document, onChange, onEvidence, on
   onImage: (section: ReviewSectionKey) => void;
   readOnly?: boolean;
 }) {
-  const label = reviewSections.find(([key]) => key === section)![1];
+  const label = useJournalSections(document.review.notion?.layout).find(([key]) => key === section)?.[1] ?? "Archived section";
   const ids = sectionEvidenceIds(document.review.notion, section);
   const assign = (id: string, checked: boolean) => onChange(review => ({ ...review,
     notion: assignSectionEvidence(review.notion ?? emptyNotionReview(), section, id, checked),

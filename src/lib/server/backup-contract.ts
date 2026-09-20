@@ -10,9 +10,13 @@ export type BackupTableContract = {
 
 // Disposable market-data cache and jobs are reconstructed from the provider and trade read model.
 // They are deliberately excluded from user-data backup payloads, freshness, and restores.
-export const REGENERABLE_CACHE_MODELS = ["WorkstationMetricCache", "WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease"] as const;
+export const REGENERABLE_CACHE_MODELS = ["WorkstationMetricCache", "WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease", "NotionRequestGate"] as const;
 
 export const BACKUP_TABLES = [
+  { key: "notionTemplateDefinitions", prismaModel: "NotionTemplateDefinition", dependencies: [], restoreOrder: 430, canonicalRows: true, optionalInLegacy: true },
+  { key: "notionPublications", prismaModel: "NotionPublication", dependencies: [], restoreOrder: 440, canonicalRows: true, optionalInLegacy: true },
+  { key: "notionPublishJobs", prismaModel: "NotionPublishJob", dependencies: ["notionPublications"], restoreOrder: 450, canonicalRows: true, optionalInLegacy: true },
+  { key: "notionUploads", prismaModel: "NotionUpload", dependencies: [], restoreOrder: 460, canonicalRows: true, optionalInLegacy: true },
   { key: "accounts", prismaModel: "Account", dependencies: [], restoreOrder: 10, canonicalRows: true },
   { key: "instruments", prismaModel: "Instrument", dependencies: [], restoreOrder: 20, canonicalRows: true },
   { key: "tags", prismaModel: "Tag", dependencies: [], restoreOrder: 30, canonicalRows: true },

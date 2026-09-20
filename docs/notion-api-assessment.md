@@ -1,5 +1,7 @@
 # Notion API publishing assessment
 
+Historical assessment for the chart-interaction release. The subsequent implementation and its still-required production release gates are documented in [Notion integration](notion-integration.md).
+
 Assessed 2026-09-20. This release does **not** connect to Notion or publish pages. The app still offers CSV and page/portable ZIP exports. Feasibility is confirmed from the public API documentation; compatibility with the owner's actual database, template and related databases is **not verified**.
 
 ## Recommended follow-up

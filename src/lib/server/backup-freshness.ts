@@ -13,6 +13,10 @@ const SOURCE_TABLE_KEYS = BACKUP_TABLES
   .filter((key) => key !== "backupAudits") as BackupTableKey[];
 
 export const BACKUP_RELEVANT_TIMESTAMP_SOURCES = [
+  { key: "notionTemplateDefinitions", prismaModel: "NotionTemplateDefinition", timestampFields: ["createdAt"] },
+  { key: "notionPublications", prismaModel: "NotionPublication", timestampFields: ["createdAt", "updatedAt"] },
+  { key: "notionPublishJobs", prismaModel: "NotionPublishJob", timestampFields: ["createdAt", "updatedAt"] },
+  { key: "notionUploads", prismaModel: "NotionUpload", timestampFields: ["createdAt", "updatedAt"] },
   { key: "accounts", prismaModel: "Account", timestampFields: ["createdAt", "updatedAt"] },
   { key: "importBatches", prismaModel: "ImportBatch", timestampFields: ["importedAt"] },
   { key: "executionTimeInterpretations", prismaModel: "ExecutionTimeInterpretation", timestampFields: ["confirmedAt", "updatedAt"] },

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { firstExecution } from "./before-entry";
 import { richHtml, richPlain } from "./rich-text";
 import type { Review, Trade } from "./types";
+import { dynamicSectionKeySchema, templateLayoutSchema, type TemplateLayout } from "./template-layout-schema";
 
 type Kind = "date" | "checkbox" | "relation" | "multi" | "select" | "text" | "number" | "takeaways" | "formula";
 type Property = { key: string; label: string; kind: Kind; options?: string[]; single?: boolean };
@@ -46,9 +47,9 @@ export type NotionValue = string | number | boolean | string[] | null;
 export type ChartSectionKey = typeof chartSections[number][0];
 export const additionalReviewSections = [["properties", "Trade properties"], ...analysisSections, ["takeaways", "Takeaways"], ["previousReview", "Previous review fields"]] as const;
 export const reviewSections = [...chartSections, ...additionalReviewSections] as const;
-export type ReviewSectionKey = typeof reviewSections[number][0];
+export type ReviewSectionKey = typeof reviewSections[number][0] | `notion:${string}`;
 export type AdditionalReviewSectionKey = typeof additionalReviewSections[number][0];
-export type NotionReview = { version: 1; properties: Partial<Record<PropertyKey, NotionValue>>; sections: Partial<Record<ChartSectionKey, { html: string; evidenceIds: string[] }>>; analysis: Partial<Record<typeof analysisSections[number][0], string>>; sectionEvidence?: Partial<Record<AdditionalReviewSectionKey, string[]>>; peerGroupId?: string };
+export type NotionReview = { version: 1; properties: Partial<Record<PropertyKey, NotionValue>>; sections: Partial<Record<ChartSectionKey, { html: string; evidenceIds: string[] }>>; analysis: Partial<Record<typeof analysisSections[number][0], string>>; sectionEvidence?: Partial<Record<AdditionalReviewSectionKey, string[]>>; peerGroupId?: string; dynamicSections?: Record<string, { html: string; evidenceIds: string[] }>; layout?: TemplateLayout };
 const html = z.string().max(20000).transform(richHtml);
 const propertyShape: Record<string, z.ZodType> = {};
 for (const p of notionProperties) {
@@ -58,7 +59,7 @@ for (const p of notionProperties) {
 }
 propertyShape.plannedEntry = z.number().finite().positive().nullable().optional();
 propertyShape.plannedStop = z.number().finite().positive().nullable().optional();
-export const notionReviewSchema = z.object({ version: z.literal(1), properties: z.object(propertyShape).strict(), sections: z.object(Object.fromEntries(chartSections.map(([key]) => [key, z.object({ html, evidenceIds: z.array(z.string().max(200)).max(30) }).strict().optional()]))).strict(), analysis: z.object(Object.fromEntries(analysisSections.map(([key]) => [key, html.optional()]))).strict(), sectionEvidence: z.object(Object.fromEntries(additionalReviewSections.map(([key]) => [key, z.array(z.string().min(1).max(200)).max(30).optional()]))).strict().optional(), peerGroupId: z.string().min(1).max(200).optional() }).strict().transform(v => v as NotionReview);
+export const notionReviewSchema = z.object({ version: z.literal(1), properties: z.object(propertyShape).strict(), sections: z.object(Object.fromEntries(chartSections.map(([key]) => [key, z.object({ html, evidenceIds: z.array(z.string().max(200)).max(30) }).strict().optional()]))).strict(), analysis: z.object(Object.fromEntries(analysisSections.map(([key]) => [key, html.optional()]))).strict(), sectionEvidence: z.object(Object.fromEntries(additionalReviewSections.map(([key]) => [key, z.array(z.string().min(1).max(200)).max(30).optional()]))).strict().optional(), peerGroupId: z.string().min(1).max(200).optional(), layout: templateLayoutSchema.optional(), dynamicSections: z.record(dynamicSectionKeySchema, z.object({ html, evidenceIds: z.array(z.string().min(1).max(200)).max(30) }).strict()).refine(value => Object.keys(value).length <= 1200).optional() }).strict().transform(v => v as NotionReview);
 export const emptyNotionReview = (): NotionReview => ({ version: 1, properties: {}, sections: {}, analysis: {} });
 export function stopLossPercent(n?: NotionReview): number | null {
   const entry = n?.properties.plannedEntry, stop = n?.properties.plannedStop;

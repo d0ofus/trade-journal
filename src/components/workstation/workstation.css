@@ -1,3 +1,10 @@
+.workstation .ws-review-controls { border: 0; padding: 0; margin: 0; min-width: 0; }
+.workstation dialog.ws-review-dialog { margin: auto; width: min(780px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow: auto; color: var(--ws-text); background: var(--ws-panel); }
+.workstation dialog.ws-review-dialog::backdrop { background: #0009; }
+.workstation .ws-template-sync { font-size: 11px; padding: 8px 0; }
+.workstation .ws-template-sync p { margin-top: 6px; color: var(--ws-muted); }
+.workstation .ws-notion-preview-properties > div { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr; gap: 12px; padding: 5px 0; }
+.workstation .ws-notion-preview-properties dd { overflow-wrap: anywhere; margin: 0; }
 .workstation {
   background: var(--ws-bg);
   color: var(--ws-text);

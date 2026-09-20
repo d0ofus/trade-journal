@@ -68,6 +68,10 @@ export async function GET() {
     importArtifacts,
     materializationWatermarks,
     backupAudits,
+    notionTemplateDefinitions,
+    notionPublications,
+    notionPublishJobs,
+    notionUploads,
     latestBackupRelevantUpdateAt,
   ] = await prisma.$transaction(
     async (tx) =>
@@ -127,6 +131,10 @@ export async function GET() {
         tx.importArtifact.findMany({ orderBy: { createdAt: "asc" } }),
         tx.materializationWatermark.findMany({ orderBy: { key: "asc" } }),
         tx.backupAudit.findMany({ orderBy: { verifiedAt: "asc" } }),
+        tx.notionTemplateDefinition.findMany({ orderBy: { id: "asc" } }),
+        tx.notionPublication.findMany({ orderBy: { groupKey: "asc" } }),
+        tx.notionPublishJob.findMany({ orderBy: { id: "asc" } }),
+        tx.notionUpload.findMany({ orderBy: { id: "asc" } }),
         getLatestBackupRelevantUpdateAt(tx),
       ] as const),
     {
@@ -185,6 +193,10 @@ export async function GET() {
     importArtifacts,
     materializationWatermarks,
     backupAudits,
+    notionTemplateDefinitions,
+    notionPublications,
+    notionPublishJobs,
+    notionUploads,
   };
   const tableManifest = buildBackupTableManifest(tablePayload);
   const source = buildBackupSourceMetadata({

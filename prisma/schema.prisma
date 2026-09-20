@@ -8,6 +8,72 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// Integration state is additive and independent of materialized trade rows.
+// Cached layouts never own or delete the review's actual text/image records.
+model NotionTemplateDefinition {
+  id           String   @id
+  templateId   String
+  dataSourceId String
+  layout       Json
+  source       Json
+  createdAt    DateTime @default(now())
+  checkedAt    DateTime @default(now())
+
+  @@index([templateId, checkedAt])
+}
+
+model NotionPublication {
+  groupKey       String   @id
+  dataSourceId   String
+  pageId         String?  @unique
+  activeJobId    String?
+  lastRevision   Int?
+  templateId     String?
+  bindings       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  jobs           NotionPublishJob[]
+}
+
+model NotionPublishJob {
+  id             String   @id @default(cuid())
+  groupKey       String
+  publication    NotionPublication @relation(fields: [groupKey], references: [groupKey], onDelete: Restrict)
+  requestKey     String   @unique
+  revision       Int
+  templateId     String
+  snapshot       Json
+  plan           Json
+  progress       Json     @default("{}")
+  state          String   @default("preview")
+  error          String?
+  retryAt        DateTime?
+  leaseToken     String?
+  leaseUntil     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([groupKey, createdAt])
+}
+
+model NotionUpload {
+  id             String   @id
+  dataSourceId   String
+  contentHash    String
+  uploadId       String?
+  status         String   @default("pending")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([dataSourceId, contentHash])
+}
+
+model NotionRequestGate {
+  key       String   @id
+  nextAt    DateTime
+  updatedAt DateTime @updatedAt
+}
+
 enum AssetType {
   STOCK
   OPTION

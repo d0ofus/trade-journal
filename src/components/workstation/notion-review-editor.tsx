@@ -1,11 +1,13 @@
 "use client";
 import { useId, useState, type ReactNode } from "react";
 import dynamic from "next/dynamic";
-import { analysisSections, chartSections, emptyNotionReview, notionProperties, propertyText, type ReviewSectionKey, type NotionReview, type NotionValue, type PropertyKey } from "@/lib/workstation/notion-template";
+import { chartSections, emptyNotionReview, notionProperties, propertyText, type ReviewSectionKey, type NotionReview, type NotionValue, type PropertyKey } from "@/lib/workstation/notion-template";
 import { SectionAttachments } from "./section-attachments";
 import { PeerGroups, type PeerGroupSelection } from "./peer-groups";
 import { richPlain } from "@/lib/workstation/rich-text";
 import type { Review, Trade, TradeDocument } from "@/lib/workstation/types";
+import { sectionText, setSectionText, type SectionDefinition } from "@/lib/workstation/template-layout";
+import { useJournalLayout } from "./use-template-layout";
 
 const FormattedField = dynamic(() => import("./rich-review-editors").then(m => m.FormattedField), { ssr: false });
 
@@ -24,11 +26,21 @@ function Choices({ label, value, options, multiple, onChange }: { label: string;
   </div>;
 }
 
-export function NotionReviewEditor({ trade, document, onChange, onEvidence, onImage, onComparePeers, mode }: { trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ReviewSectionKey) => void; onImage: (section: ReviewSectionKey) => void; onComparePeers: (selection: PeerGroupSelection) => void; mode: "demo" | "application" }) {
+export type NotionEditorProps = { trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ReviewSectionKey) => void; onImage: (section: ReviewSectionKey) => void; onComparePeers: (selection: PeerGroupSelection) => void; mode: "demo" | "application" };
+export function JournalSection({ section, ...props }: NotionEditorProps & { section: SectionDefinition }) {
+  return <Section title={section.label}><FormattedField label={chartSections.some(([key]) => key === section.key) ? `${section.label} commentary` : section.label} value={sectionText(props.document.review, section.key)} onChange={html => props.onChange(review => setSectionText(review, section.key, html))} />
+    {section.key === "peers" && <PeerGroups symbol={props.trade.symbol} savedId={props.document.review.notion?.peerGroupId} mode={props.mode} onSelect={peerGroupId => props.onChange(review => ({ ...review, notion: { ...review.notion ?? emptyNotionReview(), peerGroupId } }))} onCompare={props.onComparePeers} />}
+    <SectionAttachments section={section.key} {...props} readOnly={props.trade.stale} />
+  </Section>;
+}
+export function NotionReviewEditor(props: NotionEditorProps) {
+  const { trade, document, onChange, onEvidence, onImage } = props;
+  const { layout, warning, pending, refresh } = useJournalLayout();
   const review = document.review, notion = review.notion ?? emptyNotionReview();
   const change = (update: (current: NotionReview) => NotionReview) => onChange(current => ({ ...current, notion: update(current.notion ?? emptyNotionReview()) }));
   const property = (key: PropertyKey, value: NotionValue) => change(current => ({ ...current, properties: { ...current.properties, [key]: value } }));
   return <div className="ws-notion-review">
+    {props.mode === "application" && <div className="ws-template-sync"><button type="button" onClick={refresh}>Refresh Notion sections</button>{pending && <p role="status">Section changes will appear when you leave the current field.</p>}{warning && <p role="status">{warning}</p>}</div>}
     <Section title="Trade properties">
       <div className="ws-template-properties">{notionProperties.map(p => {
         const value = notion.properties[p.key];
@@ -45,15 +57,10 @@ export function NotionReviewEditor({ trade, document, onChange, onEvidence, onIm
       })}</div>
       <SectionAttachments section="properties" document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} />
     </Section>
-    {chartSections.map(([key, label]) => {
-      const section = notion.sections[key] ?? { html: "", evidenceIds: [] };
-      return <Section title={label} key={key}><FormattedField label={`${label} commentary`} value={section.html} onChange={html => change(current => ({ ...current, sections: { ...current.sections, [key]: { ...current.sections[key] ?? { evidenceIds: [] }, html } } }))} />
-        {key === "peers" && <PeerGroups symbol={trade.symbol} savedId={notion.peerGroupId} mode={mode} onSelect={peerGroupId => change(current => ({ ...current, peerGroupId }))} onCompare={onComparePeers} />}
-        <SectionAttachments section={key} document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} />
-      </Section>;
-    })}
-    <h3>Setup Analysis</h3>
-    {analysisSections.map(([key, label]) => <Section title={label} key={key}><FormattedField label={label} value={notion.analysis[key] ?? ""} onChange={html => change(current => ({ ...current, analysis: { ...current.analysis, [key]: html } }))} /><SectionAttachments section={key} document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} /></Section>)}
-    <Section title="Takeaways"><FormattedField label="Takeaways" value={review.takeaway} onChange={takeaway => onChange(current => ({ ...current, takeaway }))} /><SectionAttachments section="takeaways" document={document} onChange={onChange} onEvidence={onEvidence} onImage={onImage} readOnly={trade.stale} /></Section>
+    {layout.sections.map((section, index) => <div key={section.key}>
+      {section.groups.length > 0 && section.groups.join("/") !== layout.sections[index - 1]?.groups.join("/") && <h3>{section.groups.join(" · ")}</h3>}
+      <JournalSection {...props} section={section} />
+    </div>)}
+    {!layout.sections.some(section => section.key === "peers") && <Section title="Review tools"><PeerGroups symbol={trade.symbol} savedId={notion.peerGroupId} mode={props.mode} onSelect={peerGroupId => change(current => ({ ...current, peerGroupId }))} onCompare={props.onComparePeers} /></Section>}
   </div>;
 }

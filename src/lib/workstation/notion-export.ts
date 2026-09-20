@@ -3,6 +3,7 @@ import { chartSections, notionProperties, propertyText, type ReviewSectionKey } 
 import { sectionEvidenceIds } from "./evidence";
 import { escapeHtml, richHtml, richMarkdown, richPlain } from "./rich-text";
 import { metricEntries, unavailableMetrics, type MarketMetrics } from "./market-metrics";
+import { sectionText } from "./template-layout";
 
 export function notionBlocks(trade: Trade, doc: TradeDocument, metrics?: MarketMetrics) {
   const n = doc.review.notion;
@@ -20,6 +21,18 @@ export function notionBlocks(trade: Trade, doc: TradeDocument, metrics?: MarketM
     { key: "idealExecution", title: "Ideal Execution", level: 2, html: richHtml(n?.analysis.idealExecution ?? "") }, { key: "fundamentals", title: "Fundamentals", level: 2, html: richHtml(n?.analysis.fundamentals ?? "") },
     { title: "Noteworthy", level: 2, html: "" }, { key: "noteworthyPositive", title: "+ ve", level: 3, html: richHtml(n?.analysis.noteworthyPositive ?? "") }, { key: "noteworthyNegative", title: "− ve", level: 3, html: richHtml(n?.analysis.noteworthyNegative ?? "") },
     { key: "takeaways", title: "Takeaways", level: 2, html: richHtml(doc.review.takeaway) });
+  if (n?.layout) {
+    blocks.splice(2);
+    let group = "";
+    for (const section of n.layout.sections) {
+      const next = section.groups.join(" · ");
+      if (next && next !== group) blocks.push({ title: next, level: 1, html: "" });
+      group = next;
+      blocks.push({ key: section.key, title: section.label, level: 2, html: richHtml(sectionText(doc.review, section.key)) });
+    }
+    for (const section of n.layout.archived) if (sectionText(doc.review, section.key) || sectionEvidenceIds(n, section.key).length)
+      blocks.push({ key: section.key, title: `${section.label} (archived)`, level: 2, html: richHtml(sectionText(doc.review, section.key)) });
+  }
   const legacy = [["Setup", doc.review.setup], ["Execution", doc.review.execution], ["Thesis", doc.review.thesis], ["Exit review", doc.review.exit], ["Mistake", doc.review.mistake], ["Follow up", doc.review.followUp], ["Notes", doc.review.notes], ...Object.entries(doc.review.custom)].filter(([, text]) => richPlain(text));
   if (legacy.length || sectionEvidenceIds(n, "previousReview").length) blocks.push({ key: "previousReview", title: "Previous review fields", level: 2, html: legacy.map(([name, text]) => `<h3>${escapeHtml(name)}</h3>${richHtml(text)}`).join("") });
   return blocks;

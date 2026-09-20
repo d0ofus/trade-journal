@@ -146,6 +146,10 @@ function compactGraphPayload() {
     journalReviewActions: [{ id: "action-1", reviewId: "review-1", label: "Size down", status: "OPEN", journalEntryId: "journal-1", playbookId: "playbook-1", dueDate: later, createdAt: importedAt, updatedAt: later }],
     journalSavedViews: [{ id: "saved-view-1", name: "Needs review", viewType: "journal", filtersJson: "{}", sortKey: "ideaDate", sortDirection: "desc", createdAt: importedAt, updatedAt: later }],
     playbookExamples: [{ id: "example-1", playbookId: "playbook-1", journalEntryId: "journal-1", chartId: "chart-1", note: "Good example", sortOrder: 0, createdAt: importedAt }],
+    notionTemplateDefinitions: [{ id: "template-v1", templateId: "template-1", dataSourceId: "source-1", layout: {}, source: [], createdAt: importedAt, checkedAt: later }],
+    notionPublications: [{ groupKey: "closed-trade-1", dataSourceId: "source-1", bindings: { sections: {} }, createdAt: importedAt, updatedAt: later }],
+    notionPublishJobs: [{ id: "job-1", groupKey: "closed-trade-1", requestKey: "request-1", revision: 1, templateId: "template-v1", snapshot: {}, plan: {}, progress: {}, state: "preview", createdAt: importedAt, updatedAt: later }],
+    notionUploads: [{ id: "upload-1", dataSourceId: "source-1", contentHash: "image-hash", status: "pending", createdAt: importedAt, updatedAt: later }],
   });
 }
 

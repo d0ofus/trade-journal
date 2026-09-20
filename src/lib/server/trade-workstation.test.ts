@@ -6,6 +6,7 @@ import { createJournalEntryFromClosedTrade, JournalStaleWriteError, updateJourna
 import { emptyDocument } from "@/lib/workstation/types";
 import { attachEvidence, assignSectionEvidence, sectionEvidenceIds, removeEvidence } from "@/lib/workstation/evidence";
 import { reviewSections } from "@/lib/workstation/notion-template";
+import { fallbackLayout, setSectionText } from "@/lib/workstation/template-layout";
 import { REVIEW_PACKAGE_MAX_BYTES } from "@/lib/workstation/payload";
 import { readTradeView, saveTradeView } from "./workstation-trade-view";
 import { tradeViewSchema } from "@/lib/workstation/trade-view";
@@ -51,6 +52,21 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("round-trips dynamic and archived sections without changing older notes, drawings or images", async () => {
+    const key = await fixture(); const before = await readWorkstationDocument(key);
+    const sourceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", section = `notion:${sourceId}` as const;
+    const layout = structuredClone(fallbackLayout); layout.id = "new-template";
+    layout.sections.push({ key: section, sourceId, label: "New analysis", path: [30], groups: [], type: "heading_2" });
+    let doc = attachEvidence(before, { id: "new-section-image", name: "Preserved screenshot", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: before.revision, timeframe: "1d" }, section, layout);
+    doc.review = setSectionText(doc.review, section, "<p>New analysis text</p>");
+    expect((await PATCH(request(key, { document: doc, expectedRevision: before.revision }), params(key))).status).toBe(200);
+    doc = await readWorkstationDocument(key);
+    expect(doc.review.notes).toBe(before.review.notes); expect(doc.drawings).toEqual(before.drawings); expect(doc.review.notion?.dynamicSections?.[section].evidenceIds).toEqual(["new-section-image"]);
+    doc.review.notion!.layout = { ...layout, id: "removed-section", sections: layout.sections.filter(s => s.key !== section), archived: [layout.sections.at(-1)!] };
+    await saveWorkstationDocument(key, doc, doc.revision);
+    const loaded = await readWorkstationDocument(key);
+    expect(loaded.review.notion?.dynamicSections?.[section].html).toBe("<p>New analysis text</p>"); expect(loaded.evidence).toEqual(doc.evidence); expect(loaded.review.notes).toBe(before.review.notes);
+  });
   it("orders by opening time instead of closing time and retains stale trades in timestamp order", async () => {
     const older = await fixture(false), newer = await fixture(false), tie = await fixture(false);
     await prisma.closedTrade.update({ where: { groupKey: older }, data: { openTime: new Date("2024-09-09T23:00Z"), closeTime: new Date("2024-09-12T00:00Z") } });

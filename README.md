@@ -210,13 +210,15 @@ The current-tree scanner reads Git-tracked and non-ignored candidate files and v
 
 ## Prisma Deployment Flow (Production)
 
-After committing migrations, use a protected production release step rather than a generic Preview/build hook:
+The Vercel project uses `node scripts/vercel-build.mjs`. Only a Production build applies committed migrations, before building/promoting the application; Preview builds never migrate production. For releases with new migrations:
 
-1. Stop import, Flex, and cron writes.
-2. Create and verify the required snapshot/backups.
-3. Run `npm run prisma:migrate:deploy` with production-only credentials and verify migration status.
-4. Deploy the application build. Preview and build jobs run only `npm run build`.
-5. App starts with generated Prisma client (`postinstall` runs `prisma generate`).
+1. Complete release-specific validation and create/verify the required backup. Coordinate a write pause if the migration needs one.
+2. Validate the migration against an isolated preview/test database, using `prisma migrate deploy` explicitly for that database.
+3. Only then push the approved commit to `main`, which triggers the production Vercel build. The production build requires `DATABASE_URL` and `DIRECT_URL` and runs `prisma migrate deploy` automatically.
+4. Check migration and Vercel deployment status before declaring the release complete. `postinstall` generates the Prisma client.
+5. Use the manual command below only as a coordinated fallback; do not run `migrate dev` against production or reverse applied migrations.
+
+The [Notion integration release gates](docs/notion-integration.md) must pass before its production push. It introduces an additive migration; no separate Worker is deployed.
 
 Manual fallback:
 

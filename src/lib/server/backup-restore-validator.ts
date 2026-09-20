@@ -33,6 +33,10 @@ type ForeignKeySpec = {
 };
 
 const RESTORE_KEYS: KeySpec[] = [
+  { table: "notionTemplateDefinitions", fields: ["id"] },
+  { table: "notionPublications", fields: ["groupKey"] },
+  { table: "notionPublishJobs", fields: ["id"] },
+  { table: "notionUploads", fields: ["id"] },
   { table: "accounts", fields: ["id"] },
   { table: "instruments", fields: ["id"] },
   { table: "tags", fields: ["id"] },
@@ -81,6 +85,7 @@ const RESTORE_KEYS: KeySpec[] = [
 ];
 
 const FOREIGN_KEYS: ForeignKeySpec[] = [
+  { table: "notionPublishJobs", field: "groupKey", targetTable: "notionPublications", targetField: "groupKey" },
   { table: "importBatches", field: "accountId", targetTable: "accounts", optional: true },
   { table: "importBatches", field: "rawStorageKey", targetTable: "importArtifacts", targetField: "storageKey", optional: true },
   { table: "executionTimeInterpretations", field: "importBatchId", targetTable: "importBatches" },

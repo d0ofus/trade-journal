@@ -5,7 +5,11 @@ import { ImageAttachment } from "./image-attachment";
 import { EvidenceViewer, EvidenceViewerContext, EvidenceThumbnail, EvidenceDownload } from "./evidence-preview";
 import { VolumeSettings } from "./volume-settings";
 import type { ImportedImage } from "@/lib/workstation/image-import";
-import { reviewSections, emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
+import { emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
+import { sectionChoices } from "@/lib/workstation/template-layout";
+import { preserveLayoutArchive } from "@/lib/workstation/template-layout-schema";
+import { TemplateLayoutContext, useTemplateLayout } from "./use-template-layout";
+import { NotionPublishDialog } from "./notion-publish-dialog";
 import { newestTradesFirst } from "@/lib/workstation/trade-order";
 import type { PeerCapture, PeerView } from "@/lib/workstation/peers";
 import type { PeerGroupSelection } from "./peer-groups";
@@ -410,7 +414,7 @@ export function TradesWorkstation({
   const tradeListRef = useRef<HTMLElement>(null);
   useEffect(() => { setFilterDraft(JSON.parse(appliedFilterKey)); setFilterError(tradeFilterError(JSON.parse(appliedFilterKey))); }, [appliedFilterKey]);
   const [modal, setModal] = useState<
-      "export" | "notion" | "attach" | "image" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
+      "export" | "notion" | "publish" | "attach" | "image" | "workspace" | "settings" | "help" | "reset" | "shortcuts" | "date" | null
     >(null),
     [notice, setNotice] = useState("");
   const [replay, setReplay] = useState<number | null>(null),
@@ -440,12 +444,14 @@ export function TradesWorkstation({
   const reviewContext = useRef({ id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: 0 });
   if (reviewContext.current.id !== trade?.id || reviewContext.current.timeVersion !== trade?.timeInterpretationVersion) reviewContext.current = { id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: reviewContext.current.generation + 1 };
   useEffect(() => { peerCaptureGeneration.current++; setPeerComparison(null); }, [trade?.id, trade?.timeInterpretationVersion]);
-  useEffect(() => { setNotionPackage(null); setModal(value => value === "notion" || value === "attach" ? null : value); }, [trade?.id]);
+  useEffect(() => { setNotionPackage(null); setModal(value => value === "notion" || value === "publish" || value === "attach" ? null : value); }, [trade?.id]);
   useEffect(() => { imageGeneration.current++; setModal(value => value === "image" ? null : value); }, [trade?.id, trade?.timeInterpretationVersion, trade?.stale]);
   useEffect(() => () => { reviewContext.current.generation++; }, []);
   const pendingDate = useRef<{ tradeId: string; time: number; panel: string | null } | null>(null);
   const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
+  const layoutState = useTemplateLayout(adapter.mode, documentState?.review.notion?.layout);
+  const reviewSections = sectionChoices(layoutState.layout, documentState?.review.notion?.layout);
   const notify = useCallback((message: string) => setNotice(message), []),
     closeModal = useCallback(() => { imageGeneration.current++; setModal(null); }, []);
   useEffect(() => { setViewingEvidence(null); }, [trade?.id]);
@@ -1004,7 +1010,7 @@ export function TradesWorkstation({
           timeframe: interval,
           timeInterpretationVersion: trade.timeInterpretationVersion ?? "original",
         };
-        persistence.change(d => attachEvidence(d, evidence, destination!));
+        persistence.change(d => attachEvidence(d, evidence, destination!, layoutState.layout));
         if (await persistence.flush()) {
           assertCurrent();
           setModal(null);
@@ -1046,7 +1052,7 @@ export function TradesWorkstation({
       if (!(await persistence.flush())) throw new Error("Save the review before attaching a comparison.");
       assertCurrent();
       const evidence = { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.parse(metadata.capturedAt) / 1000, replayAt: metadata.replayAt, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata };
-      persistence.change(d => attachEvidence(d, evidence, "peers"));
+      persistence.change(d => attachEvidence(d, evidence, "peers", layoutState.layout));
       if (!(await persistence.flush())) throw new Error("The chart remains in your recovery draft. Retry saving the review.");
       assertCurrent(); notify("Comparison chart attached to Peers.");
     } finally { operation.current = false; }
@@ -1055,7 +1061,7 @@ export function TradesWorkstation({
   const validateImported = (image: ImportedImage) => {
     const doc = persistence.getDocument();
     if (!doc) throw new Error("Open an editable review before attaching an image.");
-    if (!doc.evidence.some(e => e.id === image.id)) attachEvidence(doc, { ...image, time: Date.now() / 1000, timeframe: "", revision: doc.revision }, imageDestination);
+    if (!doc.evidence.some(e => e.id === image.id)) attachEvidence(doc, { ...image, time: Date.now() / 1000, timeframe: "", revision: doc.revision }, imageDestination, layoutState.layout);
   };
   const attachImported = async (image: ImportedImage) => {
     if (operation.current || !imageEditable.current) throw new Error("Open an editable review and finish the current save before attaching.");
@@ -1067,7 +1073,7 @@ export function TradesWorkstation({
     try {
       if (!(await persistence.flush())) throw new Error("Save the review before attaching an image.");
       assertCurrent(); validateImported(image);
-      persistence.change(d => d.evidence.some(e => e.id === image.id) ? d : attachEvidence(d, { ...image, time: Date.now() / 1000, timeframe: "", revision: d.revision }, imageDestination));
+      persistence.change(d => d.evidence.some(e => e.id === image.id) ? d : attachEvidence(d, { ...image, time: Date.now() / 1000, timeframe: "", revision: d.revision }, imageDestination, layoutState.layout));
       if (!(await persistence.flush())) throw new Error("The image remains in your recovery draft. Retry saving the review.");
       assertCurrent(); setModal(null); if (!preferences.focusMode && !fullscreenChart) showPanel("evidence"); notify("Image attached to this review.");
     } finally { operation.current = false; setBusy(""); }
@@ -1082,9 +1088,20 @@ export function TradesWorkstation({
       const doc = persistence.getDocument();
       if (!doc) throw new Error("Wait for the review to load.");
       const row = structuredClone({ trade, doc, url: window.location.href, metrics: getMarketMetrics() });
+      row.doc.review.notion = { ...row.doc.review.notion ?? emptyNotionReview(), layout: preserveLayoutArchive(layoutState.layout, row.doc.review.notion?.layout) };
       setNotionPackage({ csv: new Blob([notionImportCsv(row)], { type: "text/csv;charset=utf-8" }), zip: notionPageArchive(row), name: filename(trade), revision: doc.revision });
       setModal("notion");
     } catch (e) { notify(e instanceof Error ? e.message : "Notion export failed."); }
+    finally { operation.current = false; setBusy(""); }
+  };
+  const prepareNotionPublish = async () => {
+    if (busy || operation.current || trade.stale || adapter.mode !== "application") return;
+    operation.current = true; setBusy("Saving review for Notion…");
+    const generation = reviewContext.current.generation;
+    try {
+      if (!(await persistence.flush())) throw new Error("Save or recover the review before publishing.");
+      if (generation === reviewContext.current.generation) setModal("publish");
+    } catch (error) { notify(error instanceof Error ? error.message : "Unable to prepare publication."); }
     finally { operation.current = false; setBusy(""); }
   };
   const exportReviews = async () => {
@@ -1110,6 +1127,7 @@ export function TradesWorkstation({
           url: `${window.location.origin}${adapter.mode === "demo" ? "/preview/trades" : "/trades"}?groupKey=${encodeURIComponent(t.id)}`,
         })),
       );
+      rows.forEach(row => { row.doc.review.notion = { ...row.doc.review.notion ?? emptyNotionReview(), layout: preserveLayoutArchive(layoutState.layout, row.doc.review.notion?.layout) }; });
       if (exportFormat === "csv")
         downloadBlob(
           new Blob([reviewCsv(rows, columns, exportHeaders)], {
@@ -1663,7 +1681,7 @@ export function TradesWorkstation({
       trade={trade}
       persistence={persistence}
       onChange={(update) => {
-        if (!trade.stale) persistence.change((d) => ({ ...d, review: update(d.review) }));
+        if (!trade.stale) persistence.change((d) => { const review = update(d.review); return { ...d, review: { ...review, notion: { ...review.notion ?? emptyNotionReview(), layout: preserveLayoutArchive(layoutState.layout, review.notion?.layout) } } }; });
       }}
       retry={() => void persistence.retry()}
       reload={() => void persistence.reload()}
@@ -1673,6 +1691,7 @@ export function TradesWorkstation({
       onImage={section => { if (!trade.stale) { imageGeneration.current++; setImageDestination(section); setModal("image"); } }}
       onComparePeers={openPeers}
       onNotionExport={() => void prepareNotionExport()}
+      onNotionPublish={() => void prepareNotionPublish()}
       preferences={preferences}
       onPreferences={changePreferences}
       replay={replay}
@@ -1825,7 +1844,7 @@ export function TradesWorkstation({
                 <p className="ws-evidence-assignments">{reviewSections.filter(([key]) => sectionEvidenceIds(documentState.review.notion, key).includes(e.id)).map(([, label]) => label).join(", ") || "Unassigned"}</p>
                 <details className="ws-evidence-sections"><summary>Assign sections</summary>
                   {reviewSections.map(([key, label]) => <label key={key}><input type="checkbox" checked={sectionEvidenceIds(documentState.review.notion, key).includes(e.id)} disabled={trade.stale}
-                    onChange={event => { const checked = event.target.checked; if (!trade.stale) persistence.change(d => ({ ...d, review: { ...d.review, notion: assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked) } })); }} />{label}</label>)}
+                    onChange={event => { const checked = event.target.checked; if (!trade.stale) persistence.change(d => ({ ...d, review: { ...d.review, notion: { ...assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked), layout: preserveLayoutArchive(layoutState.layout, d.review.notion?.layout) } } })); }} />{label}</label>)}
                 </details>
               </div>
             ))}
@@ -1906,6 +1925,7 @@ export function TradesWorkstation({
   };
   const previewEvidence = viewingEvidence?.tradeId === trade.id ? documentState?.evidence.find(e => e.id === viewingEvidence.id) : undefined;
   return (
+    <TemplateLayoutContext.Provider value={layoutState}>
     <EvidenceViewerContext.Provider value={openEvidence}>
     <div
       ref={root}
@@ -2903,7 +2923,9 @@ export function TradesWorkstation({
         </Modal>
       )}
       {previewEvidence && <EvidenceViewer evidence={previewEvidence} onClose={closeEvidence} />}
+      {modal === "publish" && documentState && <NotionPublishDialog key={trade.id} groupKey={trade.id} revision={persistence.getDocument()?.revision ?? documentState.revision} onClose={closeModal} />}
     </div>
     </EvidenceViewerContext.Provider>
+    </TemplateLayoutContext.Provider>
   );
 }
