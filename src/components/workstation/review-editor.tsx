@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import dynamic from "next/dynamic";
-import { ArrowUpRight, Check, ChevronDown, Download, Plus, Sparkles } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, Download, Plus } from "lucide-react";
 import { documentSaveStatus, type useTradeDocument } from "./use-trade-document";
 import { NotionReviewEditor } from "./notion-review-editor";
 import { Review, Trade, TradeDocument, WorkspacePreferences } from "@/lib/workstation/types";
@@ -22,8 +22,8 @@ export function ReviewEditor(p: Props) {
   const complete = [r.notion?.analysis.technicalPositive || r.setup, r.notion?.analysis.idealExecution || r.execution, r.takeaway].filter(v => richPlain(v ?? "")).length;
   const addTag = () => { if (tag.trim() && !r.tags.includes(tag.trim())) change({ tags: [...r.tags, tag.trim()].slice(0, 30) }); setTag(""); };
 
-  if (p.replay !== null) return <div className="ws-replay-journal"><Sparkles size={24} /><h3>Review without hindsight.</h3><p>Your saved review and trade outcome are hidden during replay. Chart notes created during replay appear at their saved candle time.</p><span>Exit replay to continue your journal.</span></div>;
   return <div className="ws-journal-content">
+    {p.replay !== null && <p className="ws-replay-notice" role="note">Replay: you are editing the saved review. Existing notes and evidence may contain hindsight.</p>}
     <div className="ws-journal-intro"><div><span className="ws-eyebrow">TRADE REVIEW</span><h2>Trade journal</h2></div><span className="ws-review-progress">{complete}/3</span></div>
     <div className="ws-review-progress-track"><span style={{ width: `${complete / 3 * 100}%` }} /></div>
     <div className="ws-journal-meta"><select aria-label="Review status" value={r.status} onChange={e => change({ status: e.target.value as Review["status"] })}>{["Not reviewed", "In progress", "Reviewed"].map(s => <option key={s}>{s}</option>)}</select><select aria-label="Review template" value={r.template} onChange={e => { const template = e.target.value; const preset = p.preferences.templates[template]; change(preset ? { ...preset, template } : { template }); if (template === "Detailed review") setDeep(true); }}><option>Quick review</option><option>Detailed review</option>{Object.keys(p.preferences.templates).map(name => <option key={name}>{name}</option>)}</select></div>

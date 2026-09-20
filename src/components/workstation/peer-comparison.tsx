@@ -7,6 +7,7 @@ import { peerContextSchema, peerEntryTime, peerMembers, peerSymbolIssue, peerVir
 import { intervals, seconds, type Trade, type WorkspacePreferences } from "@/lib/workstation/types";
 import type { HistoryRange } from "@/lib/workstation/history";
 import { compositeCharts } from "@/lib/workstation/export";
+import { peerReplayRange } from "@/lib/workstation/peers";
 
 type Props = { trade: Trade; selection: PeerGroupSelection; initial: PeerView; preferences: WorkspacePreferences; mode: "demo" | "application"; readOnly: boolean; getWorkspaceView: () => PeerView; onSelectGroup: (id: string) => void; onCapture: (canvas: HTMLCanvasElement, metadata: PeerCapture) => Promise<void>; onClose: () => void };
 
@@ -46,9 +47,10 @@ export function PeerComparison(props: Props) {
   const entryTime = peerEntryTime(props.trade);
   const register = useCallback((symbol: string, handle: PeerChartHandle | null) => { if (handle) handles.current.set(symbol, handle); else handles.current.delete(symbol); }, []);
   const onRange = useCallback((symbol: string, range: HistoryRange) => {
+    range = peerReplayRange(range, props.initial.replayAt);
     if (linked) setView(v => Math.abs(v.range.from - range.from) < 1 && Math.abs(v.range.to - range.to) < 1 ? v : { ...v, range });
     else setIndependent(v => v[symbol]?.from === range.from && v[symbol]?.to === range.to ? v : { ...v, [symbol]: range });
-  }, [linked]);
+  }, [linked, props.initial.replayAt]);
   useEffect(() => {
     alive.current = true;
     const previous = document.activeElement as HTMLElement | null;
@@ -112,7 +114,7 @@ export function PeerComparison(props: Props) {
       let left = 0;
       const positions = charts.map(({ canvas }) => { const result = { x: left, y: 0, width: canvas.width / scale, height: canvas.height / scale }; left += result.width + 12; return result; });
       const canvas = paired ? compositeCharts(charts.map(c => c.canvas), props.preferences.theme === "light", positions, scale) : charts[0].canvas;
-      await props.onCapture(canvas, { source: "peer-comparison", symbols: chosen, groupId: selection.group.id, groupName: selection.group.name, interval: view.interval, session: view.session, adjustment: view.adjustment, ranges: Object.fromEntries(charts.map(c => [c.ticker, c.range])), capturedAt: new Date().toISOString(), beforeEntry: view.beforeEntry, entryTime });
+      await props.onCapture(canvas, { replayAt: view.replayAt, source: "peer-comparison", symbols: chosen, groupId: selection.group.id, groupName: selection.group.name, interval: view.interval, session: view.session, adjustment: view.adjustment, ranges: Object.fromEntries(charts.map(c => [c.ticker, c.range])), capturedAt: new Date().toISOString(), beforeEntry: view.beforeEntry, entryTime });
     } catch (e) { if (alive.current) setCaptureError(e instanceof Error ? e.message : "Chart capture failed."); }
     finally { if (alive.current) setCapturing(false); }
   };
@@ -136,12 +138,13 @@ export function PeerComparison(props: Props) {
       <select aria-label="Peer timeframe" value={view.interval} onChange={e => { setView(v => ({ ...v, interval: e.target.value as PeerView["interval"] })); setIndependent({}); }}>{intervals.map(interval => <option key={interval}>{interval}</option>)}</select>
       <button type="button" aria-pressed={linked} onClick={() => { if (linked) setIndependent(Object.fromEntries([...handles.current].flatMap(([symbol, handle]) => { const range = handle.range(); return range ? [[symbol, range]] : []; }))); else { const range = handles.current.get(props.trade.symbol)?.range(); if (range) setView(v => ({ ...v, range })); setIndependent({}); } setLinked(v => !v); }}>Link dates {linked ? "on" : "off"}</button>
       <button type="button" onClick={match}>Match workspace</button>
-      <button type="button" disabled={entryTime === null} onClick={() => { const width = view.range.to - view.range.from; setView(v => ({ ...v, range: { from: Math.max(1, Math.floor(entryTime! - width * .8)), to: Math.ceil(entryTime! + width * .2) } })); setIndependent({}); }}>Jump to entry</button>
+      <button type="button" disabled={entryTime === null || view.replayAt !== undefined && entryTime > view.replayAt} onClick={() => { const width = view.range.to - view.range.from; setView(v => ({ ...v, range: peerReplayRange({ from: Math.max(1, Math.floor(entryTime! - width * .8)), to: Math.ceil(entryTime! + width * .2) }, v.replayAt) })); setIndependent({}); }}>Jump to entry</button>
       <button type="button" disabled={entryTime === null} aria-pressed={view.beforeEntry} onClick={() => setView(v => ({ ...v, beforeEntry: !v.beforeEntry }))}>Before entry {view.beforeEntry ? "on" : "off"}</button>
       <input aria-label="Search peers" placeholder="Find a peer…" value={search} onChange={e => setSearch(e.target.value)} />
       <button type="button" disabled={cooldown > 0} onClick={() => { memory.clear(); setRetry(v => v + 1); }}>{cooldown ? `Retry in ${cooldown}s` : "Retry charts"}</button>
     </div>
     {(membershipLoading || membershipError) && <div className="ws-peer-message" role="status">{membershipLoading ? "Refreshing curated memberships…" : membershipError} {!membershipLoading && <button type="button" onClick={() => setRefresh(v => v + 1)}>Retry groups</button>}</div>}
+    {view.replayAt !== undefined && <div className="ws-peer-message" role="note">Replay paused · completed candles through {new Date(view.replayAt * 1000).toISOString()}</div>}
     {captureError && <div className="ws-peer-message" role="alert">{captureError}</div>}
     {capturing && <div className="ws-peer-message" role="status">Saving chart to Peers…</div>}
     <div className="ws-peer-body" hidden={!membershipValid}>{membershipValid && card(props.trade.symbol, true)}<div className="ws-peer-scroll" ref={scroller} onScroll={e => { const top = e.currentTarget.scrollTop; setScroll(v => ({ ...v, top })); }}>

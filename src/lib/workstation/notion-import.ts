@@ -4,7 +4,7 @@ import { beforeEntryBoundary } from "./before-entry";
 import { firstExecution } from "./before-entry";
 import { notionBlocks } from "./notion-export";
 import { notionProperties, stopLossPercent } from "./notion-template";
-import { assignedEvidenceIds, sectionEvidenceIds } from "./evidence";
+import { assignedEvidenceIds, evidenceCaption, sectionEvidenceIds } from "./evidence";
 import { escapeHtml, richPlain } from "./rich-text";
 import type { Trade, TradeDocument } from "./types";
 import type { MarketMetrics } from "./market-metrics";
@@ -41,7 +41,7 @@ export function notionPageArchive({ trade, doc, url, metrics }: NotionImportRevi
     if (!match) throw new Error(`Unable to include chart “${evidence.name}”. Download or replace the image before exporting.`);
     const path = `assets/chart-${index + 1}.${match[1] === "jpeg" ? "jpg" : match[1]}`;
     files[path] = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0));
-    images.set(evidence.id, `<figure><img src="${path}" alt="${escapeHtml(evidence.name)}"><figcaption>${escapeHtml(evidence.name)}</figcaption></figure>`);
+    images.set(evidence.id, `<figure><img src="${path}" alt="${escapeHtml(evidence.name)}"><figcaption>${escapeHtml(evidenceCaption(evidence))}</figcaption></figure>`);
   });
   const assigned = assignedEvidenceIds(doc.review.notion);
   const blocks = notionBlocks(trade, doc, metrics).map(block => {

@@ -46,6 +46,7 @@ import {
 } from "@/lib/workstation/history";
 import { Hit, hitAt, PaintOptions, paintChart } from "./chart-paint";
 import { translateMeasurement } from "@/lib/workstation/measurement-drag";
+import { volumeColor } from "@/lib/workstation/volume-style";
 import { drawingStyleFor } from "@/lib/workstation/drawing-style";
 import {
   ChartDateTarget,
@@ -84,6 +85,7 @@ type Props = {
   onPanel?: (patch: Partial<ChartPanel>) => void;
   onDrawing: (drawing: Drawing) => void;
   onSelect: (id: string | null) => void;
+  onEditDrawing?: (id: string) => void;
   onExecution: (id: string) => void;
   onToolDone: () => void;
   register: (id: string, handle: ChartHandle | null) => void;
@@ -199,6 +201,7 @@ export function TradeChart(input: Props) {
   const pending = useRef<Point | null>(null),
     draft = useRef<Drawing | null>(null),
     drag = useRef<{ drawing: Drawing; point?: number; offset?: { x: number; y: number }; whole?: { start: { x: number; y: number }; candles: Candle[] } } | null>(null);
+  const previewPin = useRef<string | null>(null), touchPin = useRef<string | null>(null);
   const dimensions = useRef({ width: 0, height: 0 }),
     currentInterval = useRef<Interval>(props.panel.interval),
     currentSession = useRef(props.trade.chartSession),
@@ -473,6 +476,8 @@ export function TradeChart(input: Props) {
       visibleRange: api.timeScale().getVisibleRange() as HistoryRange | null,
       selected: latest.current.selected,
       selectedExecution: latest.current.selectedExecution,
+      pinPreview: previewPin.current,
+      capturePinNotes: latest.current.preferences.capturePinNotes,
       light,
       export: exporting,
       replay: latest.current.replay,
@@ -500,6 +505,12 @@ export function TradeChart(input: Props) {
         if (dataReady.current) {
           const o = options();
           hits.current = paintChart(ctx, o);
+          container.current?.querySelectorAll<HTMLButtonElement>("[data-pin-target]").forEach(button => {
+            const hit = hits.current.find(h => h.id === button.dataset.pinTarget && h.kind === "drawing" && h.point === undefined);
+            button.hidden = !hit;
+            if (hit) { button.style.left = `${hit.x}px`; button.style.top = `${hit.y}px`; button.style.width = `${hit.w}px`; button.style.height = `${hit.h}px`; }
+          });
+          if (container.current) container.current.dataset.pinPreview = previewPin.current ?? "";
           const rows = executionVisibility({ ...o, executions: o.trade.executions });
           const key = JSON.stringify([latest.current.trade.id, latest.current.trade.timeInterpretationVersion, rows.map(r => [r.diagnostic.execution.id, r.reason, r.diagnostic.status, r.diagnostic.candle?.time])]);
           if (key !== visibilityKey.current) { visibilityKey.current = key; setVisibility(rows); }
@@ -877,13 +888,13 @@ export function TradeChart(input: Props) {
               snapshotBars.map((b) => ({
                 time: asTime(b.time),
                 value: b.volume,
-                color: b.close >= b.open ? "#38bfa633" : "#e4788633",
+                color: volumeColor(prefs.volumeStyle, b.close >= b.open ? "up" : "down", light, "capture"),
               })),
             );
             if (prefs.volumeAverage.enabled) {
               const average = clone.addSeries(LineSeries, {
                 priceScaleId: "volume", priceFormat: { type: "volume" },
-                color: light ? "#96691e" : "#d4b477", lineWidth: Math.min(4, scale) as 1 | 2 | 3 | 4,
+                color: volumeColor(prefs.volumeStyle, "average", light, "capture"), lineWidth: Math.min(4, scale) as 1 | 2 | 3 | 4,
                 lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
               });
               average.setData(volumeMovingAverage(snapshotBars, prefs.volumeAverage.period).map(b => ({ ...b, time: asTime(b.time) })));
@@ -934,7 +945,7 @@ export function TradeChart(input: Props) {
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
           ctx.font = "600 13px system-ui";
           ctx.fillText(
-            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · UTC${frozenHistory.splitAdjustment ? " \u00b7 SPLIT ADJUSTED" : ""}${frozen.replay !== null ? " · REPLAY" : ""}`,
+            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · UTC${frozenHistory.splitAdjustment ? " \u00b7 SPLIT ADJUSTED" : ""}${frozen.replay !== null ? ` · REPLAY ${new Date(frozen.replay * 1000).toISOString()}` : ""}`,
             16,
             21,
           );
@@ -1022,7 +1033,7 @@ export function TradeChart(input: Props) {
       data.map((b) => ({
         time: asTime(b.time),
         value: b.volume,
-        color: b.close >= b.open ? "#38bfa62d" : "#e478862d",
+        color: volumeColor(props.preferences.volumeStyle, b.close >= b.open ? "up" : "down", props.preferences.theme === "light"),
       })),
     );
     const averages = props.preferences.averages.map((period, i) => {
@@ -1125,6 +1136,7 @@ export function TradeChart(input: Props) {
     result.candles,
     props.panel.interval,
     props.preferences.volume,
+    props.preferences.volumeStyle,
     props.preferences.averages,
     beforeEntry,
     props.replay,
@@ -1136,12 +1148,12 @@ export function TradeChart(input: Props) {
     if (!api || loading || failure || !props.preferences.volume || !props.preferences.volumeAverage.enabled) return;
     const average = api.addSeries(LineSeries, {
       priceScaleId: "volume", priceFormat: { type: "volume" },
-      color: props.preferences.theme === "light" ? "#96691e" : "#d4b477", lineWidth: 1,
+      color: volumeColor(props.preferences.volumeStyle, "average", props.preferences.theme === "light"), lineWidth: 1,
       lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
     });
     average.setData(volumeMovingAverage(data, props.preferences.volumeAverage.period).map(b => ({ ...b, time: asTime(b.time) })));
     return () => { if (chart.current === api) api.removeSeries(average); };
-  }, [data, props.preferences.volume, props.preferences.volumeAverage.enabled, props.preferences.volumeAverage.period, props.preferences.theme, loading, failure]);
+  }, [data, props.preferences.volume, props.preferences.volumeAverage.enabled, props.preferences.volumeAverage.period, props.preferences.volumeStyle, props.preferences.theme, loading, failure]);
   useEffect(() => {
     if (loading || failure || changingData.current) return;
     // Reconcile after setData; hover itself never enters React or the data effects.
@@ -1186,6 +1198,7 @@ export function TradeChart(input: Props) {
     pending.current = null;
     draft.current = null;
     drag.current = null;
+    previewPin.current = null; touchPin.current = null;
     paintRef.current();
   }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, beforeEntry, props.replay, props.drawingsHidden, result.splitAdjustment]);
 
@@ -1229,7 +1242,7 @@ export function TradeChart(input: Props) {
     id: crypto.randomUUID(),
     tool: props.tool === "cursor" ? "text" : props.tool,
     points,
-    text: props.tool === "text" ? "New note" : "",
+    text: props.tool === "text" || props.tool === "pin" ? "New note" : "",
     ...drawingStyleFor(props.tool === "cursor" ? "text" : props.tool, props.preferences.drawingStyles),
     locked: false,
     hidden: false,
@@ -1249,6 +1262,11 @@ export function TradeChart(input: Props) {
     )
       return;
     const hit = hitAt(hits.current, pos);
+    if (event.pointerType === "touch") {
+      const pin = props.drawings.find(d => d.id === hit?.id && d.tool === "pin");
+      touchPin.current = pin && touchPin.current !== pin.id ? pin.id : null;
+      previewPin.current = touchPin.current; paintRef.current();
+    }
     if (props.tool === "cursor") {
       if (hit) {
         event.preventDefault();
@@ -1264,7 +1282,7 @@ export function TradeChart(input: Props) {
         else {
           props.onSelect(hit.id);
           const wholeDrawing = props.drawings.find(d => d.id === hit.id);
-          if (hit.point === undefined && wholeDrawing?.tool === "measure" && !wholeDrawing.locked && !props.trade.stale) {
+          if (hit.point === undefined && wholeDrawing && ["measure", "ray", "pin"].includes(wholeDrawing.tool) && !wholeDrawing.locked && !props.trade.stale) {
             const logical = chart.current?.timeScale().coordinateToLogical(pos.x), price = series.current?.coordinateToPrice(pos.y);
             if (logical != null && price != null) {
               drag.current = { drawing: wholeDrawing, whole: { start: pos, candles: [...bars.current] } };
@@ -1348,6 +1366,12 @@ export function TradeChart(input: Props) {
       click.moved = true;
     if (click?.moved && click.target && event.buttons === 1 && props.tool === "cursor") autoPages.current = 3;
     if (!dataReady.current) return;
+    if (!event.buttons && event.pointerType !== "touch") {
+      const hit = hitAt(hits.current, pointer(event));
+      const pin = props.drawings.find(d => d.id === hit?.id && d.tool === "pin");
+      const next = pin?.id ?? touchPin.current;
+      if (next !== previewPin.current) { previewPin.current = next; paintRef.current(); }
+    }
     const current = drag.current;
     if (current?.whole) {
       event.preventDefault(); event.stopPropagation();
@@ -1524,6 +1548,13 @@ export function TradeChart(input: Props) {
         }}
         onPointerDownCapture={down}
         onPointerMoveCapture={move}
+        onPointerLeave={() => { if (!container.current?.querySelector("[data-pin-target]:focus-visible")) { previewPin.current = touchPin.current; paintRef.current(); } }}
+        onDoubleClick={event => {
+          const rect = host.current!.getBoundingClientRect();
+          const hit = hitAt(hits.current, { x: event.clientX - rect.left, y: event.clientY - rect.top });
+          const drawing = props.drawings.find(d => d.id === hit?.id);
+          if (drawing?.tool === "pin" && !drawing.locked && !props.trade.stale) props.onEditDrawing?.(drawing.id);
+        }}
         onPointerUpCapture={clickDate}
         onPointerUp={up}
         onPointerCancel={() => {
@@ -1536,12 +1567,23 @@ export function TradeChart(input: Props) {
           clickGesture.current = null; drag.current = null; draft.current = null; paintRef.current();
         }}
       >
+      {!props.drawingsHidden && visibleDrawings(beforeEntry ? beforeEntryDrawings(props.drawings, data, props.panel.interval, result.session) : props.drawings, props.panel.id, props.replay).filter(d => d.tool === "pin").map(d => <button
+        key={d.id} type="button" className="ws-pin-target" data-pin-target={d.id} hidden
+        aria-label={`Pin: ${d.text || "Empty note"}`}
+        onFocus={() => { previewPin.current = d.id; paintRef.current(); }}
+        onBlur={() => { previewPin.current = touchPin.current; paintRef.current(); }}
+        onClick={event => { if (event.detail === 0) { props.onSelect(d.id); previewPin.current = d.id; paintRef.current(); } }}
+        onKeyDown={event => {
+          if (event.key === "F2" && !d.locked && !props.trade.stale) { event.preventDefault(); props.onEditDrawing?.(d.id); }
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); previewPin.current = null; touchPin.current = null; container.current?.focus(); paintRef.current(); }
+        }} />)}
       <div className="ws-ohlc" ref={ohlcHost}>
         {/* The legend controller owns these text slots, classes and hidden flags. */}
         <span hidden>O <b data-ohlc="open" /></span>
         <span hidden>H <b data-ohlc="high" /></span>
         <span hidden>L <b data-ohlc="low" /></span>
         <span hidden>C <b data-ohlc="close" /></span>
+        <b hidden data-ohlc-percent title="Change from the previous candle close" aria-label="Change from previous close" />
         <span data-ohlc-empty>No completed candles</span>
         {!loading && data.length > 0 && hasExtendedSession(props.panel.interval, result.session) && <span className="ws-session-legend"><i aria-hidden="true" />Extended hours</span>}
         <span className="ws-indicator-legend">

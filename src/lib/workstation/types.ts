@@ -60,6 +60,7 @@ export const drawingTools = [
   "zone",
   "text",
   "price-note",
+  "pin",
   "measure",
   "long",
   "short",
@@ -113,6 +114,8 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  /** Replay cutoff at capture time; absent for ordinary captures and imports. */
+  replayAt?: number;
   origin?: "upload" | "clipboard";
   peerCapture?: import("./peers").PeerCapture;
   timeInterpretationVersion?: string;
@@ -138,6 +141,8 @@ export type TradeDocument = {
 export type ChartSessionPreference = "auto" | "regular" | "extended";
 export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; lastBenchmark?: "SPY" | "QQQ"; beforeEntry?: boolean };
 export type WorkspacePreferences = {
+  volumeStyle?: import("./volume-style").VolumeAppearance;
+  capturePinNotes?: boolean;
   benchmarkColor?: string;
   executionColors?: { buy: string; sell: string };
   /** Legacy workspace setting, read only when migrating panels without a session. */

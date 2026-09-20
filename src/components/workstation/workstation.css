@@ -2813,3 +2813,32 @@
 .ws-export-actions button { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--ws-border); border-radius: 6px; }
 .ws-notion-import-steps { padding-left: 22px; line-height: 1.6; list-style: decimal; }
 .ws-notion-import-steps li { margin: 12px 0; }
+
+.ws-dark .ws-journal-content input:not([type=checkbox]):not([type=range]):not([type=color]),
+.ws-dark .ws-journal-content textarea,
+.ws-dark .ws-journal-content .tiptap { color: #f1f5f9; }
+.ws-dark .ws-journal-content input::placeholder,
+.ws-dark .ws-journal-content textarea::placeholder { color: var(--ws-muted); }
+.ws-volume-settings { border: 1px solid var(--ws-border); padding: 10px; min-width: 0; }
+.ws-volume-settings legend { padding: 0 5px; }
+.ws-volume-settings label { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+.ws-volume-settings input[type=range] { min-width: 60px; width: 110px; }
+.ws-volume-settings output { width: 36px; text-align: right; }
+.ws-capture-notes { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.ws-replay-notice { padding: 9px 12px; color: var(--ws-text); background: var(--ws-accent-bg); border-radius: 5px; margin: 8px 0; font-size: 11px; }
+.ws-object-list { height: 100%; min-height: 0; overflow: auto; }
+.ws-evidence-thumbnail { display: block; width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
+.ws-evidence-thumbnail:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 2px; }
+.ws-evidence-thumbnail img { width: 100%; display: block; }
+.ws-evidence-grid .ws-evidence-thumbnail { position: static; height: auto; }
+.ws-evidence-download { display: inline-flex; align-items: center; justify-content: center; padding: 4px; color: var(--ws-muted); }
+.ws-evidence-download:hover { color: var(--ws-text); }
+.ws-section-preview figcaption { justify-content: flex-end; }
+.ws-evidence-backdrop { z-index: 3000; }
+.ws-modal.ws-evidence-viewer { width: min(96vw, 1600px); max-width: 96vw; max-height: 94dvh; display: flex; flex-direction: column; padding: 14px; }
+.ws-evidence-viewer .ws-modal-heading { flex-shrink: 0; gap: 12px; }
+.ws-evidence-viewer h2 { overflow-wrap: anywhere; flex: 1; }
+.ws-evidence-full-image { width: 100%; min-height: 0; max-height: 80dvh; object-fit: contain; }
+.ws-pin-target { position: absolute; z-index: 5; padding: 0; border: 0; background: transparent; cursor: grab; border-radius: 12px; }
+.ws-pin-target:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 1px; }
+.ws-pin-target[hidden] { display: none; }

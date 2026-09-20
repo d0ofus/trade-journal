@@ -1,5 +1,5 @@
 import { notionBlocks, notionClipboard } from "./notion-export";
-import { assignedEvidenceIds, earlierTimestampBasis, sectionEvidenceIds } from "./evidence";
+import { assignedEvidenceIds, earlierTimestampBasis, evidenceCaption, sectionEvidenceIds } from "./evidence";
 import type { ReviewSectionKey } from "./notion-template";
 import { notionProperties, propertyText, chartSections, analysisSections } from "./notion-template";
 import { richPlain, richMarkdown } from "./rich-text";
@@ -62,8 +62,8 @@ export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; ur
       return key ? row.doc.evidence.filter(e => sectionEvidenceIds(row.doc.review.notion, key).includes(e.id)) : [];
     };
     const assetPath = (id: string) => `assets/${id.replace(/[^a-z0-9_-]/gi, "_")}.png`;
-    const mdImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `\n![${e.name.replace(/[\[\]]/g, "")} ](${assetPath(e.id)})\n`).join("");
-    const htmlImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `<figure><img alt="${escapeHtml(e.name)}" src="${assetPath(e.id)}" style="max-width:100%"></figure>`).join("");
+    const mdImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `\n![${evidenceCaption(e).replace(/[\[\]]/g, "")} ](${assetPath(e.id)})\n`).join("");
+    const htmlImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `<figure><img alt="${escapeHtml(e.name)}" src="${assetPath(e.id)}" style="max-width:100%">${e.replayAt === undefined ? "" : `<figcaption>${escapeHtml(evidenceCaption(e))}</figcaption>`}</figure>`).join("");
     const unassigned = row.doc.evidence.filter(e => !assigned.has(e.id));
     const mappedMarkdown = blocks ? `# ${row.trade.symbol}\n\n` + blocks.map(b => `${"#".repeat(b.level)} ${b.title}\n\n${richMarkdown(b.html)}${mdImages(sectionImages(b.key))}`).join("\n\n") + `\n${row.url}\n` + mdImages(unassigned) : markdown + mdImages(row.doc.evidence);
     const mappedHtml = blocks ? `<h1>${escapeHtml(row.trade.symbol)}</h1>` + blocks.map(b => `<h${b.level}>${escapeHtml(b.title)}</h${b.level}>${b.html}${htmlImages(sectionImages(b.key))}`).join("") + htmlImages(unassigned) : markdown.split("\n\n").map(p => p.startsWith("## ") ? `<h2>${escapeHtml(p.slice(3))}</h2>` : p.startsWith("# ") ? `<h1>${escapeHtml(p.slice(2))}</h1>` : `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`).join("") + htmlImages(row.doc.evidence);

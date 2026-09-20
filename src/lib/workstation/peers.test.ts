@@ -122,6 +122,22 @@ describe("section attachments and stable exports", () => {
     expect(() => attachEvidence(doc, evidence, "peers")).toThrow("30 images");
     expect(() => attachEvidence(emptyDocument(), { ...evidence, image: `data:image/png;base64,${"A".repeat(4 * 1024 * 1024)}` }, "properties")).toThrow(/large|4 MB/i);
   });
+  it("retains replay cutoff metadata and captions in portable and Notion exports", async () => {
+    const replayAt = 1725980400;
+    const doc = attachEvidence(emptyDocument(), { ...evidence, replayAt, peerCapture: { ...evidence.peerCapture!, replayAt } }, "peers");
+    doc.review.notion = assignSectionEvidence(doc.review.notion!, "takeaways", evidence.id, true);
+    const args = { trade: demoTrades[0], doc, url: "" };
+    const portable = unzipSync(new Uint8Array(await (await reviewArchive([args], [], {})).arrayBuffer()));
+    const notion = unzipSync(new Uint8Array(await notionPageArchive(args).arrayBuffer()));
+    for (const files of [portable, notion]) {
+      expect(Object.keys(files).filter(p => p.endsWith(".png"))).toHaveLength(1);
+      const html = strFromU8(files[Object.keys(files).find(p => p.endsWith("review.html"))!]);
+      expect(html.match(/Replay cutoff 2024-09-10T15:00:00.000Z/g)).toHaveLength(2);
+    }
+    const json = JSON.parse(strFromU8(portable[Object.keys(portable).find(p => p.endsWith("review.json"))!]));
+    expect(json.document.evidence[0].replayAt).toBe(replayAt);
+    expect(json.document.evidence[0].peerCapture.replayAt).toBe(replayAt);
+  });
   it("external image origins and multi-section assignments survive exports without invented chart metadata", async () => {
     for (const origin of ["upload", "clipboard"] as const) {
       const image = { ...evidence, peerCapture: undefined, origin, timeframe: "" };

@@ -22,13 +22,25 @@ function atOrBefore(candles: readonly Candle[], time: number) {
 
 /** Owns only the empty React text slots and their visibility; never renders the chart. */
 export function createOhlcLegend(root: HTMLElement) {
+  const percent = root.querySelector<HTMLElement>("[data-ohlc-percent]");
   const fields = prices.map(key => root.querySelector<HTMLElement>(`[data-ohlc="${key}"]`)!);
   const labels = fields.map(field => field.parentElement!);
   const empty = root.querySelector<HTMLElement>("[data-ohlc-empty]")!;
   let displayed: OhlcCandle | null = null;
   let inspectedTime: number | null = null;
+  let history: readonly Candle[] = [];
 
   function update(candle: OhlcCandle | null) {
+    if (percent) {
+      const previous = candle ? atOrBefore(history, candle.time - .000001) : undefined;
+      const change = candle && previous && previous.close > 0 ? (candle.close - previous.close) / previous.close * 100 : NaN;
+      const valid = Number.isFinite(change);
+      const text = valid ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : "—";
+      if (percent.textContent !== text) percent.textContent = text;
+      if (percent.hidden !== !candle) percent.hidden = !candle;
+      const direction = valid ? change > 0 ? "positive" : change < 0 ? "negative" : "" : "";
+      if (percent.className !== direction) percent.className = direction;
+    }
     if (displayed === candle || (displayed && candle && displayed.time === candle.time &&
       prices.every(key => displayed![key] === candle[key]))) return;
     if (!!displayed !== !!candle) {
@@ -57,9 +69,11 @@ export function createOhlcLegend(root: HTMLElement) {
     },
     reset() {
       inspectedTime = null;
+      history = [];
       update(null);
     },
     reconcile(candles: readonly Candle[], visibleTo?: number) {
+      history = candles;
       const inspected = inspectedTime === null ? undefined : atOrBefore(candles, inspectedTime);
       if (inspected && inspected.time === inspectedTime) {
         update(inspected);

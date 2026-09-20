@@ -412,7 +412,10 @@ test("top arrangement, laptop and mobile retain usable charts in both themes", a
   await page.setViewportSize({ width: 1366, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   const { errors, requests } = await open(page);
-  expect((await dimensions(page))[1].height).toBeGreaterThan(240);
+  // Narrow chart headers wrap their per-chart session/actions. Check the usable
+  // plot separately from the complete chart frame instead of assuming one row.
+  expect((await dimensions(page))[1].height).toBeGreaterThan(200);
+  expect((await page.locator(".ws-chart").nth(1).boundingBox())!.height).toBeGreaterThan(290);
   await page.getByLabel("Chart settings", { exact: true }).click();
   await page
     .getByLabel("Chart arrangement", { exact: true })

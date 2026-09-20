@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { firstExecution } from "./before-entry";
+import { beforeEntryBoundary, beforeEntryCandles, firstExecution } from "./before-entry";
+import { completedCandles } from "./math";
 import { executionTimeResolved } from "./execution-time-provenance";
 import type { HistoryRange } from "./history";
 import { intervals, seconds, type Candle, type Interval, type Trade } from "./types";
@@ -33,7 +34,13 @@ export function peerEntryTime(trade: Trade): number | null {
   const first = firstExecution(trade);
   return first && executionTimeResolved(first) && !["pending", "stale", "unresolved"].includes(first.provenance?.interpretationStatus ?? "") ? first.time : null;
 }
-export type PeerView = { range: HistoryRange; interval: Interval; session: "regular" | "extended"; adjustment: "raw" | "split"; beforeEntry: boolean };
+export type PeerView = { replayAt?: number; range: HistoryRange; interval: Interval; session: "regular" | "extended"; adjustment: "raw" | "split"; beforeEntry: boolean };
+export function peerChartData(source: Candle[], trade: Trade, view: PeerView) {
+  const session = { timezone: "America/New_York", calendar: "exchange" as const, marketHours: view.session, ...(view.interval === "1h" && view.session === "regular" ? { aggregation: "session-open-5m-v1" } : {}) };
+  const completed = completedCandles(source, view.interval, view.replayAt ?? null, session);
+  const candles = view.beforeEntry ? beforeEntryBoundary(trade, view.interval, session) === null ? [] : beforeEntryCandles(completed, trade, view.interval, session) : completed;
+  return { candles, session };
+}
 export const peerCandleQuerySchema = z.object({
   symbols: z.array(z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9.\-]{0,19}$/)).min(1).max(MAX_PEER_BATCH).transform(v => [...new Set(v)]),
   timeframe: z.enum(intervals), session: z.enum(["regular", "extended"]), adjustment: z.enum(["raw", "split"]),
@@ -42,11 +49,17 @@ export const peerCandleQuerySchema = z.object({
 export type PeerCandleQuery = z.infer<typeof peerCandleQuerySchema>;
 export type PeerSeries = { symbol: string; candles: Candle[]; status: "ready" | "empty" | "error"; error?: string; source: string; identity: string; range: HistoryRange; adjustment: "raw" | "split"; feed: string; retryAfter?: number };
 export type PeerCandleResponse = { series: PeerSeries[] };
-export type PeerCapture = { source: "peer-comparison"; symbols: string[]; groupId: string; groupName: string; interval: Interval; session: "regular" | "extended"; adjustment: "raw" | "split"; ranges: Record<string, HistoryRange>; capturedAt: string; beforeEntry: boolean; entryTime: number | null };
+export type PeerCapture = { replayAt?: number; source: "peer-comparison"; symbols: string[]; groupId: string; groupName: string; interval: Interval; session: "regular" | "extended"; adjustment: "raw" | "split"; ranges: Record<string, HistoryRange>; capturedAt: string; beforeEntry: boolean; entryTime: number | null };
+export function peerReplayRange(range: HistoryRange, replayAt?: number): HistoryRange {
+  if (replayAt === undefined || range.to <= replayAt) return range;
+  const width = Math.max(1, range.to - range.from);
+  return { from: Math.max(1, replayAt - width), to: replayAt };
+}
 export function peerWarmupRange(view: PeerView, periods: number): HistoryRange {
   const bars = Math.max(1, Math.min(500, periods));
   const padding = view.interval === "1d" || view.interval === "1wk" ? Math.ceil(bars * seconds[view.interval] * 1.7) : Math.ceil((bars * seconds[view.interval] / 23400 + 5) * 86400);
-  return { from: Math.max(1, Math.floor(view.range.from - padding)), to: Math.ceil(view.range.to + seconds[view.interval]) };
+  const range = peerReplayRange(view.range, view.replayAt);
+  return { from: Math.max(1, Math.floor(range.from - padding)), to: Math.ceil(Math.min(range.to + seconds[view.interval], view.replayAt ?? Infinity)) };
 }
 export function peerVirtualWindow(count: number, columns: number, scrollTop: number, height: number, rowHeight = 340) {
   const startRow = Math.max(0, Math.floor(scrollTop / rowHeight));

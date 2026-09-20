@@ -29,9 +29,10 @@ async function imageDialog(page: Page, label: string) {
   return page.getByRole("dialog", { name: "Attach image", exact: true });
 }
 
-test("external images attach to every section with previews, central assignments and reload", async ({ page }) => {
+for (const replay of [false, true]) test(`external images attach to every section with previews, central assignments and reload${replay ? " during replay" : ""}`, async ({ page }) => {
   test.setTimeout(120_000);
   const errors = await open(page), png = await pixels(page);
+  if (replay) await page.getByRole("button", { name: "Replay trade", exact: true }).click();
   for (const [i, [section, label]] of reviewSections.entries()) {
     const dialog = await imageDialog(page, label);
     await dialog.getByLabel("Choose image").setInputFiles({ name: `evidence-${i}.png`, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
@@ -50,6 +51,7 @@ test("external images attach to every section with previews, central assignments
   await first.getByLabel("Takeaways", { exact: true }).check();
   await expect.poll(async () => sectionEvidenceIds((await saved(page)).review.notion, "takeaways").length).toBe(2);
   await page.reload();
+  if (replay) await page.getByRole("button", { name: "Replay trade", exact: true }).click();
   await page.locator("summary").filter({ hasText: /^Takeaways$/ }).click();
   const section = page.locator("details.ws-template-section").filter({ has: page.locator("summary").filter({ hasText: /^Takeaways$/ }) });
   await expect(section.locator(".ws-section-preview")).toHaveCount(2);
@@ -60,6 +62,33 @@ test("external images attach to every section with previews, central assignments
   await first.getByTitle("Remove attachment", { exact: true }).click();
   await expect.poll(async () => (await saved(page)).evidence.length).toBe(reviewSections.length - 1);
   await page.screenshot({ path: "test-results/evidence-sections.png", fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("replay playback does not cancel a pending clipboard import", async ({ page }) => {
+  const errors = await open(page), png = await pixels(page);
+  await page.getByRole("button", { name: "Replay trade", exact: true }).click();
+  await page.getByRole("button", { name: "Play replay", exact: true }).click();
+  const dialog = await imageDialog(page, "Takeaways");
+  const before = await page.getByLabel("Replay time", { exact: true }).inputValue();
+  await page.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src")!;
+    Object.defineProperty(HTMLImageElement.prototype, "src", { ...descriptor, set(value: string) {
+      if (value.startsWith("blob:")) { Object.assign(window, { releaseImageDecode: () => descriptor.set!.call(this, value) }); return; }
+      descriptor.set!.call(this, value);
+    } });
+  });
+  await dialog.getByRole("group", { name: "Paste screenshot" }).evaluate((area, data) => {
+    const clipboardData = new DataTransfer(); clipboardData.items.add(new File([Uint8Array.from(atob(data), c => c.charCodeAt(0))], "image.png", { type: "image/png" }));
+    area.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+  }, png);
+  await expect(dialog.getByRole("status")).toBeVisible();
+  await expect.poll(() => page.getByLabel("Replay time", { exact: true }).inputValue()).not.toBe(before);
+  await page.evaluate(() => (window as unknown as { releaseImageDecode?: () => void }).releaseImageDecode?.());
+  await expect(dialog.getByRole("img")).toBeVisible();
+  await dialog.getByRole("button", { name: "Attach image to Takeaways", exact: true }).click();
+  await expect.poll(async () => (await saved(page)).evidence.length).toBe(1);
+  expect((await saved(page)).evidence[0].origin).toBe("clipboard");
   expect(errors).toEqual([]);
 });
 

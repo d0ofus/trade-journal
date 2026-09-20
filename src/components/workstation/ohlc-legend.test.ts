@@ -4,7 +4,7 @@ import type { Candle } from "@/lib/workstation/types";
 
 const candle = (time: number, close = 12): Candle => ({ time, open: 10, high: 15, low: 5, close, volume: 100 });
 
-function legend() {
+function legend(withPercent = false) {
   const writes = vi.fn();
   const fields = ["open", "high", "low", "close"].map(() => {
     let text = "";
@@ -15,12 +15,29 @@ function legend() {
     };
   });
   const empty = { hidden: false };
-  const root = { querySelector: (selector: string) => selector === "[data-ohlc-empty]" ? empty : fields[["open", "high", "low", "close"].findIndex(key => selector.includes(key))] };
-  return { controller: createOhlcLegend(root as unknown as HTMLElement), fields, empty, writes,
+  const percent = { hidden: true, textContent: "", className: "" };
+  const root = { querySelector: (selector: string) => selector === "[data-ohlc-percent]" ? withPercent ? percent : null : selector === "[data-ohlc-empty]" ? empty : fields[["open", "high", "low", "close"].findIndex(key => selector.includes(key))] };
+  return { controller: createOhlcLegend(root as unknown as HTMLElement), fields, empty, writes, percent,
     values: () => fields.map(field => field.textContent) };
 }
 
 describe("OHLC legend", () => {
+  it("uses the previous loaded close, including gaps and corrected history, without future replay values", () => {
+    const l = legend(true);
+    l.controller.reconcile([candle(300, 100), candle(900, 110)]);
+    expect(l.percent.textContent).toBe("+10.00%"); expect(l.percent.className).toBe("positive");
+    l.controller.inspect(candle(300, 100)); expect(l.percent.textContent).toBe("—");
+    l.controller.inspect(candle(900, 110));
+    l.controller.reconcile([candle(300, 200), candle(900, 110)]);
+    expect(l.percent.textContent).toBe("-45.00%"); expect(l.percent.className).toBe("negative");
+    l.controller.reconcile([candle(300, 0), candle(900, 110)]); expect(l.percent.textContent).toBe("—");
+    for (const invalid of [NaN, Infinity, -100]) {
+      l.controller.reconcile([candle(300, invalid), candle(900, 110)]); expect(l.percent.textContent).toBe("—");
+    }
+    l.controller.reconcile([candle(300, 110), candle(900, 110)]); expect(l.percent.textContent).toBe("+0.00%"); expect(l.percent.className).toBe("");
+    l.controller.reconcile([candle(300, 100)]); expect(l.percent.textContent).toBe("—");
+    l.controller.reset(); expect(l.percent.hidden).toBe(true);
+  });
   it("formats zero and negative prices, colors the close and switches the empty display", () => {
     const l = legend();
     expect(l.empty.hidden).toBe(false);

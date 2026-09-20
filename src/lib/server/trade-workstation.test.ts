@@ -86,9 +86,11 @@ describe("workstation persistence against isolated PostgreSQL", () => {
     const exit = { ...ray, id: "planned-exit", tool: "exit" as const, showPrice: true, color: "#ef4444" };
     let withImages = attachEvidence(doc, { id: "uploaded", origin: "upload", name: "My image.png", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: doc.revision, timeframe: "" }, "takeaways");
     withImages = attachEvidence(withImages, { id: "pasted", origin: "clipboard", name: "Screenshot.png", image: "data:image/png;base64,aGVsbG8=", time: 2, revision: doc.revision, timeframe: "" }, "previousReview");
-    const response = await PATCH(request(key, { expectedRevision: doc.revision, document: { ...withImages, drawings: [ray, measurement, entry, exit] } }), params(key));
+    const pin = { ...ray, id: "pin-note", tool: "pin" as const, text: "Wrapped hover note", color: "#ff8822" };
+    withImages.evidence[0].replayAt = 1725980400;
+    const response = await PATCH(request(key, { expectedRevision: doc.revision, document: { ...withImages, drawings: [ray, measurement, entry, exit, pin] } }), params(key));
     expect(response.status).toBe(200);
-    expect((await readWorkstationDocument(key)).drawings).toEqual([ray, measurement, entry, exit]);
+    expect((await readWorkstationDocument(key)).drawings).toEqual([ray, measurement, entry, exit, pin]);
     expect((await readWorkstationDocument(key)).evidence).toEqual(withImages.evidence);
   });
   it("persists both note anchors without rewriting other review fields", async () => {

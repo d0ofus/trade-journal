@@ -3,6 +3,7 @@ import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from ".
 import type { Evidence, TradeDocument } from "./types";
 
 export function evidenceSource(e: Evidence) { return e.origin === "upload" ? "Uploaded image" : e.origin === "clipboard" ? "Clipboard screenshot" : e.peerCapture ? "Peer comparison" : "Workspace chart"; }
+export function evidenceCaption(e: Evidence) { return e.name + (e.replayAt === undefined ? "" : ` · Replay cutoff ${new Date(e.replayAt * 1000).toISOString()}`); }
 export function earlierTimestampBasis(e: Evidence, version: string) { return !e.origin && e.timeInterpretationVersion !== version; }
 
 function isChartSection(key: ReviewSectionKey): key is ChartSectionKey {

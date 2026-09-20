@@ -4,6 +4,8 @@
     "incremental": false
   },
   "include": [
+    "src/lib/workstation/chart-interaction.test.ts",
+    "tests/workstation-preview/chart-interaction.spec.ts",
     "tests/workstation-preview/evidence-import.spec.ts",
     "src/lib/workstation/peers.test.ts",
     "src/lib/server/peer-candles.test.ts",

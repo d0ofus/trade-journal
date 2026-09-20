@@ -2,6 +2,8 @@
 import { executionColors, benchmarkColor } from "@/lib/workstation/comparison";
 import { assignSectionEvidence, attachEvidence, earlierTimestampBasis, evidenceSource, removeEvidence, sectionEvidenceIds } from "@/lib/workstation/evidence";
 import { ImageAttachment } from "./image-attachment";
+import { EvidenceViewer, EvidenceViewerContext, EvidenceThumbnail, EvidenceDownload } from "./evidence-preview";
+import { VolumeSettings } from "./volume-settings";
 import type { ImportedImage } from "@/lib/workstation/image-import";
 import { reviewSections, emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
 import { newestTradesFirst } from "@/lib/workstation/trade-order";
@@ -70,6 +72,7 @@ import {
   MoveUpRight,
   PanelLeftClose,
   Pause,
+  Pin,
   Play,
   Plus,
   Redo2,
@@ -122,7 +125,7 @@ import type { MarketMetrics } from "@/lib/workstation/market-metrics";
 import { metricIdentity } from "@/lib/workstation/share-eligibility";
 import { ConnectedReviewEditor, ConnectedSaveStatus } from "./review-editor";
 import { DrawingCoordinates } from "./drawing-coordinates";
-import { applyWorkspaceVisibility, reviewPanelIds } from "./workspace-layout";
+import { applyWorkspaceVisibility, reviewPanelIds, syncFocusDock, type FocusDockState } from "./workspace-layout";
 import { ChartDateTarget, restoredDateLink } from "@/lib/workstation/date-link";
 import { commands, defaultShortcuts, matchCommand, shortcutLabel, typingTarget } from "@/lib/workstation/shortcuts";
 import { ShortcutSettings, useShortcutPreferences } from "./shortcut-settings";
@@ -146,6 +149,7 @@ const tools: { id: Tool; label: string; icon: typeof Crosshair }[] = [
   { id: "zone", label: "Price zone", icon: Square },
   { id: "text", label: "Text note", icon: Type },
   { id: "price-note", label: "Price note", icon: Flag },
+  { id: "pin", label: "Pin note", icon: Pin },
   { id: "measure", label: "Price & time measurement", icon: Ruler },
   { id: "long", label: "Long risk / reward", icon: ArrowUpRight },
   { id: "short", label: "Short risk / reward", icon: ArrowDownRight },
@@ -380,6 +384,17 @@ export function TradesWorkstation({
     [selectedDrawing, setSelectedDrawing] = useState<string | null>(null),
     [selectedExecution, setSelectedExecution] = useState<string | null>(null);
   const [drawingsHidden, setDrawingsHidden] = useState(false);
+  const [focusJournal, setFocusJournal] = useState(false);
+  const focusDock = useRef<FocusDockState>({ snapshot: null });
+  const [viewingEvidence, setViewingEvidence] = useState<{ tradeId: string; id: string } | null>(null);
+  const openEvidence = useCallback((id: string) => { if (trade) setViewingEvidence({ tradeId: trade.id, id }); }, [trade]);
+  const closeEvidence = useCallback(() => setViewingEvidence(null), []);
+  const [drawingList, setDrawingList] = useState<HTMLDivElement | null>(null);
+  const [drawingSelection, setDrawingSelection] = useState(0);
+  const selectChartDrawing = useCallback((id: string | null) => {
+    setSelectedDrawing(id);
+    if (id) setDrawingSelection(value => value + 1);
+  }, []);
   const [imageDestination, setImageDestination] = useState<ReviewSectionKey>("entry");
   const imageGeneration = useRef(0);
   const imageEditable = useRef(false);
@@ -401,7 +416,7 @@ export function TradesWorkstation({
   const [replay, setReplay] = useState<number | null>(null),
     [playing, setPlaying] = useState(false),
     [speed, setSpeed] = useState(1);
-  imageEditable.current = !!trade && !trade.stale && replay === null;
+  imageEditable.current = !!trade && !trade.stale;
   useEffect(() => { setPlaying(false); setReplay(null); }, [selectedTrade?.id, selectedTrade?.timeInterpretationVersion]);
   const [undo, setUndo] = useState<Drawing[][]>([]),
     [redo, setRedo] = useState<Drawing[][]>([]);
@@ -424,15 +439,35 @@ export function TradesWorkstation({
   const operation = useRef(false);
   const reviewContext = useRef({ id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: 0 });
   if (reviewContext.current.id !== trade?.id || reviewContext.current.timeVersion !== trade?.timeInterpretationVersion) reviewContext.current = { id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: reviewContext.current.generation + 1 };
-  useEffect(() => { peerCaptureGeneration.current++; setPeerComparison(null); }, [trade?.id, trade?.timeInterpretationVersion, replay]);
+  useEffect(() => { peerCaptureGeneration.current++; setPeerComparison(null); }, [trade?.id, trade?.timeInterpretationVersion]);
   useEffect(() => { setNotionPackage(null); setModal(value => value === "notion" || value === "attach" ? null : value); }, [trade?.id]);
-  useEffect(() => { imageGeneration.current++; setModal(value => value === "image" ? null : value); }, [trade?.id, trade?.timeInterpretationVersion, trade?.stale, replay]);
+  useEffect(() => { imageGeneration.current++; setModal(value => value === "image" ? null : value); }, [trade?.id, trade?.timeInterpretationVersion, trade?.stale]);
   useEffect(() => () => { reviewContext.current.generation++; }, []);
   const pendingDate = useRef<{ tradeId: string; time: number; panel: string | null } | null>(null);
   const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
   const notify = useCallback((message: string) => setNotice(message), []),
     closeModal = useCallback(() => { imageGeneration.current++; setModal(null); }, []);
+  useEffect(() => { setViewingEvidence(null); }, [trade?.id]);
+  useEffect(() => {
+    if (viewingEvidence && !documentState?.evidence.some(e => e.id === viewingEvidence.id)) setViewingEvidence(null);
+  }, [viewingEvidence, documentState?.evidence]);
+  useEffect(() => { setFocusJournal(false); }, [preferences.focusMode]);
+  useEffect(() => {
+    const list = drawingList;
+    if (!list || !selectedDrawing || fullscreenChart) return;
+    const reveal = () => {
+      if (!list.checkVisibility({ visibilityProperty: true }) || !list.clientHeight) return;
+      const row = Array.from(list.querySelectorAll<HTMLElement>("[data-drawing-id]")).find(node => node.dataset.drawingId === selectedDrawing);
+      if (!row) return;
+      const outer = list.getBoundingClientRect(), inner = row.getBoundingClientRect();
+      if (inner.top < outer.top) list.scrollTop += inner.top - outer.top;
+      else if (inner.bottom > outer.bottom) list.scrollTop += inner.bottom - outer.bottom;
+    };
+    const frame = requestAnimationFrame(reveal), observer = new ResizeObserver(reveal);
+    observer.observe(list);
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [drawingList, selectedDrawing, drawingSelection, fullscreenChart, mobileTab, documentState?.drawings]);
   const changePreferences = useCallback(
     (patch: Partial<WorkspacePreferences>) => {
       if (patch.theme && !setAppearance(patch.theme)) setNotice("Appearance could not be saved on this device.");
@@ -705,6 +740,9 @@ export function TradesWorkstation({
       setFullscreenChart(null);
       changePreferences({ focusMode: !preferences.focusMode });
       handles.current.get(chartId)?.focus();
+    } else if (id.startsWith("panel.")) {
+      setFullscreenChart(null);
+      showPanel(id.slice(6) as "executions" | "evidence" | "drawings");
     } else if (id === "chart.beforeTrade" || id === "chart.fit" || id === "chart.session" || id === "chart.comparison" || id === "chart.labels") {
       const handle = handles.current.get(chartId);
       if (id === "chart.beforeTrade") handle?.beforeTrade();
@@ -731,7 +769,7 @@ export function TradesWorkstation({
   };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing || e.repeat || e.getModifierState("AltGraph") || modal) return;
+      if (e.defaultPrevented || e.isComposing || e.repeat || e.getModifierState("AltGraph") || modal || viewingEvidence) return;
       const target = e.target instanceof Element ? e.target : null;
       if (!target || !root.current?.contains(target)) return;
       if (e.key === "Tab" && fullscreenChart) {
@@ -812,6 +850,7 @@ export function TradesWorkstation({
     (event: DockviewReadyEvent) => {
       dockDispose.current?.();
       dock.current = event.api;
+      focusDock.current = { snapshot: null };
       try {
         if (prefRef.current.dock)
           event.api.fromJSON(prefRef.current.dock as SerializedDockview);
@@ -819,18 +858,29 @@ export function TradesWorkstation({
       } catch {
         buildDock(event.api);
       }
-      applyWorkspaceVisibility(event.api, prefRef.current);
-      const sub = event.api.onDidLayoutChange(() =>
-        changePreferences({ dock: event.api.toJSON() }),
-      );
+      applyWorkspaceVisibility(event.api, { ...prefRef.current, focusMode: false });
+      syncFocusDock(event.api, prefRef.current, focusDock.current, false);
+      const sub = event.api.onDidLayoutChange(() => {
+        if (!prefRef.current.focusMode && !focusDock.current.snapshot) changePreferences({ dock: event.api.toJSON() });
+      });
       dockDispose.current = () => sub.dispose();
     },
     [buildDock, changePreferences],
   );
   useEffect(() => {
-    if (dock.current && !isSmall)
-      applyWorkspaceVisibility(dock.current, preferences);
-  }, [preferences, isSmall]);
+    if (!dock.current || isSmall) return;
+    const before = document.activeElement as HTMLElement | null;
+    const focusedChart = before?.closest<HTMLElement>("[data-chart-id]")?.dataset.chartId;
+    syncFocusDock(dock.current, preferences, focusDock.current, focusJournal);
+    // Moving/restoring dock panels can remount the focused chart. Preserve
+    // keyboard continuity, without stealing focus from the Journal toggle.
+    if (focusedChart) {
+      const frame = requestAnimationFrame(() => {
+        if (!before?.isConnected || document.activeElement === document.body) handles.current.get(focusedChart)?.focus();
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [preferences, isSmall, focusJournal]);
   const showPanel = (id: keyof typeof names) => {
     if (id === "journal")
       changePreferences({ journal: true, focusMode: false });
@@ -841,6 +891,9 @@ export function TradesWorkstation({
       setMobileTab(names[id]);
       return;
     }
+    // Restore the normal dock before activating the requested tab; otherwise
+    // the Focus exit effect would restore the old tab over this selection.
+    if (focusDock.current.snapshot) syncFocusDock(api, { ...preferences, focusMode: false }, focusDock.current, false);
     let panel = api.getPanel(id);
     if (!panel)
       panel = api.addPanel({
@@ -902,15 +955,12 @@ export function TradesWorkstation({
   const capture = async (kind: "active" | "layout" | "copy" | "attach", destination?: ReviewSectionKey) => {
     if (busy || operation.current) return;
     if (kind === "attach" && !destination) { setModal("attach"); return; }
-    if (kind === "attach" && (trade.stale || replay !== null || !documentState)) { notify("Open an editable review before attaching a chart."); return; }
+    if (kind === "attach" && (trade.stale || !documentState)) { notify("Open an editable review before attaching a chart."); return; }
     const generation = reviewContext.current.generation;
     const assertCurrent = () => { if (reviewContext.current.generation !== generation) throw new Error("Chart capture cancelled because the selected trade changed."); };
     operation.current = true;
     setBusy("Preparing chart export…");
     try {
-      if (kind === "attach" && !(await persistence.flush()))
-        throw new Error("Save the review before attaching a chart.");
-      assertCurrent();
       const selected =
         handles.current.get(activeChart) ??
         (handles.current.values().next().value as ChartHandle | undefined);
@@ -921,6 +971,9 @@ export function TradesWorkstation({
         return { x: Number.parseFloat(node.style.left), y: Number.parseFloat(node.style.top), width: Number.parseFloat(node.style.width), height: Number.parseFloat(node.style.height) };
       });
       if (kind === "layout" && fullscreenChart) throw new Error("Restore the chart to export the complete layout. Active chart export is available in fullscreen.");
+      // Calling each handle freezes its candles, annotations and replay frame
+      // synchronously, before waiting for either rendering or review saves.
+      const capturedReplay = replay, capturedAt = Date.now() / 1000;
       const canvas = kind === "layout" ? compositeCharts(await Promise.all(preferences.panels.map((p, i) => {
         const handle = handles.current.get(p.id);
         if (!handle) throw new Error("A chart is not ready.");
@@ -939,11 +992,14 @@ export function TradesWorkstation({
             : "Image clipboard unavailable. Your PNG has been downloaded.",
         );
       else if (kind === "attach") {
+        if (!(await persistence.flush())) throw new Error("Save the review before attaching a chart.");
+        assertCurrent();
         const evidence = {
           id: crypto.randomUUID(),
           name: `${reviewSections.find(([key]) => key === destination)?.[1]} · ${name}`,
           image: canvas.toDataURL("image/png"),
-          time: replay ?? Date.now() / 1000,
+          time: capturedAt,
+          ...(capturedReplay === null ? {} : { replayAt: capturedReplay }),
           revision: persistence.getDocument()?.revision ?? 0,
           timeframe: interval,
           timeInterpretationVersion: trade.timeInterpretationVersion ?? "original",
@@ -952,7 +1008,7 @@ export function TradesWorkstation({
         if (await persistence.flush()) {
           assertCurrent();
           setModal(null);
-          showPanel("evidence");
+          if (!preferences.focusMode && !fullscreenChart) showPanel("evidence");
           notify("Annotated chart attached to this trade’s journal.");
         }
       } else {
@@ -969,26 +1025,27 @@ export function TradesWorkstation({
   const getPeerWorkspaceView = (): PeerView => {
     const panel = preferences.panels.find(p => p.id === activeChart) ?? preferences.panels[0];
     const range = handles.current.get(panel.id)?.view() ?? initialHistoryRange(trade, panel.interval);
-    return { range, interval: panel.interval, session: tradeChartSession(trade, panel.session), adjustment: chartAdjustments[panel.id] ? "split" : "raw", beforeEntry: panel.beforeEntry ?? false };
+    return { range, interval: panel.interval, session: tradeChartSession(trade, panel.session), adjustment: chartAdjustments[panel.id] ? "split" : "raw", beforeEntry: panel.beforeEntry ?? false, ...(replay === null ? {} : { replayAt: replay }) };
   };
   const selectPeerGroup = (peerGroupId: string) => {
-    if (!trade.stale && replay === null && persistence.getDocument()?.review.notion?.peerGroupId !== peerGroupId) persistence.change(d => ({ ...d, review: { ...d.review, notion: { ...d.review.notion ?? emptyNotionReview(), peerGroupId } } }));
+    if (!trade.stale && persistence.getDocument()?.review.notion?.peerGroupId !== peerGroupId) persistence.change(d => ({ ...d, review: { ...d.review, notion: { ...d.review.notion ?? emptyNotionReview(), peerGroupId } } }));
   };
   const openPeers = (selection: PeerGroupSelection) => {
+    setPlaying(false);
     peerCaptureGeneration.current++;
     selectPeerGroup(selection.group.id);
     setPeerComparison({ tradeId: trade.id, selection, initial: getPeerWorkspaceView() });
   };
   const closePeers = () => { peerCaptureGeneration.current++; setPeerComparison(null); };
   const capturePeer = async (canvas: HTMLCanvasElement, metadata: PeerCapture) => {
-    if (operation.current || trade.stale || replay !== null) throw new Error("Open an editable review and finish the current save before attaching.");
+    if (operation.current || trade.stale) throw new Error("Open an editable review and finish the current save before attaching.");
     const generation = reviewContext.current.generation, peerGeneration = peerCaptureGeneration.current;
     const assertCurrent = () => { if (generation !== reviewContext.current.generation || peerGeneration !== peerCaptureGeneration.current) throw new Error("Capture cancelled because the comparison or selected trade changed."); };
     operation.current = true;
     try {
       if (!(await persistence.flush())) throw new Error("Save the review before attaching a comparison.");
       assertCurrent();
-      const evidence = { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.now() / 1000, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata };
+      const evidence = { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.parse(metadata.capturedAt) / 1000, replayAt: metadata.replayAt, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata };
       persistence.change(d => attachEvidence(d, evidence, "peers"));
       if (!(await persistence.flush())) throw new Error("The chart remains in your recovery draft. Retry saving the review.");
       assertCurrent(); notify("Comparison chart attached to Peers.");
@@ -1012,11 +1069,11 @@ export function TradesWorkstation({
       assertCurrent(); validateImported(image);
       persistence.change(d => d.evidence.some(e => e.id === image.id) ? d : attachEvidence(d, { ...image, time: Date.now() / 1000, timeframe: "", revision: d.revision }, imageDestination));
       if (!(await persistence.flush())) throw new Error("The image remains in your recovery draft. Retry saving the review.");
-      assertCurrent(); setModal(null); showPanel("evidence"); notify("Image attached to this review.");
+      assertCurrent(); setModal(null); if (!preferences.focusMode && !fullscreenChart) showPanel("evidence"); notify("Image attached to this review.");
     } finally { operation.current = false; setBusy(""); }
   };
   const prepareNotionExport = async () => {
-    if (busy || operation.current || replay !== null || !documentState) return;
+    if (busy || operation.current || !documentState) return;
     operation.current = true; setBusy("Preparing Notion export…");
     const generation = reviewContext.current.generation;
     try {
@@ -1031,7 +1088,7 @@ export function TradesWorkstation({
     finally { operation.current = false; setBusy(""); }
   };
   const exportReviews = async () => {
-    if (busy || replay !== null) return;
+    if (busy) return;
     setBusy("Preparing review export…");
     try {
       if (!(await persistence.flush()))
@@ -1230,6 +1287,10 @@ export function TradesWorkstation({
           )}
           <span>{preferences.focusMode ? "Restore" : "Focus"}</span>
         </button>
+        {preferences.focusMode && <button className={`ws-tool-button ${focusJournal ? "active" : ""}`} aria-label={focusJournal ? "Hide focus journal" : "Show focus journal"} aria-expanded={focusJournal} onClick={() => {
+          setFocusJournal(value => !value);
+          if (isSmall) setMobileTab(focusJournal ? "Charts" : "Journal");
+        }}><BookOpen size={15} /><span>Journal</span></button>}
         <button
           className="ws-tool-button"
           aria-label="Chart settings"
@@ -1341,7 +1402,8 @@ export function TradesWorkstation({
                 })
               }
               onDrawing={saveDrawing}
-              onSelect={setSelectedDrawing}
+              onSelect={selectChartDrawing}
+              onEditDrawing={id => { setSelectedDrawing(id); requestAnimationFrame(() => root.current?.querySelector<HTMLInputElement>('[aria-label="Annotation text"]')?.focus()); }}
               onExecution={focusExecution}
               onToolDone={() => setTool("cursor")}
               register={register}
@@ -1365,7 +1427,7 @@ export function TradesWorkstation({
             value={chosenDrawing.text}
             placeholder="Add a note or label…"
             maxLength={500}
-            disabled={chosenDrawing.locked}
+            disabled={chosenDrawing.locked || trade.stale}
             onChange={(e) =>
               saveDrawing({ ...chosenDrawing, text: e.target.value })
             }
@@ -1608,7 +1670,7 @@ export function TradesWorkstation({
       onSaveNext={() => runCommand("review.next")}
       saveNextShortcut={shortcutLabel(shortcuts.value.bindings["review.next"])}
       onEvidence={section => void capture("attach", section)}
-      onImage={section => { if (!trade.stale && replay === null) { imageGeneration.current++; setImageDestination(section); setModal("image"); } }}
+      onImage={section => { if (!trade.stale) { imageGeneration.current++; setImageDestination(section); setModal("image"); } }}
       onComparePeers={openPeers}
       onNotionExport={() => void prepareNotionExport()}
       preferences={preferences}
@@ -1722,9 +1784,10 @@ export function TradesWorkstation({
   );
   const evidenceContent = (
     <div className="ws-evidence">
+      {replay !== null && <p className="ws-replay-notice" role="note">Saved evidence may contain hindsight. New chart captures record the current replay cutoff.</p>}
       <div className="ws-executions-toolbar">
         <span>Evidence saved with this review</span>
-        <button disabled={trade.stale || replay !== null} onClick={() => void capture("attach")}>
+        <button disabled={trade.stale} onClick={() => void capture("attach")}>
           <Camera size={14} /> Capture chart
         </button>
       </div>
@@ -1739,50 +1802,30 @@ export function TradesWorkstation({
       ) : (
         <div className="ws-evidence-grid">
           {documentState.evidence
-            .filter((e) => replay === null || e.time <= replay)
             .map((e) => (
               <div key={e.id}>
-                <a href={e.image} download={e.name}>
-                  {/* Embedded PNG evidence needs no remote image optimizer. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    width={160}
-                    height={85}
-                    loading="lazy"
-                    src={e.image}
-                    alt={e.name}
-                  />
-                </a>
+                <EvidenceThumbnail evidence={e} />
                 <strong className="ws-evidence-name">{e.name}</strong>
                 <small className="ws-evidence-source">{evidenceSource(e)}</small>
                 <span>
                   {e.origin ? "Imported image" : e.timeframe} · r{e.revision}
                   {earlierTimestampBasis(e, trade.timeInterpretationVersion ?? "original") && (e.timeInterpretationVersion || trade.executions.some(fill => fill.provenance?.interpretationStatus === "applied")) && <small>Earlier timestamp basis</small>}
-                  <button
-                    title="Download chart"
-                    onClick={() => {
-                      const a = window.document.createElement("a");
-                      a.href = e.image;
-                      a.download = e.name;
-                      a.click();
-                    }}
-                  >
-                    <Download size={12} />
-                  </button>
+                  <EvidenceDownload evidence={e} />
                   <button
                     title="Remove attachment"
-                    disabled={trade.stale || replay !== null}
+                    disabled={trade.stale}
                     onClick={() =>
-                      { if (!trade.stale && replay === null) persistence.change(d => removeEvidence(d, e.id)); }
+                      { if (!trade.stale) persistence.change(d => removeEvidence(d, e.id)); }
                     }
                   >
                     <Trash2 size={12} />
                   </button>
                 </span>
+                {e.replayAt !== undefined && <small>Replay · {new Date(e.replayAt * 1000).toISOString()}</small>}
                 <p className="ws-evidence-assignments">{reviewSections.filter(([key]) => sectionEvidenceIds(documentState.review.notion, key).includes(e.id)).map(([, label]) => label).join(", ") || "Unassigned"}</p>
                 <details className="ws-evidence-sections"><summary>Assign sections</summary>
-                  {reviewSections.map(([key, label]) => <label key={key}><input type="checkbox" checked={sectionEvidenceIds(documentState.review.notion, key).includes(e.id)} disabled={trade.stale || replay !== null}
-                    onChange={event => { const checked = event.target.checked; if (!trade.stale && replay === null) persistence.change(d => ({ ...d, review: { ...d.review, notion: assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked) } })); }} />{label}</label>)}
+                  {reviewSections.map(([key, label]) => <label key={key}><input type="checkbox" checked={sectionEvidenceIds(documentState.review.notion, key).includes(e.id)} disabled={trade.stale}
+                    onChange={event => { const checked = event.target.checked; if (!trade.stale) persistence.change(d => ({ ...d, review: { ...d.review, notion: assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked) } })); }} />{label}</label>)}
                 </details>
               </div>
             ))}
@@ -1791,7 +1834,7 @@ export function TradesWorkstation({
     </div>
   );
   const drawingsContent = (
-    <div className="ws-object-list">
+    <div className="ws-object-list" ref={setDrawingList}>
       <header className="ws-drawings-visibility"><button aria-pressed={drawingsHidden} onClick={() => { handles.current.forEach(handle => handle.cancel()); setTool("cursor"); setDrawingsHidden(value => !value); }}>
         {drawingsHidden ? <EyeOff size={14} /> : <Eye size={14} />}{drawingsHidden ? "Show drawings" : "Hide all drawings"}
       </button>{drawingsHidden && <small>Temporarily hidden in charts and captures</small>}</header>
@@ -1800,7 +1843,7 @@ export function TradesWorkstation({
         .map((d) => {
           const shown = splitAdjustedDrawing(d, chartAdjustments[d.panel ?? activeChart]);
           return (
-          <div key={d.id} className={d.id === selectedDrawing ? "active" : ""}>
+          <div key={d.id} data-drawing-id={d.id} className={d.id === selectedDrawing ? "active" : ""}>
             <button
               onClick={() => {
                 setSelectedDrawing(d.id);
@@ -1861,7 +1904,9 @@ export function TradesWorkstation({
     evidence: evidenceContent,
     drawings: drawingsContent,
   };
+  const previewEvidence = viewingEvidence?.tradeId === trade.id ? documentState?.evidence.find(e => e.id === viewingEvidence.id) : undefined;
   return (
+    <EvidenceViewerContext.Provider value={openEvidence}>
     <div
       ref={root}
       className={`workstation ws-${preferences.theme} ${fullscreenChart ? "ws-has-fullscreen" : ""} ${!preferences.heading ? "ws-heading-collapsed" : ""} ${preferences.focusMode ? "ws-focus" : ""} ${adapter.mode === "application" ? "ws-embedded" : ""}`}
@@ -2163,7 +2208,17 @@ export function TradesWorkstation({
                     <button
                       className={mobileTab === name ? "active" : ""}
                       key={id}
-                      onClick={() => setMobileTab(name)}
+                      aria-label={preferences.focusMode && name === "Journal" && mobileTab === "Journal" ? "Hide focus journal" : undefined}
+                      onClick={() => {
+                        if (preferences.focusMode) {
+                          if (name === "Journal") {
+                            const closing = mobileTab === "Journal";
+                            setFocusJournal(!closing); setMobileTab(closing ? "Charts" : "Journal"); return;
+                          }
+                          setFocusJournal(false);
+                        }
+                        setMobileTab(name);
+                      }}
                     >
                       {name}
                     </button>
@@ -2299,9 +2354,10 @@ export function TradesWorkstation({
           </button>
         </div>
       )}
-      {peerComparison?.tradeId === trade.id && replay === null && <PeerComparison key={`${trade.id}:${trade.timeInterpretationVersion}`} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
+      {peerComparison?.tradeId === trade.id && <PeerComparison key={`${trade.id}:${trade.timeInterpretationVersion}`} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
       {modal === "attach" && <Modal title="Attach current chart" onClose={closeModal}>
         <p>Choose the review section for the active chart.</p>
+        <label className="ws-capture-notes"><input type="checkbox" checked={preferences.capturePinNotes === true} onChange={e => changePreferences({ capturePinNotes: e.target.checked })} />Include pin notes in captures</label>
         <div className="ws-export-actions">{reviewSections.map(([key, label]) => <button key={key} disabled={!!busy} onClick={() => void capture("attach", key)}>{label}</button>)}</div>
         {busy && <p role="status">{busy}</p>}
       </Modal>}
@@ -2333,6 +2389,7 @@ export function TradesWorkstation({
               <Camera size={16} /> Chart snapshots
             </h3>
             <div className="ws-export-options">
+              <label><input type="checkbox" checked={preferences.capturePinNotes === true} onChange={e => changePreferences({ capturePinNotes: e.target.checked })} /> Include pin notes in captures</label>
               <label>
                 <input
                   type="checkbox"
@@ -2446,15 +2503,12 @@ export function TradesWorkstation({
             </div>
             <button
               className="ws-primary ws-wide"
-              disabled={!!busy || !columns.length || replay !== null}
+              disabled={!!busy || !columns.length}
               onClick={() => void exportReviews()}
             >
               <Download size={15} />
               {busy || "Export review"}
             </button>
-            {replay !== null && (
-              <p className="ws-help">Exit replay to export the saved review.</p>
-            )}
           </div>
         </Modal>
       )}
@@ -2548,6 +2602,11 @@ export function TradesWorkstation({
                 if (Number.isInteger(period) && period >= 1 && period <= 500) changePreferences({ volumeAverage: { ...preferences.volumeAverage, period } });
               }} />
             </label>
+            <label>
+              <span>Include pin notes in captures</span>
+              <input type="checkbox" checked={preferences.capturePinNotes === true} onChange={e => changePreferences({ capturePinNotes: e.target.checked })} />
+            </label>
+            <VolumeSettings preferences={preferences} onChange={changePreferences} />
             <label>
               <span>Horizontal gridlines</span>
               <input type="checkbox" checked={preferences.gridlines.horizontal} onChange={e => changePreferences({ gridlines: { ...preferences.gridlines, horizontal: e.target.checked } })} />
@@ -2843,6 +2902,8 @@ export function TradesWorkstation({
           </div>
         </Modal>
       )}
+      {previewEvidence && <EvidenceViewer evidence={previewEvidence} onClose={closeEvidence} />}
     </div>
+    </EvidenceViewerContext.Provider>
   );
 }

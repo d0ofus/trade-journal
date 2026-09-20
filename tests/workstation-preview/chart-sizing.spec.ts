@@ -102,6 +102,8 @@ test("MU mismatch details preserve the timestamp and explain the price discrepan
   await page.locator(".ws-diagnostic-list").getByRole("button", { name: /SELL 6 @ 1008.71/ }).click();
   const details = page.getByRole("dialog", { name: "Execution details", exact: true });
   await expect(details).toContainText("2026-09-08 15:09:25 UTC");
+  await expect(details.getByText("Provider / feed", { exact: true })).not.toBeVisible();
+  await details.getByText("More details", { exact: true }).click();
   await expect(details).toContainText("2026-09-08 15:05:00 UTC");
   await expect(details).toContainText("1015.3900 / 1017.6600");
   await expect(details).toContainText("6.6800"); await expect(details).toContainText("Unverified");

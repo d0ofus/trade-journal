@@ -1,4 +1,5 @@
 import { defaultPreferences, intervals, type ChartPanel, type ChartSessionPreference, type WorkspacePreferences } from "./types";
+import { restoreVolumeAppearance } from "./volume-style";
 
 export function parseMovingAveragePeriods(fields: string[]): { periods: number[]; error?: never } | { error: string; periods?: never } {
   const values = fields.map(field => field.trim()).filter(Boolean);
@@ -29,6 +30,8 @@ export function restoreChartPanels(value: unknown, legacySession?: unknown): Cha
 export function restoreChartDisplay(value: Partial<WorkspacePreferences>) {
   const period = value.volumeAverage?.period;
   return {
+    volumeStyle: restoreVolumeAppearance(value.volumeStyle),
+    capturePinNotes: value.capturePinNotes === true,
     volumeAverage: {
       enabled: value.volumeAverage?.enabled !== false,
       period: typeof period === "number" && Number.isInteger(period) && period >= 1 && period <= 500 ? period : 20,

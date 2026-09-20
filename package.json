@@ -19,7 +19,7 @@
     "test:repo-safety": "node --test scripts/repository-safety/scanner.test.mjs",
     "test:cutover-preflight": "node --test scripts/repository-safety/cutover-preflight.test.mjs",
     "test:watch": "vitest",
-    "test:workstation": "tsx --test src/lib/workstation/workstation.test.ts src/lib/workstation/history.test.ts src/lib/workstation/shortcuts.test.ts",
+    "test:workstation": "tsx --test src/lib/workstation/workstation.test.ts src/lib/workstation/history.test.ts src/lib/workstation/shortcuts.test.ts src/lib/workstation/chart-interaction.test.ts",
     "test:workstation:browser": "playwright test --config playwright.workstation.config.ts",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",

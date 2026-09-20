@@ -1,5 +1,7 @@
 # Drawing visibility and external evidence
 
+The later [chart/journal interaction release](chart-interaction-journal.md) supersedes this release's replay attachment restriction: journal and evidence editing are now available during replay, while stale trades remain read-only.
+
 ## Behavior
 
 - Selected drawings have a Hide/Show action in the bottom properties banner. This saves the existing per-drawing visibility flag and participates in undo/redo; the banner stays available for showing the drawing again.

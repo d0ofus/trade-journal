@@ -2,6 +2,7 @@
 import { assignSectionEvidence, sectionEvidenceIds } from "@/lib/workstation/evidence";
 import { emptyNotionReview, reviewSections, type ReviewSectionKey } from "@/lib/workstation/notion-template";
 import type { Review, TradeDocument } from "@/lib/workstation/types";
+import { EvidenceDownload, EvidenceThumbnail } from "./evidence-preview";
 
 export function SectionAttachments({ section, document, onChange, onEvidence, onImage, readOnly = false }: {
   section: ReviewSectionKey; document: TradeDocument;
@@ -21,10 +22,8 @@ export function SectionAttachments({ section, document, onChange, onEvidence, on
       <button type="button" disabled={readOnly} onClick={() => onImage(section)}>Attach image</button>
     </div>
     {document.evidence.filter(e => ids.includes(e.id)).map(e => <figure key={e.id} className="ws-section-preview">
-      {/* Stored, size-validated PNG evidence; Next image optimization is unnecessary. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <a href={e.image} download={`${e.name.replace(/\.png$/i, "").replace(/[^a-z0-9._-]/gi, "_")}.png`}><img src={e.image} alt={e.name} loading="lazy" /></a>
-      <figcaption><button type="button" disabled={readOnly} onClick={() => assign(e.id, false)} aria-label={`Detach ${e.name} from ${label}`}>Detach</button></figcaption>
+      <EvidenceThumbnail evidence={e} />
+      <figcaption><EvidenceDownload evidence={e} /><button type="button" disabled={readOnly} onClick={() => assign(e.id, false)} aria-label={`Detach ${e.name} from ${label}`}>Detach</button></figcaption>
     </figure>)}
   </div>;
 }

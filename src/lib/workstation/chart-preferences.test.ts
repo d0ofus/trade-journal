@@ -32,8 +32,8 @@ describe("chart session and display preferences", () => {
     expect(viewPreferences(view)).not.toHaveProperty("chartSession");
   });
   it("defaults old display settings and validates average periods", () => {
-    expect(restoreChartDisplay({})).toEqual({ volumeAverage: { enabled: true, period: 20 }, gridlines: { horizontal: true, vertical: true } });
-    expect(restoreChartDisplay({ volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } })).toEqual({ volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } });
+    expect(restoreChartDisplay({})).toEqual({ volumeStyle: {}, capturePinNotes: false, volumeAverage: { enabled: true, period: 20 }, gridlines: { horizontal: true, vertical: true } });
+    expect(restoreChartDisplay({ volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } })).toEqual({ volumeStyle: {}, capturePinNotes: false, volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } });
     for (const period of [0, -1, 501, 1.5, NaN, Infinity]) expect(restoreChartDisplay({ volumeAverage: { enabled: true, period } }).volumeAverage.period).toBe(20);
   });
 });

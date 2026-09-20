@@ -7,7 +7,7 @@ import ts from "typescript";
 
 const key = "execution-lab:workstation:preferences:demo:v1";
 const format = (bar: Candle) => [bar.open, bar.high, bar.low, bar.close].map(n => n.toFixed(2));
-const values = (chart: Locator) => chart.locator(".ws-ohlc b").allTextContents();
+const values = (chart: Locator) => chart.locator(".ws-ohlc [data-ohlc]").allTextContents();
 const fixture = (interval: Interval, trade = demoTrades[0]) => aggregateCandles(demoCandles(trade), interval);
 
 async function open(page: Page, count = 3, benchmark = "off") {
@@ -37,7 +37,8 @@ async function open(page: Page, count = 3, benchmark = "off") {
     };
     window.addEventListener("workstation-crosshair", event => { state.ohlcTime = (event as CustomEvent).detail.time; });
   }, { key, count, prefs: defaultPreferences(), benchmark });
-  await page.goto("/preview/trades");
+  // Opening-order sorting can select a different trade than this NVDA fixture.
+  await page.goto(`/preview/trades?groupKey=${demoTrades[0].id}`);
   await expect(page.locator(".ws-chart")).toHaveCount(count);
   for (const chart of await page.locator(".ws-chart").all()) {
     await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/);
@@ -116,7 +117,7 @@ test("retained OHLC survives unrelated renders, history merging and fullscreen; 
   await expect.poll(() => values(first)).not.toEqual(daily);
   await hover(page, first, .4);
   const tsla = await values(first);
-  await page.getByLabel("Chart session", { exact: true }).selectOption("extended");
+  await page.getByLabel("Chart session chart-1", { exact: true }).selectOption("extended");
   await expect(first.locator('[data-ohlc="close"]')).toBeVisible();
   await expect.poll(() => values(first)).not.toEqual(tsla);
   expect(errors).toEqual([]); expect(requests).toEqual([]);

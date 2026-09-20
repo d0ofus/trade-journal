@@ -17,6 +17,7 @@ const config = {
       "src/lib/workstation/workstation.test.ts",
       "src/lib/workstation/history.test.ts",
       "src/lib/workstation/shortcuts.test.ts",
+      "src/lib/workstation/chart-interaction.test.ts",
     ],
     testTimeout: 60_000,
     hookTimeout: 60_000,

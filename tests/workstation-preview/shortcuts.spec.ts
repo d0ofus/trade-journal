@@ -5,7 +5,7 @@ async function open(page: Page) {
   const errors: string[] = [], requests: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/**", route => { requests.push(route.request().url()); return route.abort(); });
-  await page.goto("/preview/trades");
+  await page.goto("/preview/trades?groupKey=demo-nvda");
   await expect(page.locator(".ws-chart-state")).toHaveCount(0);
   await expect(page.locator(".ws-chart").first()).toHaveAttribute("data-visible-from", /\d+/);
   return { errors, requests };
