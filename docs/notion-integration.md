@@ -1,6 +1,6 @@
 # Notion publishing and template-driven reviews
 
-This release adds a server-held Notion connection, template-driven journal layout, and explicit single-review publishing. It is not background two-way content synchronization. **Production rollout is held until all release gates below pass.**
+This release adds a server-held Notion connection, template-driven journal layout, and explicit single-review publishing. It is not background two-way content synchronization. Release prerequisites and outstanding validation gaps are recorded below.
 
 ## Layout and saved data
 
@@ -50,6 +50,14 @@ Local validation uses `trade_journal_notion_test` on `127.0.0.1:15439`, with mat
 
 Local validation on 21 September 2026 passed: 131 focused unit/API/database/preservation tests, 118 provider regressions, 65 workstation tests, application/build and focused-validation TypeScript checks, changed-file lint, current-tree repository safety, and the optimized production build. The repository-wide generic TypeScript command still reports existing test-typing issues outside the focused validation configuration; it is not counted as passed.
 
-Launching the local authenticated browser server was rejected by the execution environment; **authenticated browser, deployed preview and live Notion write validation remain unverified**. A read-only prerequisite recheck confirmed that the six related databases remain inaccessible, numeric Exit is absent, and the token is scoped only to Vercel Development. Production rollout and the `main` push must stay on hold until the release gates are completed. No production migration or Worker deployment was run.
+Launching the local authenticated browser server was rejected by the execution environment; **authenticated browser and deployed preview validation remain unverified**. At the initial check, relation access and numeric Exit were missing. A subsequent user-approved live test on 21 September confirmed all six related databases are accessible and Exit is numeric. The user then requested committing and pushing the release to `main`. Vercel subsequently returned HTTP 403, so production configuration, the pre-migration backup and the preservation re-audit still need verification before that push. No production migration or Worker deployment has been run at this checkpoint.
+
+### Approved live validation
+
+`scripts/verify-notion-live.ts` uses the real publishing implementation with a synthetic `NOTIONTEST` review in the separate local `trade_journal_notion_live_test` database on `127.0.0.1:15439`. It refuses any other database target. Never run the generic database test suites against this live-validation ledger: retain its page/upload mappings for safe resumption.
+
+The approved test created one new app-owned Notion page from the registered template and then published a second revision to that same page. Verification passed for 32 mapped properties, all 13 section destinations, six resolved relation values, the New York execution range, and 14 image placements backed by two reusable uploads. Both downloaded PNGs matched their original bytes. Unassigned evidence and legacy notes stayed in the isolated app review. The second revision added `UPDATE VERIFIED` to Takeaways. These are synthetic fixtures, not real market data; existing journals and the production app database were not used as test targets.
+
+The helper supports `prepare`, `step`, `verify`, `update`, and `inspect`. Only `step` writes to Notion, requiring both `ALLOW_LIVE_NOTION_TEST=1` and `NOTION_PUBLISH_ENABLED=1`, in addition to the normal local-test database guard. Load the token through the process environment, never a command-line argument or committed file. Run `step` explicitly to resume bounded progress; stop and inspect any reported conflict. Verification and preview modes need no Notion write flag. Human review of the resulting page's appearance is still required; this does not replace authenticated browser or deployed-preview validation.
 
 Official API references: [templates and asynchronous readiness](https://developers.notion.com/guides/data-apis/creating-pages-from-templates), [append positioning and block limits](https://developers.notion.com/reference/patch-block-children), [file upload reuse](https://developers.notion.com/guides/data-apis/uploading-small-files), [rate limits and retry semantics](https://developers.notion.com/reference/request-limits).

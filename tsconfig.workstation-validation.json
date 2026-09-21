@@ -4,6 +4,7 @@
     "incremental": false
   },
   "include": [
+    "scripts/verify-notion-live.ts",
     "src/lib/server/notion-*.test.ts",
     "src/app/api/workstation/notion/**/*.test.ts",
     "src/lib/workstation/template-layout.test.ts",
