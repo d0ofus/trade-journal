@@ -157,8 +157,10 @@ test("replay allows journal edits, workspace captures, image viewing and peer ev
   const viewer = page.getByRole("dialog", { name: `Image preview: ${evidence.name}` });
   await expect(viewer).toBeVisible(); expect(downloads).toBe(0);
   await expect(viewer.getByRole("button", { name: "Close image preview" })).toBeFocused();
+  await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: "Fit", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: "100%", exact: true })).toBeFocused();
   await page.keyboard.press("Tab"); await expect(viewer.getByRole("link", { name: `Download ${evidence.name}` })).toBeFocused();
-  await page.keyboard.press("Shift+Tab"); await expect(viewer.getByRole("button", { name: "Close image preview" })).toBeFocused();
+  await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: "Close image preview" })).toBeFocused();
   const download = page.waitForEvent("download"); await viewer.getByRole("link", { name: `Download ${evidence.name}` }).click(); await download;
   await page.keyboard.press("Escape"); await expect(viewer).toHaveCount(0);
   await expect(page.locator(".ws-section-preview").getByRole("button", { name: `View ${evidence.name}`, exact: true })).toBeFocused();

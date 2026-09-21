@@ -10,7 +10,7 @@ type Property = { key: string; label: string; kind: Kind; options?: string[]; si
 export const notionProperties = [
   { key: "entryDate", label: "Entry Date", kind: "date" },
   { key: "exitMarked", label: "Exit?", kind: "checkbox" },
-  { key: "typeOfReview", label: "Type of Review", kind: "relation", options: ["Sector Thematic"] },
+  { key: "typeOfReview", label: "Type of Review", kind: "relation", options: ["Taken Trade", "Sector Thematic"] },
   { key: "typeOfTrade", label: "Type of Trade", kind: "relation", single: true, options: ["Gapper"] },
   { key: "chartPattern", label: "Chart Pattern", kind: "relation", options: ["Gap and Go"] },
   { key: "confluences", label: "Confluences", kind: "relation", options: ["Sector Theme", "High Average Trading Volume", "Analyst Upgrades", "Strong Gap Up", "Strong RS Score", "Defined CP"] },
@@ -49,7 +49,7 @@ export const additionalReviewSections = [["properties", "Trade properties"], ...
 export const reviewSections = [...chartSections, ...additionalReviewSections] as const;
 export type ReviewSectionKey = typeof reviewSections[number][0] | `notion:${string}`;
 export type AdditionalReviewSectionKey = typeof additionalReviewSections[number][0];
-export type NotionReview = { version: 1; properties: Partial<Record<PropertyKey, NotionValue>>; sections: Partial<Record<ChartSectionKey, { html: string; evidenceIds: string[] }>>; analysis: Partial<Record<typeof analysisSections[number][0], string>>; sectionEvidence?: Partial<Record<AdditionalReviewSectionKey, string[]>>; peerGroupId?: string; dynamicSections?: Record<string, { html: string; evidenceIds: string[] }>; layout?: TemplateLayout };
+export type NotionReview = { version: 1; executedTradeDefaults?: 1; properties: Partial<Record<PropertyKey, NotionValue>>; sections: Partial<Record<ChartSectionKey, { html: string; evidenceIds: string[] }>>; analysis: Partial<Record<typeof analysisSections[number][0], string>>; sectionEvidence?: Partial<Record<AdditionalReviewSectionKey, string[]>>; peerGroupId?: string; dynamicSections?: Record<string, { html: string; evidenceIds: string[] }>; layout?: TemplateLayout };
 const html = z.string().max(20000).transform(richHtml);
 const propertyShape: Record<string, z.ZodType> = {};
 for (const p of notionProperties) {
@@ -59,8 +59,16 @@ for (const p of notionProperties) {
 }
 propertyShape.plannedEntry = z.number().finite().positive().nullable().optional();
 propertyShape.plannedStop = z.number().finite().positive().nullable().optional();
-export const notionReviewSchema = z.object({ version: z.literal(1), properties: z.object(propertyShape).strict(), sections: z.object(Object.fromEntries(chartSections.map(([key]) => [key, z.object({ html, evidenceIds: z.array(z.string().max(200)).max(30) }).strict().optional()]))).strict(), analysis: z.object(Object.fromEntries(analysisSections.map(([key]) => [key, html.optional()]))).strict(), sectionEvidence: z.object(Object.fromEntries(additionalReviewSections.map(([key]) => [key, z.array(z.string().min(1).max(200)).max(30).optional()]))).strict().optional(), peerGroupId: z.string().min(1).max(200).optional(), layout: templateLayoutSchema.optional(), dynamicSections: z.record(dynamicSectionKeySchema, z.object({ html, evidenceIds: z.array(z.string().min(1).max(200)).max(30) }).strict()).refine(value => Object.keys(value).length <= 1200).optional() }).strict().transform(v => v as NotionReview);
+export const notionReviewSchema = z.object({ version: z.literal(1), executedTradeDefaults: z.literal(1).optional(), properties: z.object(propertyShape).strict(), sections: z.object(Object.fromEntries(chartSections.map(([key]) => [key, z.object({ html, evidenceIds: z.array(z.string().max(200)).max(30) }).strict().optional()]))).strict(), analysis: z.object(Object.fromEntries(analysisSections.map(([key]) => [key, html.optional()]))).strict(), sectionEvidence: z.object(Object.fromEntries(additionalReviewSections.map(([key]) => [key, z.array(z.string().min(1).max(200)).max(30).optional()]))).strict().optional(), peerGroupId: z.string().min(1).max(200).optional(), layout: templateLayoutSchema.optional(), dynamicSections: z.record(dynamicSectionKeySchema, z.object({ html, evidenceIds: z.array(z.string().min(1).max(200)).max(30) }).strict()).refine(value => Object.keys(value).length <= 1200).optional() }).strict().transform(v => v as NotionReview);
 export const emptyNotionReview = (): NotionReview => ({ version: 1, properties: {}, sections: {}, analysis: {} });
+/** Only executed-trade workstations opt in; standalone idea journals stay unchanged. */
+export function executedTradeReviewDefaults(notion = emptyNotionReview()): NotionReview {
+  if (notion.executedTradeDefaults === 1) return notion;
+  const selected = notion.properties.typeOfReview;
+  return { ...notion, executedTradeDefaults: 1, properties: { ...notion.properties,
+    typeOfReview: Array.isArray(selected) && selected.length ? selected : ["Taken Trade"],
+  } };
+}
 export function stopLossPercent(n?: NotionReview): number | null {
   const entry = n?.properties.plannedEntry, stop = n?.properties.plannedStop;
   return typeof entry === "number" && entry > 0 && typeof stop === "number" && stop > 0 ? Math.abs(entry - stop) / entry * 100 : null;

@@ -119,6 +119,24 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     expect(record.lastRevision).toBe(f.doc.revision); expect(record.activeJobId).toBeNull();
     expect(await readWorkstationDocument(f.groupKey)).toEqual(f.doc);
     expect(remote.call.mock.calls.filter(([path, method]) => path.endsWith("/send") && method === "POST")).toHaveLength(1);
+    const upload = remote.call.mock.calls.find(([path]) => path.endsWith("/send"))![2] as unknown as FormData;
+    expect(Buffer.from(await (upload.get("file") as Blob).arrayBuffer())).toEqual(Buffer.from("image"));
+  });
+  it("keeps identical ticker titles on distinct trade mappings and preserves frozen job properties", async () => {
+    const first = await fixture(), second = await fixture();
+    for (const f of [first, second]) {
+      // A job created before new mapping rules must retain its exact frozen title/prices.
+      await startNotionPublication(f.job.id, f.groupKey);
+      expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    }
+    expect(pages.size).toBe(2);
+    const records = await prisma.notionPublication.findMany({ where: { groupKey: { in: [first.groupKey, second.groupKey] } } });
+    expect(new Set(records.map(r => r.pageId)).size).toBe(2);
+    for (const page of pages.values()) {
+      const properties = page.properties as Record<string, JsonObject>;
+      expect(properties.Trade.title).toEqual((first.plan.properties.title as JsonObject).title);
+      expect(properties.Entry.number).toBe(100);
+    }
   });
   it("reconciles a lost page response without creating another page", async () => {
     const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);

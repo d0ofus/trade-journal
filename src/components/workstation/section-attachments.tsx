@@ -4,6 +4,7 @@ import { emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/noti
 import type { Review, TradeDocument } from "@/lib/workstation/types";
 import { EvidenceDownload, EvidenceThumbnail } from "./evidence-preview";
 import { useJournalSections } from "./use-template-layout";
+import { CaptureQualityControls } from "./capture-quality";
 
 export function SectionAttachments({ section, document, onChange, onEvidence, onImage, readOnly = false }: {
   section: ReviewSectionKey; document: TradeDocument;
@@ -18,6 +19,7 @@ export function SectionAttachments({ section, document, onChange, onEvidence, on
     notion: assignSectionEvidence(review.notion ?? emptyNotionReview(), section, id, checked),
   }));
   return <div className="ws-section-attachments">
+    {!readOnly && <CaptureQualityControls />}
     <div className="ws-section-attachment-actions">
       <button type="button" className="ws-add-evidence" disabled={readOnly} onClick={() => onEvidence(section)}>Attach current chart to {label}</button>
       <button type="button" disabled={readOnly} onClick={() => onImage(section)}>Attach image</button>

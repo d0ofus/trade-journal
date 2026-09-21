@@ -1,4 +1,5 @@
 import { notionBlocks, notionClipboard } from "./notion-export";
+import { assertCaptureSize } from "./capture-resolution";
 import { assignedEvidenceIds, earlierTimestampBasis, evidenceCaption, sectionEvidenceIds } from "./evidence";
 import type { ReviewSectionKey } from "./notion-template";
 import { notionProperties, propertyText, chartSections, analysisSections } from "./notion-template";
@@ -43,11 +44,14 @@ export async function copyChart(canvas: HTMLCanvasElement, name: string): Promis
 export function compositeCharts(images: HTMLCanvasElement[], light = false, positions: { x: number; y: number; width: number; height: number }[], scale = 2) {
   if (!images.length || positions.length !== images.length || positions.some(p => ![p.x, p.y, p.width, p.height].every(Number.isFinite) || p.width <= 0 || p.height <= 0)) throw new Error("Invalid chart layout for export.");
   const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(Math.max(...positions.map(p => p.x + p.width)) * scale);
-  canvas.height = Math.ceil(Math.max(...positions.map(p => p.y + p.height)) * scale);
+  const width = Math.ceil(Math.max(...positions.map((p, i) => p.x * scale + images[i].width)));
+  const height = Math.ceil(Math.max(...positions.map((p, i) => p.y * scale + images[i].height)));
+  assertCaptureSize(width, height);
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d")!;
   ctx.fillStyle = light ? "#edf0f5" : "#0b0f17"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  images.forEach((image, i) => { const p = positions[i]; ctx.drawImage(image, p.x * scale, p.y * scale, p.width * scale, p.height * scale); });
+  images.forEach((image, i) => { const p = positions[i]; ctx.drawImage(image, Math.round(p.x * scale), Math.round(p.y * scale)); });
   return canvas;
 }
 export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; url: string; metrics?: MarketMetrics }[], columns: string[], headers: Record<string, string>) {

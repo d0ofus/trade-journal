@@ -31,10 +31,14 @@ test("section captures persist, can be shared, export once, and lose all referen
   const captured = (await saved())!.evidence.at(-1)!;
   expect((await saved())!.review.notion?.sections.entry?.evidenceIds ?? []).not.toContain(captured.id);
   const index = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Index$/ }) });
-  await index.locator("summary").click(); await index.getByRole("checkbox", { name: captured.name, exact: true }).check();
+  await index.locator("summary").click();
+  await page.getByRole("button", { name: "Show Evidence", exact: true }).click();
+  const evidence = page.locator(".ws-evidence-grid > div").last();
+  await evidence.locator(".ws-evidence-sections summary").click();
+  await evidence.getByRole("checkbox", { name: "Index", exact: true }).check();
   await expect.poll(async () => (await saved())?.review.notion?.sections.index?.evidenceIds).toContain(captured.id);
   await page.reload();
-  await exit.locator("summary").click(); await expect(exit.getByRole("checkbox", { name: captured.name, exact: true })).toBeChecked();
+  await exit.locator("summary").click(); await expect(exit.locator(".ws-section-preview img")).toHaveCount(1);
   await page.getByRole("button", { name: "Export review for Notion", exact: false }).click();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Review page ZIP", exact: true }).click();
   const files = unzipSync(readFileSync((await (await download).path())!));
@@ -232,11 +236,12 @@ test("PNG exports retain comparison candles, their actual OHLC legend and the be
   expect(errors).toEqual([]);
 });
 
-test("layout PNGs keep panel dimensions and omit footer text in both themes", async ({ page }, info) => {
+test("layout PNGs keep live plot proportions and omit footer text in both themes", async ({ page }, info) => {
   await open(page, 2);
   const bounds = await page.locator(".ws-chart").evaluateAll(nodes => nodes.map(node => {
     const style = (node as HTMLElement).style;
-    return { x: parseFloat(style.left), y: parseFloat(style.top), width: parseFloat(style.width), height: parseFloat(style.height) };
+    const plot = node.querySelector<HTMLElement>(".ws-chart-canvas")!.getBoundingClientRect();
+    return { x: parseFloat(style.left), y: parseFloat(style.top), width: Math.floor(plot.width), height: Math.floor(plot.height) + 48 };
   }));
   const expected = { width: Math.ceil(Math.max(...bounds.map(b => b.x + b.width)) * 2), height: Math.ceil(Math.max(...bounds.map(b => b.y + b.height)) * 2) };
   await page.locator(".ws-chart").first().getByRole("button", { name: "Export chart-1", exact: true }).click();

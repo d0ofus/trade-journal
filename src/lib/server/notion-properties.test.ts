@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { planNotionProperties, requiredRelations, type RemoteProperty } from "./notion-properties";
+import { planNotionProperties, publishedPrice, requiredRelations, type RemoteProperty } from "./notion-properties";
 import { notionProperties, emptyNotionReview } from "@/lib/workstation/notion-template";
 import { emptyDocument } from "@/lib/workstation/types";
 import { demoTrades } from "@/lib/workstation/demo";
@@ -24,6 +24,17 @@ beforeEach(() => {
     : { results: body!.filter.or.map((filter, index) => ({ id: `related-page-${index}`, properties: { Name: { title: [{ plain_text: filter.title.equals }] } } })), has_more: false });
 });
 describe("live Notion property mapping", () => {
+  it("publishes ticker-only titles and decimal-safe prices without changing the trade", async () => {
+    const { trade, doc } = inputs(); trade.entry = 1.005; trade.exit = 615.075;
+    const plan = await planNotionProperties(trade, doc, schema());
+    expect(plan.values.title).toEqual({ title: [{ type: "text", text: { content: trade.symbol } }] });
+    expect(plan.values.Entry).toEqual({ number: 1.01 }); expect(plan.values.Exit).toEqual({ number: 615.08 });
+    expect(plan.display).toContainEqual({ name: "Entry", value: "1.01" });
+    expect(trade.entry).toBe(1.005); expect(trade.exit).toBe(615.075);
+    for (const [input, expected] of [[2.675, 2.68], [100, 100], [-1.005, -1.01], [0.004, 0]]) expect(publishedPrice(input)).toBe(expected);
+    const sameSymbol = await planNotionProperties({ ...trade, id: "another-trade", openTime: trade.openTime + 86400, entry: 100 }, doc, schema());
+    expect(sameSymbol.values.title).toEqual(plan.values.title); expect(sameSymbol.display).toContainEqual({ name: "Entry", value: "100.00" });
+  });
   it("maps actual entry/exit, planned stop and resolved New York execution range", async () => {
     const { trade, doc } = inputs(); doc.review.notion!.properties.plannedEntry = 999; doc.review.notion!.properties.plannedStop = 95;
     const plan = await planNotionProperties(trade, doc, schema());

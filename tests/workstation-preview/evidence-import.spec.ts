@@ -23,6 +23,11 @@ async function pixels(page: Page, type = "image/png") {
   return page.evaluate(type => { const c = document.createElement("canvas"); c.width = 32; c.height = 24; const ctx = c.getContext("2d")!; ctx.fillStyle = "#4455dd"; ctx.fillRect(0, 0, 32, 24); return c.toDataURL(type).split(",")[1]; }, type);
 }
 async function imageDialog(page: Page, label: string) {
+  if (label === "Previous review fields") {
+    await page.getByRole("button", { name: "Review details", exact: false }).click();
+    await page.getByRole("dialog", { name: "Review details", exact: true }).getByRole("button", { name: "Attach image", exact: true }).click();
+    return page.getByRole("dialog", { name: "Attach image", exact: true });
+  }
   const section = page.locator("details.ws-template-section").filter({ has: page.locator("summary").filter({ hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }) });
   if (!(await section.getAttribute("open"))) { if (!await section.getByRole("button", { name: "Attach image", exact: true }).isVisible()) await section.locator("summary").first().click(); }
   await section.getByRole("button", { name: "Attach image", exact: true }).click();
@@ -37,7 +42,7 @@ for (const replay of [false, true]) test(`external images attach to every sectio
     const dialog = await imageDialog(page, label);
     await dialog.getByLabel("Choose image").setInputFiles({ name: `evidence-${i}.png`, mimeType: "image/png", buffer: Buffer.from(png, "base64") });
     await expect(dialog.getByRole("img")).toBeVisible();
-    await dialog.getByRole("button", { name: `Attach image to ${label}`, exact: true }).click();
+    await dialog.getByRole("button", { name: `Attach image to ${section === "previousReview" ? "Review details" : label}`, exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect.poll(async () => (await saved(page)).evidence.length).toBe(i + 1);
     const doc = await saved(page);

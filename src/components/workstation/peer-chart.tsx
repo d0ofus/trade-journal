@@ -7,8 +7,9 @@ import { peerChartData, peerEntryTime, peerReplayRange, type PeerSeries, type Pe
 import { volumeColor } from "@/lib/workstation/volume-style";
 import type { HistoryRange } from "@/lib/workstation/history";
 import type { Candle, Trade, WorkspacePreferences } from "@/lib/workstation/types";
+import { assertCaptureSize, captureRenderFrame, chartBitmapRatio, type CaptureFrame } from "@/lib/workstation/capture-resolution";
 
-export type PeerChartHandle = { capture: () => HTMLCanvasElement; range: () => HistoryRange | null };
+export type PeerChartHandle = { capture: (scale: number) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; range: () => HistoryRange | null };
 type Props = { symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
 const numericRange = (chart: IChartApi): HistoryRange | null => {
   const range = chart.timeScale().getVisibleRange();
@@ -74,18 +75,43 @@ export function PeerChart(props: Props) {
     model.current = { update, sync }; update();
     props.register(props.symbol, {
       range: () => numericRange(chart),
-      capture: () => {
+      frame: () => ({ width: node.clientWidth, height: node.clientHeight + 76 }),
+      capture: async (scale: number) => {
         if (!candles.length) throw new Error("Wait for chart history before attaching.");
         const { view, series } = latest.current;
-        const plot = chart.takeScreenshot(), canvas = document.createElement("canvas"), ratio = window.devicePixelRatio || 1;
-        canvas.width = plot.width; canvas.height = plot.height + Math.round(76 * ratio);
-        const ctx = canvas.getContext("2d")!; ctx.fillStyle = bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(plot, 0, Math.round(43 * ratio)); ctx.fillStyle = text; ctx.font = `${13 * ratio}px sans-serif`;
-        ctx.fillText(`${props.symbol} · ${view.interval} · ${view.adjustment} · ${series?.source ?? ""}`, 12 * ratio, 19 * ratio);
-        ctx.font = `${10 * ratio}px sans-serif`; const range = numericRange(chart) ?? view.range;
-        ctx.fillText(`${new Date(range.from * 1000).toISOString().slice(0, 10)} – ${new Date(range.to * 1000).toISOString().slice(0, 10)} · ${view.session}${view.beforeEntry ? " · Before entry" : ""}`, 12 * ratio, 35 * ratio);
-        ctx.fillText(`TradingView Lightweight Charts · Peer comparison${view.replayAt === undefined ? "" : ` · REPLAY ${new Date(view.replayAt * 1000).toISOString()}`}`, 12 * ratio, canvas.height - 12 * ratio);
-        return canvas;
+        // Freeze every series/range/marker before the first asynchronous yield.
+        const range = numericRange(chart) ?? view.range, logical = chart.timeScale().getVisibleLogicalRange(), priceRange = price.priceScale().getVisibleRange();
+        const fontFamily = chart.options().layout.fontFamily;
+        const ratio = chartBitmapRatio(node, window.devicePixelRatio || 1), render = captureRenderFrame({ width: node.clientWidth, height: node.clientHeight }, scale, ratio);
+        assertCaptureSize(render.width * ratio, render.height * ratio + Math.ceil(76 * scale));
+        const container = document.createElement("div"); container.style.cssText = `position:fixed;left:-100000px;top:0;width:${render.width}px;height:${render.height}px;`; document.body.appendChild(container);
+        const clone = createChart(container, { ...chart.options(), autoSize: false, width: render.width, height: render.height,
+          layout: { ...chart.options().layout, fontSize: chart.options().layout.fontSize * render.x },
+          timeScale: { ...chart.timeScale().options(), barSpacing: chart.timeScale().options().barSpacing * render.x, minBarSpacing: chart.timeScale().options().minBarSpacing * render.x },
+          rightPriceScale: { ...chart.options().rightPriceScale, minimumWidth: chart.priceScale("right").width() * render.x },
+        });
+        let detach = () => {};
+        try {
+          const cs = clone.addSeries(CandlestickSeries, price.options()); cs.setData([...price.data()]);
+          if (volume) { const vs = clone.addSeries(HistogramSeries, volume.options()); vs.priceScale().applyOptions({ scaleMargins: { top: .82, bottom: 0 } }); vs.setData([...volume.data()]); }
+          for (const source of [...averages.map(a => a.series), ...volumeAverage ? [volumeAverage] : []]) {
+            const line = clone.addSeries(LineSeries, { ...source.options(), lineWidth: Math.min(4, Math.max(1, Math.round(render.x))) as 1 | 2 | 3 | 4 }); line.setData([...source.data()]);
+          }
+          const marks = createSeriesMarkers(cs, [...markers.markers()]); detach = () => marks.detach();
+          if (logical) clone.timeScale().setVisibleLogicalRange(logical);
+          if (priceRange) { cs.priceScale().setAutoScale(false); cs.priceScale().setVisibleRange(priceRange); }
+          await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+          const plot = clone.takeScreenshot(), canvas = document.createElement("canvas");
+          assertCaptureSize(plot.width, plot.height + Math.ceil(76 * scale));
+          canvas.width = plot.width; canvas.height = plot.height + Math.ceil(76 * scale);
+          const ctx = canvas.getContext("2d")!; ctx.fillStyle = bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(plot, 0, Math.round(43 * scale)); ctx.fillStyle = text; ctx.font = `${13 * scale}px ${fontFamily}`;
+          ctx.fillText(`${props.symbol} · ${view.interval} · ${view.adjustment} · ${series?.source ?? ""}`, 12 * scale, 19 * scale);
+          ctx.font = `${10 * scale}px sans-serif`;
+          ctx.fillText(`${new Date(range.from * 1000).toISOString().slice(0, 10)} – ${new Date(range.to * 1000).toISOString().slice(0, 10)} · ${view.session}${view.beforeEntry ? " · Before entry" : ""}`, 12 * scale, 35 * scale);
+          ctx.fillText(`TradingView Lightweight Charts · Peer comparison${view.replayAt === undefined ? "" : ` · REPLAY ${new Date(view.replayAt * 1000).toISOString()}`}`, 12 * scale, canvas.height - 12 * scale);
+          return canvas;
+        } finally { detach(); clone.remove(); container.remove(); }
       },
     });
     return () => { cancelAnimationFrame(frame); props.register(props.symbol, null); chart.timeScale().unsubscribeVisibleTimeRangeChange(changed); markers.detach(); chart.remove(); model.current = null; };

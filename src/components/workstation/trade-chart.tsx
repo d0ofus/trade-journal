@@ -12,7 +12,8 @@ import {
   type MouseEventParams,
   UTCTimestamp,
 } from "lightweight-charts";
-import { Crosshair, Download, Maximize2, Minimize2, Info, X, Eye, EyeOff } from "lucide-react";
+import { Crosshair, Download, Maximize2, Minimize2, Info, X, Eye, EyeOff, BookOpen } from "lucide-react";
+import { assertCaptureSize, captureRenderFrame, chartBitmapRatio, type CaptureFrame } from "@/lib/workstation/capture-resolution";
 import {
   Candle,
   ChartPanel,
@@ -58,7 +59,8 @@ export type ChartHandle = {
   focus: () => void;
   inspect: (id: string) => void;
   cancel: () => void;
-  capture: (light?: boolean, scale?: number, frame?: { width: number; height: number }) => Promise<HTMLCanvasElement>;
+  capture: (light?: boolean, scale?: number) => Promise<HTMLCanvasElement>;
+  captureFrame: () => CaptureFrame;
   fit: () => void;
   beforeTrade: () => void;
   toggleSession: () => void;
@@ -92,6 +94,8 @@ type Props = {
   onDownload: () => void;
   onDateClick: (target: ChartDateTarget) => void;
   fullscreen: boolean;
+  fullscreenJournal?: boolean;
+  onJournal?: () => void;
   onFullscreen: () => void;
   fullscreenTitle: string;
   beforeTradeTitle: string;
@@ -518,6 +522,7 @@ export function TradeChart(input: Props) {
       });
     };
     paintRef.current = paint;
+    let resizedFullscreen = false;
     const resize = new ResizeObserver((entries) => {
       autoPages.current = 0;
       const { width, height } = entries[0].contentRect;
@@ -526,7 +531,10 @@ export function TradeChart(input: Props) {
         width: Math.floor(width),
         height: Math.floor(height),
       };
+      const visible = latest.current.fullscreen || resizedFullscreen ? api.timeScale().getVisibleLogicalRange() : null;
+      resizedFullscreen = latest.current.fullscreen;
       api.resize(Math.floor(width), Math.floor(height));
+      if (visible) api.timeScale().setVisibleLogicalRange(visible);
       paint();
     });
     resize.observe(host.current);
@@ -807,10 +815,10 @@ export function TradeChart(input: Props) {
         }
         revealRef.current(target, width);
       },
+      captureFrame: () => ({ width: dimensions.current.width, height: dimensions.current.height + (benchmarkLayer.current?.snapshot()?.symbol ? 48 : 30) }),
       async capture(
         light = latest.current.preferences.theme === "light",
         scale = 2,
-        frame?: { width: number; height: number },
       ) {
         if (!dataReady.current || !bars.current.length)
           throw new Error("Wait for chart candles before exporting.");
@@ -819,23 +827,27 @@ export function TradeChart(input: Props) {
           prefs = latest.current.preferences;
         const frozenBenchmark = benchmarkLayer.current?.snapshot();
         const header = frozenBenchmark?.symbol ? 48 : 30;
-        const width = frame?.width ?? dimensions.current.width, height = frame ? Math.max(60, frame.height - header) : dimensions.current.height + 75;
+        const { width, height } = dimensions.current;
+        const ratio = chartBitmapRatio(host.current, window.devicePixelRatio || 1);
+        assertCaptureSize(width * scale, (height + header) * scale);
+        const render = captureRenderFrame({ width, height }, scale, ratio);
         const frozenBeforeEntry = beforeEntryActive.current;
         const frozenTrade = frozenBeforeEntry ? { ...latest.current.trade, executions: [] } : latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
         const priceRange = candles.priceScale().getVisibleRange();
         const container = document.createElement("div");
-        container.style.cssText = `position:fixed;left:-100000px;top:0;width:${width * scale}px;height:${height * scale}px;`;
+        container.style.cssText = `position:fixed;left:-100000px;top:0;width:${render.width}px;height:${render.height}px;`;
         document.body.appendChild(container);
         const clone = createChart(container, {
-          width: width * scale,
-          height: height * scale,
+          width: render.width,
+          height: render.height,
           layout: {
             background: {
               type: ColorType.Solid,
               color: light ? "#ffffff" : "#10151f",
             },
-            textColor: light ? "#526077" : "#8996ad",
-            fontSize: 10 * scale,
+            textColor: light ? "#68758a" : "#7e899e",
+            fontFamily: api.options().layout.fontFamily,
+            fontSize: api.options().layout.fontSize * render.x,
             attributionLogo: false,
           },
           grid: {
@@ -844,13 +856,15 @@ export function TradeChart(input: Props) {
           },
           rightPriceScale: {
             borderVisible: false,
-            minimumWidth: api.priceScale("right").width() * scale,
+            minimumWidth: api.priceScale("right").width() * render.x,
             scaleMargins: { top: 0.16, bottom: 0.22 },
           },
           timeScale: {
+            ...api.timeScale().options(),
             borderVisible: false,
             timeVisible: true,
-            barSpacing: api.timeScale().options().barSpacing * scale,
+            barSpacing: api.timeScale().options().barSpacing * render.x,
+            minBarSpacing: api.timeScale().options().minBarSpacing * render.x,
           },
         });
         let detachExportBackground = () => {};
@@ -888,13 +902,13 @@ export function TradeChart(input: Props) {
               snapshotBars.map((b) => ({
                 time: asTime(b.time),
                 value: b.volume,
-                color: volumeColor(prefs.volumeStyle, b.close >= b.open ? "up" : "down", light, "capture"),
+                color: volumeColor(prefs.volumeStyle, b.close >= b.open ? "up" : "down", light),
               })),
             );
             if (prefs.volumeAverage.enabled) {
               const average = clone.addSeries(LineSeries, {
                 priceScaleId: "volume", priceFormat: { type: "volume" },
-                color: volumeColor(prefs.volumeStyle, "average", light, "capture"), lineWidth: Math.min(4, scale) as 1 | 2 | 3 | 4,
+                color: volumeColor(prefs.volumeStyle, "average", light), lineWidth: Math.min(4, Math.max(1, Math.round(render.x))) as 1 | 2 | 3 | 4,
                 lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
               });
               average.setData(volumeMovingAverage(snapshotBars, prefs.volumeAverage.period).map(b => ({ ...b, time: asTime(b.time) })));
@@ -903,7 +917,7 @@ export function TradeChart(input: Props) {
           prefs.averages.forEach((period, i) => {
             const sma = clone.addSeries(LineSeries, {
               color: ["#c4a36c", "#8a8ac8", "#609fce", "#ba7997"][i % 4],
-              lineWidth: Math.min(4, scale) as 1 | 2 | 3 | 4,
+              lineWidth: Math.min(4, Math.max(1, Math.round(render.x))) as 1 | 2 | 3 | 4,
               lastValueVisible: false,
               priceLineVisible: false,
               crosshairMarkerVisible: false,
@@ -923,22 +937,18 @@ export function TradeChart(input: Props) {
           );
           const native = clone.takeScreenshot(true, false),
             output = document.createElement("canvas");
-          output.width = width * scale;
-          output.height = (height + header) * scale;
+          const headerPixels = Math.ceil(header * scale);
+          assertCaptureSize(native.width, native.height + headerPixels);
+          output.width = native.width;
+          output.height = native.height + headerPixels;
           const ctx = output.getContext("2d")!;
           ctx.fillStyle = light ? "#ffffff" : "#10151f";
           ctx.fillRect(0, 0, output.width, output.height);
-          ctx.drawImage(
-            native,
-            0,
-            header * scale,
-            width * scale,
-            height * scale,
-          );
+          ctx.drawImage(native, 0, headerPixels);
           ctx.save();
-          ctx.translate(0, header * scale);
-          ctx.scale(scale, scale);
-          const exportOptions: PaintOptions = { ...frozen, width, height, plotWidth: clone.timeScale().width() / scale, plotHeight: height - clone.timeScale().height() / scale, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / scale; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / scale; } };
+          ctx.translate(0, headerPixels);
+          ctx.scale(native.width / width, native.height / height);
+          const exportOptions: PaintOptions = { ...frozen, width, height, plotWidth: clone.timeScale().width() / render.x, plotHeight: height - clone.timeScale().height() / render.y, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / render.x; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / render.y; } };
           paintChart(ctx, exportOptions);
           ctx.restore();
           ctx.scale(scale, scale);
@@ -1532,6 +1542,7 @@ export function TradeChart(input: Props) {
           >
             {props.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
+          {props.fullscreen && <button type="button" data-fullscreen-journal-toggle aria-label={props.fullscreenJournal ? "Hide fullscreen journal" : "Show fullscreen journal"} aria-expanded={!!props.fullscreenJournal} onClick={props.onJournal}><BookOpen size={13} /><span>Journal</span></button>}
         </div>
       </div>
       <div className="ws-benchmark-legend" ref={benchmarkHost} style={{ color: benchmarkColor(props.preferences.theme === "light", props.preferences.benchmarkColor) }} />

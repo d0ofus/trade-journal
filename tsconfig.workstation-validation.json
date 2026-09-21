@@ -4,6 +4,9 @@
     "incremental": false
   },
   "include": [
+    "src/lib/workstation/capture-resolution.test.ts",
+    "src/lib/workstation/review-defaults.test.ts",
+    "tests/workstation-preview/fullscreen-capture.spec.ts",
     "scripts/verify-notion-live.ts",
     "src/lib/server/notion-*.test.ts",
     "src/app/api/workstation/notion/**/*.test.ts",

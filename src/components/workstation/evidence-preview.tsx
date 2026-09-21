@@ -1,5 +1,5 @@
 "use client";
-import { createContext, useContext, useEffect, useRef } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { Download, X } from "lucide-react";
 import type { Evidence } from "@/lib/workstation/types";
 
@@ -19,6 +19,7 @@ export function EvidenceDownload({ evidence }: { evidence: Evidence }) {
 }
 
 export function EvidenceViewer({ evidence, onClose }: { evidence: Evidence; onClose: () => void }) {
+  const [actualSize, setActualSize] = useState(false), [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const dialog = useRef<HTMLDivElement>(null), close = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const before = document.activeElement as HTMLElement | null;
@@ -39,8 +40,11 @@ export function EvidenceViewer({ evidence, onClose }: { evidence: Evidence; onCl
       }
     }}>
       <header className="ws-modal-heading"><h2>{evidence.name}</h2><EvidenceDownload evidence={evidence} /><button ref={close} aria-label="Close image preview" onClick={onClose}><X size={18} /></button></header>
+      <div className="ws-evidence-view-controls"><span>{size ? `${size.width} × ${size.height} px` : "Loading image…"}</span><button type="button" aria-pressed={!actualSize} onClick={() => setActualSize(false)}>Fit</button><button type="button" aria-pressed={actualSize} onClick={() => setActualSize(true)}>100%</button></div>
+      <div className={`ws-evidence-image-scroll${actualSize ? " ws-evidence-actual-size" : ""}`}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="ws-evidence-full-image" src={evidence.image} alt={evidence.name} />
+      <img className="ws-evidence-full-image" src={evidence.image} alt={evidence.name} onLoad={event => setSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} />
+      </div>
       {evidence.replayAt !== undefined && <p className="ws-help">Replay capture · {new Date(evidence.replayAt * 1000).toISOString()}</p>}
     </div>
   </div>;

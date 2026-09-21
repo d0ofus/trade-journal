@@ -1,4 +1,5 @@
 import type { Trade, TradeDocument } from "@/lib/workstation/types";
+import { Prisma } from "@prisma/client";
 import { notionProperties } from "@/lib/workstation/notion-template";
 import { richPlain } from "@/lib/workstation/rich-text";
 import { executionTimeResolved } from "@/lib/workstation/execution-time-provenance";
@@ -8,20 +9,25 @@ import { notionRichText } from "./notion-format";
 export type RemoteProperty = { id: string; name: string; type: string; relation?: { data_source_id?: string; database_id?: string }; select?: { options: { name: string }[] }; multi_select?: { options: { name: string }[] } };
 export type PropertyPlan = { values: Record<string, JsonObject>; display: { name: string; value: string }[]; errors: string[]; schemaHashInput: unknown };
 export const requiredRelations = ["Type of Review", "Type of Trade", "Chart Pattern", "Confluences", "Characteristics", "News Impact"];
+export const publishedPrice = (price: number) => new Prisma.Decimal(price).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 export const propertySchemaSignature = (properties: RemoteProperty[]) => properties.map(p => ({ id: p.id, name: p.name, type: p.type, relation: p.relation, select: p.select, multi_select: p.multi_select })).sort((a, b) => a.id.localeCompare(b.id));
 export async function planNotionProperties(trade: Trade, doc: TradeDocument, schema: Record<string, RemoteProperty>): Promise<PropertyPlan> {
   const values: Record<string, JsonObject> = {}, display: { name: string; value: string }[] = [], errors: string[] = [];
   const properties = Object.values(schema), byName = new Map(properties.map(p => [p.name, p]));
   const title = properties.find(p => p.type === "title");
   if (!title) errors.push("The Notion database has no title property.");
-  else { values[title.id] = { title: notionRichText(`${trade.symbol} · ${new Date(trade.openTime * 1000).toISOString().slice(0, 10)}`) }; display.push({ name: title.name, value: trade.symbol }); }
+  else { values[title.id] = { title: notionRichText(trade.symbol) }; display.push({ name: title.name, value: trade.symbol }); }
   for (const name of requiredRelations) if (!byName.has(name) || byName.get(name)?.type !== "relation") errors.push(`Grant the connection access to the related database for ${name}.`);
   function set(name: string, type: string, value: unknown) {
     const property = byName.get(name);
     if (!property || property.type !== type) { errors.push(`${name} must exist as a Notion ${type} property.`); return; }
     values[property.id] = { [type]: value }; display.push({ name, value: value === null ? "Empty" : typeof value === "object" ? JSON.stringify(value) : String(value) });
   }
-  set("Entry", "number", trade.entry); set("Exit", "number", trade.exit);
+  set("Entry", "number", publishedPrice(trade.entry)); set("Exit", "number", publishedPrice(trade.exit));
+  for (const [name, price] of [["Entry", trade.entry], ["Exit", trade.exit]] as const) {
+    const item = display.find(item => item.name === name);
+    if (item) item.value = publishedPrice(price).toFixed(2);
+  }
   set("S/L", "number", doc.review.notion?.properties.plannedStop ?? null);
   const executions = [...trade.executions].sort((a, b) => a.time - b.time);
   if (!executions.length || executions.some(e => !executionTimeResolved(e) || ["pending", "stale", "unresolved"].includes(e.provenance?.interpretationStatus ?? ""))) errors.push("Resolve the execution timestamps before publishing Entry Date.");

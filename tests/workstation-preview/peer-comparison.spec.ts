@@ -60,6 +60,9 @@ test("50-peer virtualization, isolated linked navigation, paired capture, reuse,
   await peer.getByRole("button", { name: "Attach comparison", exact: true }).click();
   await expect.poll(async () => (await doc(page))?.evidence?.length).toBe(1);
   const saved = await doc(page); expect(saved.evidence[0].peerCapture.symbols).toEqual(["NVDA", "PEER03"]);
+  const png = Buffer.from(saved.evidence[0].image.split(",")[1], "base64");
+  expect(png.readUInt32BE(16)).toBeGreaterThanOrEqual(1920);
+  expect(png.readUInt32BE(16) * png.readUInt32BE(20)).toBeLessThanOrEqual(16_000_000);
   expect(saved.review.notion.sections.peers.evidenceIds).toEqual([saved.evidence[0].id]);
   await page.screenshot({ path: "artifacts/peer-comparison-desktop.png", fullPage: true });
   await dialog.getByRole("button", { name: "Close peer comparison" }).click();

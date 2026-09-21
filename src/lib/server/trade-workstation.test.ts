@@ -52,6 +52,19 @@ afterEach(async () => {
 });
 
 describe("workstation persistence against isolated PostgreSQL", () => {
+  it("initializes Taken Trade without a read-side write and persists an intentional clear", async () => {
+    const key = await fixture(); const before = await prisma.closedTradeNote.findUniqueOrThrow({ where: { groupKey: key } });
+    const doc = await readWorkstationDocument(key);
+    expect(doc.review.notion?.properties.typeOfReview).toEqual(["Taken Trade"]);
+    expect(await prisma.closedTradeNote.findUniqueOrThrow({ where: { groupKey: key } })).toEqual(before);
+    doc.review.notion!.properties.typeOfReview = [];
+    const response = await PATCH(request(key, { document: doc, expectedRevision: doc.revision }), params(key));
+    expect(response.status).toBe(200);
+    const restored = await readWorkstationDocument(key);
+    expect(restored.review.notion?.executedTradeDefaults).toBe(1);
+    expect(restored.review.notion?.properties.typeOfReview).toEqual([]);
+    expect(restored.review.notes).toBe(doc.review.notes); expect(restored.drawings).toEqual(doc.drawings);
+  });
   it("round-trips dynamic and archived sections without changing older notes, drawings or images", async () => {
     const key = await fixture(); const before = await readWorkstationDocument(key);
     const sourceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", section = `notion:${sourceId}` as const;

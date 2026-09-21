@@ -13,7 +13,7 @@ async function open(page: Page, panels = 1) {
   await page.addInitScript(({ preferences, key, panels }) => {
     if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...preferences, labels: "hidden", journal: panels > 1, panels: ["5m", "1h"].slice(0, panels).map((interval, i) => ({ id: `chart-${i + 1}`, interval })) }));
   }, { preferences: defaultPreferences(), key: preferenceKey, panels });
-  await page.goto("/preview/trades");
+  await page.goto("/preview/trades?groupKey=demo-nvda");
   for (const chart of await page.locator(".ws-chart").all()) await expect(chart).toHaveAttribute("data-visible-from", /\d+/);
   return { errors, requests };
 }

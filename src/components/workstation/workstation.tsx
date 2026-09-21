@@ -4,6 +4,9 @@ import { assignSectionEvidence, attachEvidence, earlierTimestampBasis, evidenceS
 import { ImageAttachment } from "./image-attachment";
 import { EvidenceViewer, EvidenceViewerContext, EvidenceThumbnail, EvidenceDownload } from "./evidence-preview";
 import { VolumeSettings } from "./volume-settings";
+import { CaptureQualityContext, CaptureQualityControls } from "./capture-quality";
+import { captureResolution, type CaptureQuality } from "@/lib/workstation/capture-resolution";
+import { FullscreenJournal, JournalPortal, fullscreenJournalWidth } from "./fullscreen-journal";
 import type { ImportedImage } from "@/lib/workstation/image-import";
 import { emptyNotionReview, type ReviewSectionKey } from "@/lib/workstation/notion-template";
 import { sectionChoices } from "@/lib/workstation/template-layout";
@@ -27,6 +30,7 @@ import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@
 import {
   createContext,
   ReactNode,
+  CSSProperties,
   useCallback,
   useContext,
   useEffect,
@@ -347,13 +351,16 @@ export function TradesWorkstation({
   const shortcuts = useShortcutPreferences(adapter.mode);
   const root = useRef<HTMLDivElement>(null);
   const [fullscreenChart, setFullscreenChart] = useState<string | null>(null);
+  const [fullscreenJournal, setFullscreenJournal] = useState(false), [fullscreenWidth, setFullscreenWidth] = useState(322);
+  const [journalSlot, setJournalSlot] = useState<HTMLDivElement | null>(null), [fullscreenJournalSlot, setFullscreenJournalSlot] = useState<HTMLDivElement | null>(null);
+  useEffect(() => { if (!fullscreenChart) { setFullscreenJournal(false); setFullscreenWidth(322); } }, [fullscreenChart]);
   useEffect(() => {
     if (!fullscreenChart || !root.current) return;
     const restored: { element: HTMLElement; inert: boolean }[] = [];
     let child: HTMLElement | null = root.current.querySelector(`[data-chart-id="${fullscreenChart}"]`);
     while (child && child !== root.current && child.parentElement) {
       for (const sibling of Array.from(child.parentElement.children)) {
-        if (sibling !== child && sibling instanceof HTMLElement && !sibling.matches(".ws-modal-backdrop,.ws-drawing-toolbar,.ws-drawing-properties")) {
+        if (sibling !== child && sibling instanceof HTMLElement && !sibling.matches(".ws-modal-backdrop,.ws-peer-backdrop,.ws-fullscreen-journal,.ws-drawing-toolbar,.ws-drawing-properties")) {
           restored.push({ element: sibling, inert: sibling.inert });
           sibling.inert = true;
         }
@@ -361,7 +368,7 @@ export function TradesWorkstation({
       child = child.parentElement;
     }
     return () => restored.forEach(({ element, inert }) => { element.inert = inert; });
-  }, [fullscreenChart]);
+  }, [fullscreenChart, fullscreenJournal, fullscreenJournalSlot]);
   const [selectedId, setSelectedId] = useState(
     initialId && trades.some((t) => t.id === initialId)
       ? initialId
@@ -430,7 +437,7 @@ export function TradesWorkstation({
     [isSmall, setIsSmall] = useState(false);
   const [exportScope, setExportScope] = useState("current"),
     [exportLight, setExportLight] = useState(false),
-    [exportScale, setExportScale] = useState(2),
+    [captureQuality, setCaptureQuality] = useState<CaptureQuality>("high"),
     [exportFormat, setExportFormat] = useState("package"),
     [exportHeaders, setExportHeaders] = useState<Record<string, string>>({}),
     [busy, setBusy] = useState("");
@@ -439,6 +446,19 @@ export function TradesWorkstation({
   const handles = useRef(new Map<string, ChartHandle>()),
     dock = useRef<DockviewApi | null>(null),
     dockDispose = useRef<(() => void) | null>(null);
+  const closeFullscreenJournal = () => { setFullscreenJournal(false); requestAnimationFrame(() => root.current?.querySelector<HTMLButtonElement>("[data-fullscreen-journal-toggle]")?.focus({ preventScroll: true })); };
+  useEffect(() => {
+    if (!fullscreenChart || !fullscreenJournal || !isSmall) return;
+    const areas = [root.current?.querySelector<HTMLElement>(`[data-chart-id="${fullscreenChart}"]`), root.current?.querySelector<HTMLElement>(".ws-drawing-toolbar"), root.current?.querySelector<HTMLElement>(".ws-drawing-properties")].filter((node): node is HTMLElement => !!node);
+    const previous = areas.map(node => node.inert); areas.forEach(node => { node.inert = true; });
+    return () => areas.forEach((node, i) => { node.inert = previous[i]; });
+  }, [fullscreenChart, fullscreenJournal, isSmall]);
+  const captureFrame = () => (handles.current.get(activeChart) ?? handles.current.values().next().value)?.captureFrame() ?? null;
+  useEffect(() => {
+    const resize = () => setFullscreenWidth(width => fullscreenJournalWidth(width, window.innerWidth));
+    if (fullscreenChart) { resize(); window.addEventListener("resize", resize); }
+    return () => window.removeEventListener("resize", resize);
+  }, [fullscreenChart]);
   const [notionPackage, setNotionPackage] = useState<{ csv: Blob; zip: Blob; name: string; revision: number } | null>(null);
   const operation = useRef(false);
   const reviewContext = useRef({ id: trade?.id, timeVersion: trade?.timeInterpretationVersion, generation: 0 });
@@ -780,8 +800,9 @@ export function TradesWorkstation({
       if (!target || !root.current?.contains(target)) return;
       if (e.key === "Tab" && fullscreenChart) {
         const chart = root.current.querySelector<HTMLElement>(`[data-chart-id="${fullscreenChart}"]`);
-        const areas = [chart, root.current.querySelector(".ws-drawing-toolbar"), root.current.querySelector(".ws-drawing-properties")].filter((area): area is HTMLElement => area instanceof HTMLElement);
-        const nodes = chart ? [chart, ...areas.flatMap(area => Array.from(area.querySelectorAll<HTMLElement>('button:not(:disabled),select:not(:disabled),input:not(:disabled),a[href],[tabindex="0"]')))].filter(node => node.getClientRects().length && !node.closest("[inert]")) : [];
+        const areas = [chart, root.current.querySelector(".ws-drawing-toolbar"), root.current.querySelector(".ws-drawing-properties"), root.current.querySelector(".ws-fullscreen-journal")].filter((area): area is HTMLElement => area instanceof HTMLElement);
+        const allowed = isSmall && fullscreenJournal ? areas.filter(area => area.matches(".ws-fullscreen-journal")) : areas;
+        const nodes = chart ? [...(isSmall && fullscreenJournal ? [] : [chart]), ...allowed.flatMap(area => Array.from(area.querySelectorAll<HTMLElement>('button:not(:disabled),select:not(:disabled),input:not(:disabled),textarea:not(:disabled),summary,a[href],[contenteditable="true"],[tabindex="0"]')))].filter(node => node.getClientRects().length && !node.closest("[inert]")) : [];
         const index = nodes.indexOf(document.activeElement as HTMLElement);
         if (nodes.length && ((e.shiftKey && index <= 0) || (!e.shiftKey && index === nodes.length - 1))) {
           e.preventDefault(); nodes[e.shiftKey ? nodes.length - 1 : 0].focus();
@@ -796,7 +817,8 @@ export function TradesWorkstation({
         else if (tool !== "cursor" || selectedDrawing) {
           handles.current.forEach(handle => handle.cancel());
           setTool("cursor"); setSelectedDrawing(null);
-        } else if (fullscreenChart) setFullscreenChart(null);
+        } else if (fullscreenChart && fullscreenJournal) closeFullscreenJournal();
+        else if (fullscreenChart) setFullscreenChart(null);
         else if (preferences.focusMode) changePreferences({ focusMode: false });
         e.preventDefault();
         return;
@@ -972,18 +994,22 @@ export function TradesWorkstation({
         (handles.current.values().next().value as ChartHandle | undefined);
       if (!selected) throw new Error("Open a chart before exporting.");
       const layoutNodes = preferences.panels.map(p => root.current?.querySelector<HTMLElement>(`[data-chart-id="${p.id}"]`));
-      const bounds = layoutNodes.map(node => {
+      const bounds = layoutNodes.map((node, index) => {
         if (!node) throw new Error("A chart is not ready.");
-        return { x: Number.parseFloat(node.style.left), y: Number.parseFloat(node.style.top), width: Number.parseFloat(node.style.width), height: Number.parseFloat(node.style.height) };
+        const frame = handles.current.get(preferences.panels[index].id)?.captureFrame();
+        if (!frame) throw new Error("A chart is not ready.");
+        return { x: Number.parseFloat(node.style.left), y: Number.parseFloat(node.style.top), ...frame };
       });
       if (kind === "layout" && fullscreenChart) throw new Error("Restore the chart to export the complete layout. Active chart export is available in fullscreen.");
       // Calling each handle freezes its candles, annotations and replay frame
       // synchronously, before waiting for either rendering or review saves.
       const capturedReplay = replay, capturedAt = Date.now() / 1000;
-      const canvas = kind === "layout" ? compositeCharts(await Promise.all(preferences.panels.map((p, i) => {
+      const outputFrame = kind === "layout" ? { width: Math.max(...bounds.map(b => b.x + b.width)), height: Math.max(...bounds.map(b => b.y + b.height)) } : selected.captureFrame();
+      const exportScale = captureResolution(outputFrame, captureQuality, window.devicePixelRatio).scale;
+      const canvas = kind === "layout" ? compositeCharts(await Promise.all(preferences.panels.map((p) => {
         const handle = handles.current.get(p.id);
         if (!handle) throw new Error("A chart is not ready.");
-        return handle.capture(exportLight || preferences.theme === "light", exportScale, bounds[i]);
+        return handle.capture(exportLight || preferences.theme === "light", exportScale);
       })), exportLight || preferences.theme === "light", bounds, exportScale)
         : await selected.capture(exportLight || preferences.theme === "light", exportScale);
       assertCurrent();
@@ -1402,6 +1428,8 @@ export function TradesWorkstation({
               replay={replay}
               active={activeChart === panel.id}
               fullscreen={fullscreenChart === panel.id}
+              fullscreenJournal={fullscreenJournal}
+              onJournal={() => setFullscreenJournal(value => !value)}
               onFullscreen={() => runCommand("chart.fullscreen", panel.id)}
               fullscreenTitle={titleFor("chart.fullscreen", fullscreenChart === panel.id ? "Restore chart" : "Fullscreen chart")}
               beforeTradeTitle={titleFor("chart.beforeTrade", "Before Trade — exclude the first execution candle and all later candles")}
@@ -1918,7 +1946,7 @@ export function TradesWorkstation({
   );
   const content = {
     charts: chartContent,
-    journal: journalContent,
+    journal: <div className="ws-journal-host-slot" ref={setJournalSlot} />,
     executions: executionsContent,
     evidence: evidenceContent,
     drawings: drawingsContent,
@@ -1927,8 +1955,10 @@ export function TradesWorkstation({
   return (
     <TemplateLayoutContext.Provider value={layoutState}>
     <EvidenceViewerContext.Provider value={openEvidence}>
+    <CaptureQualityContext.Provider value={{ quality: captureQuality, onChange: setCaptureQuality, frame: captureFrame }}>
     <div
       ref={root}
+      style={{ "--ws-fullscreen-journal-width": fullscreenChart && fullscreenJournal && !isSmall ? `${fullscreenWidth}px` : "0px" } as CSSProperties}
       className={`workstation ws-${preferences.theme} ${fullscreenChart ? "ws-has-fullscreen" : ""} ${!preferences.heading ? "ws-heading-collapsed" : ""} ${preferences.focusMode ? "ws-focus" : ""} ${adapter.mode === "application" ? "ws-embedded" : ""}`}
     >
       <div className="ws-app">
@@ -2362,6 +2392,8 @@ export function TradesWorkstation({
           </span>
         </footer>
       </div>
+      {fullscreenChart && fullscreenJournal && <FullscreenJournal width={fullscreenWidth} onWidth={setFullscreenWidth} onClose={closeFullscreenJournal} slot={setFullscreenJournalSlot} small={isSmall} />}
+      <JournalPortal target={fullscreenChart && fullscreenJournal ? fullscreenJournalSlot : journalSlot}>{journalContent}</JournalPortal>
       {notice && (
         <div className="ws-toast" role="status">
           <Check size={16} />
@@ -2377,6 +2409,7 @@ export function TradesWorkstation({
       {peerComparison?.tradeId === trade.id && <PeerComparison key={`${trade.id}:${trade.timeInterpretationVersion}`} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
       {modal === "attach" && <Modal title="Attach current chart" onClose={closeModal}>
         <p>Choose the review section for the active chart.</p>
+        <CaptureQualityControls />
         <label className="ws-capture-notes"><input type="checkbox" checked={preferences.capturePinNotes === true} onChange={e => changePreferences({ capturePinNotes: e.target.checked })} />Include pin notes in captures</label>
         <div className="ws-export-actions">{reviewSections.map(([key, label]) => <button key={key} disabled={!!busy} onClick={() => void capture("attach", key)}>{label}</button>)}</div>
         {busy && <p role="status">{busy}</p>}
@@ -2418,14 +2451,14 @@ export function TradesWorkstation({
                 />{" "}
                 Light background
               </label>
-              <select
-                aria-label="Export resolution"
-                value={exportScale}
-                onChange={(e) => setExportScale(Number(e.target.value))}
-              >
-                <option value={1}>Standard resolution</option>
-                <option value={2}>High resolution · 2×</option>
-              </select>
+              <CaptureQualityControls label="Export resolution" />
+              {!fullscreenChart && <CaptureQualityControls dimensionsOnly label="All charts" frame={() => {
+                const nodes = preferences.panels.map(p => root.current?.querySelector<HTMLElement>(`[data-chart-id="${p.id}"]`));
+                if (nodes.some(node => !node)) return null;
+                const frames = preferences.panels.map(p => handles.current.get(p.id)?.captureFrame());
+                if (frames.some(frame => !frame)) return null;
+                return { width: Math.max(...nodes.map((node, i) => parseFloat(node!.style.left) + frames[i]!.width)), height: Math.max(...nodes.map((node, i) => parseFloat(node!.style.top) + frames[i]!.height)) };
+              }} />}
             </div>
             <div className="ws-export-buttons">
               <button disabled={!!busy} onClick={() => void capture("active")}>
@@ -2922,9 +2955,10 @@ export function TradesWorkstation({
           </div>
         </Modal>
       )}
-      {previewEvidence && <EvidenceViewer evidence={previewEvidence} onClose={closeEvidence} />}
+      {previewEvidence && <EvidenceViewer key={previewEvidence.id} evidence={previewEvidence} onClose={closeEvidence} />}
       {modal === "publish" && documentState && <NotionPublishDialog key={trade.id} groupKey={trade.id} revision={persistence.getDocument()?.revision ?? documentState.revision} onClose={closeModal} />}
     </div>
+    </CaptureQualityContext.Provider>
     </EvidenceViewerContext.Provider>
     </TemplateLayoutContext.Provider>
   );

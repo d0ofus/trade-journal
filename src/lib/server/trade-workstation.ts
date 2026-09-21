@@ -1,4 +1,5 @@
 import { readNotionReview, notionJournalPatch, saveNotionRelations } from "./notion-review-storage";
+import { executedTradeReviewDefaults } from "@/lib/workstation/notion-template";
 import { escapeHtml } from "@/lib/workstation/rich-text";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -38,7 +39,7 @@ export async function readWorkstationDocument(groupKey: string, db: Reader = pri
   const doc: TradeDocument = note?.workstationJson ? { ...emptyDocument(), ...JSON.parse(note.workstationJson) } : emptyDocument();
   doc.revision = note?.workstationVersion ?? 0; doc.updatedAt = note?.updatedAt.toISOString() ?? null; doc.noteUpdatedAt = doc.updatedAt; doc.journalEntryId = link?.journalEntryId ?? null; doc.journalUpdatedAt = link?.journalEntry.updatedAt.toISOString() ?? null;
   doc.review = { ...doc.review, setup: note?.setup ?? "", execution: note?.entryReview ?? "", takeaway: note?.lesson ?? "", notes: note?.content ?? "", thesis: note?.thesis ?? "", exit: note?.exitReview ?? "", mistake: note?.mistake ?? "", followUp: note?.followUp ?? "", tags: trade.tags.map(t => t.tag.name) };
-  doc.review.notion = readNotionReview(link?.journalEntry);
+  doc.review.notion = executedTradeReviewDefaults(readNotionReview(link?.journalEntry));
   // Template presence is the format version: old plain text is never interpreted as markup.
   if (!link?.journalEntry.templateData && doc.review.takeaway) doc.review.takeaway = `<p>${escapeHtml(doc.review.takeaway).replace(/\r?\n/g, "<br>")}</p>`;
   if (!note?.workstationJson) {

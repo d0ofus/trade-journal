@@ -1,5 +1,7 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { CaptureQualityContext, CaptureQualityControls } from "./capture-quality";
+import { captureResolution } from "@/lib/workstation/capture-resolution";
 import { PeerChart, type PeerChartHandle } from "./peer-chart";
 import type { PeerGroupSelection } from "./peer-groups";
 import { PeerMemory, fetchPeerCandles, type PeerFetcher } from "@/lib/workstation/peer-memory";
@@ -23,6 +25,7 @@ const demoFetch: PeerFetcher = async (query, signal) => {
   }) };
 };
 export function PeerComparison(props: Props) {
+  const captureSetting = useContext(CaptureQualityContext);
   const [selection, setSelection] = useState(props.selection), [view, setView] = useState(props.initial), [linked, setLinked] = useState(true);
   const [independent, setIndependent] = useState<Record<string, HistoryRange>>({}), [search, setSearch] = useState(""), [membershipError, setMembershipError] = useState(""), [refresh, setRefresh] = useState(0), [membershipLoading, setMembershipLoading] = useState(props.mode !== "demo");
   const [scroll, setScroll] = useState({ top: 0, height: 600, columns: 2 });
@@ -43,6 +46,9 @@ export function PeerComparison(props: Props) {
     return { symbol, query: { ...peerWarmupRange(ownView, periods), timeframe: view.interval, session: view.session, adjustment: view.adjustment } };
   });
   const requestKey = JSON.stringify(requested);
+  const captureIdentity = `${props.trade.id}:${selection.group.id}:${requestKey}`;
+  const identity = useRef(captureIdentity);
+  useEffect(() => { identity.current = captureIdentity; }, [captureIdentity]);
   const basis = `${view.interval}:${view.session}:${view.adjustment}`;
   const entryTime = peerEntryTime(props.trade);
   const register = useCallback((symbol: string, handle: PeerChartHandle | null) => { if (handle) handles.current.set(symbol, handle); else handles.current.delete(symbol); }, []);
@@ -109,12 +115,15 @@ export function PeerComparison(props: Props) {
     setCapturing(true); setCaptureError("");
     try {
       const chosen = paired && symbol !== props.trade.symbol ? [props.trade.symbol, symbol] : [symbol];
-      const charts = chosen.map(ticker => { const handle = handles.current.get(ticker); if (!handle || !results.values[ticker]?.candles.length || results.key !== requestKey) throw new Error("Wait for the selected charts to finish loading."); return { ticker, canvas: handle.capture(), range: handle.range() ?? view.range }; });
-      const scale = globalThis.devicePixelRatio || 1;
+      const capturedAt = new Date().toISOString();
+      const charts = chosen.map(ticker => { const handle = handles.current.get(ticker); if (!handle || !results.values[ticker]?.candles.length || results.key !== requestKey) throw new Error("Wait for the selected charts to finish loading."); return { ticker, handle, frame: handle.frame(), range: handle.range() ?? view.range }; });
+      const scale = captureResolution({ width: charts.reduce((sum, c) => sum + c.frame.width, 0) + (charts.length - 1) * 12, height: Math.max(...charts.map(c => c.frame.height)) }, captureSetting.quality, globalThis.devicePixelRatio).scale;
+      const canvases = await Promise.all(charts.map(c => c.handle.capture(scale)));
+      if (!alive.current || identity.current !== captureIdentity) throw new Error("Capture cancelled because the comparison changed.");
       let left = 0;
-      const positions = charts.map(({ canvas }) => { const result = { x: left, y: 0, width: canvas.width / scale, height: canvas.height / scale }; left += result.width + 12; return result; });
-      const canvas = paired ? compositeCharts(charts.map(c => c.canvas), props.preferences.theme === "light", positions, scale) : charts[0].canvas;
-      await props.onCapture(canvas, { replayAt: view.replayAt, source: "peer-comparison", symbols: chosen, groupId: selection.group.id, groupName: selection.group.name, interval: view.interval, session: view.session, adjustment: view.adjustment, ranges: Object.fromEntries(charts.map(c => [c.ticker, c.range])), capturedAt: new Date().toISOString(), beforeEntry: view.beforeEntry, entryTime });
+      const positions = canvases.map(canvas => { const result = { x: left, y: 0, width: canvas.width / scale, height: canvas.height / scale }; left += result.width + 12; return result; });
+      const canvas = paired ? compositeCharts(canvases, props.preferences.theme === "light", positions, scale) : canvases[0];
+      await props.onCapture(canvas, { replayAt: view.replayAt, source: "peer-comparison", symbols: chosen, groupId: selection.group.id, groupName: selection.group.name, interval: view.interval, session: view.session, adjustment: view.adjustment, ranges: Object.fromEntries(charts.map(c => [c.ticker, c.range])), capturedAt, beforeEntry: view.beforeEntry, entryTime });
     } catch (e) { if (alive.current) setCaptureError(e instanceof Error ? e.message : "Chart capture failed."); }
     finally { if (alive.current) setCapturing(false); }
   };
@@ -122,7 +131,7 @@ export function PeerComparison(props: Props) {
     const issue = peerSymbolIssue({ ticker: symbol, exchange }) ?? (view.beforeEntry && entryTime === null ? "Before entry is unavailable until the execution timestamp is resolved." : null);
     const series = issue || results.basis !== basis ? undefined : results.values[symbol], current = results.key === requestKey, range = linked ? view.range : independent[symbol] ?? view.range;
     return <article className={`ws-peer-card${primary ? " ws-peer-primary" : ""}`} data-peer-symbol={symbol} key={symbol}>
-      <header><strong>{symbol}</strong><span>{primary ? "Traded ticker" : exchange ?? "Peer"}</span></header>
+      <header><strong>{symbol}<small className="ws-peer-role">{primary ? "Traded ticker" : exchange ?? "Peer"}</small></strong><span><CaptureQualityControls dimensionsOnly label="PNG" frame={() => handles.current.get(symbol)?.frame() ?? null} />{!primary && <CaptureQualityControls dimensionsOnly label="Pair" frame={() => { const own = handles.current.get(symbol)?.frame(), main = handles.current.get(props.trade.symbol)?.frame(); return own && main ? { width: own.width + main.width + 12, height: Math.max(own.height, main.height) } : null; }} />}</span></header>
       {series?.status === "ready" ? <PeerChart symbol={symbol} trade={props.trade} view={{ ...view, range }} series={series} preferences={props.preferences} onRange={onRange} register={register} /> : <div className="ws-peer-chart ws-peer-placeholder" role="status">{issue ?? (series?.status === "error" ? series.error : series?.status === "empty" ? "No eligible history in this range." : results.error || "Loading chart…")}</div>}
       <footer><button type="button" disabled={props.readOnly || capturing || !current || series?.status !== "ready"} onClick={() => void capture(symbol, false)}>Attach current chart</button>{!primary && <button type="button" disabled={props.readOnly || capturing || !current || series?.status !== "ready" || results.values[props.trade.symbol]?.status !== "ready"} onClick={() => void capture(symbol, true)}>Attach comparison</button>}</footer>
     </article>;
@@ -134,6 +143,7 @@ export function PeerComparison(props: Props) {
   }}>
     <header className="ws-peer-heading"><div><h2>Peer comparison · {props.trade.symbol}</h2><span>{props.mode === "demo" ? "Synthetic demo · " : ""}Entry: {entryTime === null ? "timestamp unresolved" : new Date(entryTime * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC"} · {view.adjustment} prices</span></div><button type="button" onClick={props.onClose} aria-label="Close peer comparison">✕</button></header>
     <div className="ws-peer-controls">
+      <CaptureQualityControls label="Peer capture quality" frame={() => handles.current.get(props.trade.symbol)?.frame() ?? null} />
       <select aria-label="Comparison peer group" value={selection.group.id} onChange={e => { const group = selection.groups.find(g => g.id === e.target.value)!; setSelection(v => ({ ...v, group })); props.onSelectGroup(group.id); setIndependent({}); }}>{selection.groups.map(g => <option value={g.id} key={g.id}>{g.name}</option>)}</select>
       <select aria-label="Peer timeframe" value={view.interval} onChange={e => { setView(v => ({ ...v, interval: e.target.value as PeerView["interval"] })); setIndependent({}); }}>{intervals.map(interval => <option key={interval}>{interval}</option>)}</select>
       <button type="button" aria-pressed={linked} onClick={() => { if (linked) setIndependent(Object.fromEntries([...handles.current].flatMap(([symbol, handle]) => { const range = handle.range(); return range ? [[symbol, range]] : []; }))); else { const range = handles.current.get(props.trade.symbol)?.range(); if (range) setView(v => ({ ...v, range })); setIndependent({}); } setLinked(v => !v); }}>Link dates {linked ? "on" : "off"}</button>
