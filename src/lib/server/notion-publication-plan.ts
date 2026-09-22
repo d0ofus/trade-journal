@@ -9,12 +9,18 @@ import { jsonHash, NotionError, notionRequest, type JsonObject } from "./notion-
 import { htmlToNotionBlocks } from "./notion-format";
 import { planNotionProperties, type RemoteProperty } from "./notion-properties";
 import type { TradeDocument } from "@/lib/workstation/types";
+import { notionPageUrl, unfinishedPublication, type PublicationContext, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 
 export type PublishSection = SectionDefinition & { blocks: JsonObject[]; images: string[] };
 export type PublishPlan = { layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
 export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; caption: string; image: string }[] };
 
 export async function createNotionPreview(groupKey: string, revision: number, sourceOrigin: string) {
+  const existing = await prisma.notionPublication.findUnique({ where: { groupKey } });
+  if (existing?.activeJobId) {
+    const active = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: existing.activeJobId } });
+    if (unfinishedPublication(active)) return publicationStatus(active);
+  }
   const doc = await readWorkstationDocument(groupKey);
   const trade = (await listWorkstationTrades({}, groupKey, true, true))[0];
   if (!trade || trade.stale) throw new WorkstationError("This trade is unavailable or stale and cannot be published.", 409);
@@ -55,16 +61,34 @@ export async function createNotionPreview(groupKey: string, revision: number, so
   if (jsonHash(await readWorkstationDocument(groupKey)) !== digest) throw new WorkstationError("The review changed while preparing the preview. Open it again.");
   const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors });
   await prisma.notionPublication.upsert({ where: { groupKey }, create: { groupKey, dataSourceId: NOTION_DATA_SOURCE_ID }, update: {} });
-  const job = await prisma.notionPublishJob.upsert({ where: { requestKey }, create: { groupKey, revision, templateId: layout.id, requestKey,
-    snapshot: snapshot as unknown as Prisma.InputJsonValue, plan: plan as unknown as Prisma.InputJsonValue }, update: {} });
+  const job = await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
+    const current = await tx.notionPublication.findUniqueOrThrow({ where: { groupKey } });
+    if (current.activeJobId) {
+      const active = await tx.notionPublishJob.findUniqueOrThrow({ where: { id: current.activeJobId } });
+      if (unfinishedPublication(active)) return active;
+    }
+    return tx.notionPublishJob.upsert({ where: { requestKey }, create: { groupKey, revision, templateId: layout.id, requestKey,
+      snapshot: snapshot as unknown as Prisma.InputJsonValue, plan: plan as unknown as Prisma.InputJsonValue }, update: {} });
+  });
   return publicationStatus(job, true);
 }
+export async function publicationContext(groupKey: string): Promise<PublicationContext> {
+  const [publication, note] = await Promise.all([
+    prisma.notionPublication.findUnique({ where: { groupKey } }),
+    prisma.closedTradeNote.findUnique({ where: { groupKey }, select: { workstationVersion: true } }),
+  ]);
+  return { savedRevision: note?.workstationVersion ?? 0, lastPublishedRevision: publication?.lastRevision ?? null,
+    pageUrl: notionPageUrl(publication?.pageId), activeJobId: publication?.activeJobId ?? null };
+}
 export function publicationStatus(job: { id: string; groupKey: string; revision: number; state: string; error: string | null; retryAt: Date | null; plan: unknown; progress: unknown; snapshot: unknown }, details = false) {
-  const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; sections?: Record<string, { done?: boolean }> };
+  const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; templateWait?: TemplateWait; sections?: Record<string, { done?: boolean }> };
   const snapshot = job.snapshot as PublishSnapshot;
   const includeDetails = details && job.state === "preview";
   return { id: job.id, groupKey: job.groupKey, revision: job.revision, state: job.state, error: job.error, retryAt: job.retryAt,
-    pageUrl: progress.pageId && /^[0-9a-f-]{36}$/.test(progress.pageId) ? new URL(`/${progress.pageId.replace(/-/g, "")}`, "https://www.notion.so").href : null,
+    pageUrl: notionPageUrl(progress.pageId),
+    phase: progress.templateWait?.timedOut ? "template_timeout" : progress.templateWait && ["ready", "running", "waiting"].includes(job.state) ? "template_wait" : job.state,
+    missingSections: progress.templateWait?.missing ?? [],
     templateVersion: plan.layout.id, properties: plan.propertyDisplay, omitted: plan.omitted, errors: plan.errors,
     sections: plan.sections.map(section => ({ key: section.key, label: [...section.groups, section.label].join(" · "), images: section.images.length, blocks: section.blocks.length, done: progress.sections?.[section.key]?.done ?? false,
       html: includeDetails ? richHtml(sectionText(snapshot.doc.review, section.key)) : undefined, imageIds: includeDetails ? section.images : undefined })),

@@ -4,6 +4,9 @@
     "incremental": false
   },
   "include": [
+    "src/lib/workstation/notion-publication-client.test.ts",
+    "src/lib/workstation/shortcuts.test.ts",
+    "tests/workstation-preview/shortcuts.spec.ts",
     "src/lib/workstation/capture-resolution.test.ts",
     "src/lib/workstation/review-defaults.test.ts",
     "tests/workstation-preview/fullscreen-capture.spec.ts",

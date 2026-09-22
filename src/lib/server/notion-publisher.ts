@@ -9,11 +9,13 @@ import { readTemplateLayout } from "./notion-template-sync";
 import { publicationStatus, type PublishPlan, type PublishSnapshot } from "./notion-publication-plan";
 import { withNotionBudget } from "./notion-client";
 import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
+import { templateRetryAt, templateTimeoutMessage, templateWaitExpired, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 
 type Anchor = { id: string; parent: string; sourceId: string; type: string };
 type SectionBinding = { anchor: Anchor; container: string; fingerprint: string };
 type Bindings = { sections?: Record<string, SectionBinding>; propertyFingerprint?: string; propertyIds?: string[] };
 type Progress = { pageId?: string; botId?: string; createIntent?: boolean; createTitle?: string; anchors?: Record<string, Anchor>;
+  templateWait?: TemplateWait;
   checked?: boolean; propertiesDone?: boolean; propertyIntent?: boolean; propertyBase?: string; newPropertyFingerprint?: string;
   pendingAppend?: { parent: string; count: number }; sections?: Record<string, { container?: string; createIntent?: boolean; done?: boolean; fingerprint?: string }>; };
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
@@ -116,6 +118,7 @@ async function runPublicationStep(id: string, groupKey: string) {
     WHERE "NotionRequestGate"."nextAt" <= (NOW() AT TIME ZONE 'UTC') RETURNING "key"`;
   if (!global.length) throw new NotionError("Another Notion publication step is running. Try again shortly.", 409);
   let job: NotionPublishJob | null = null;
+  let currentProgress: Progress | undefined;
   try {
     const result = await prisma.notionPublishJob.updateMany({ where: { id, groupKey, state: { in: ["ready", "running", "waiting", "failed", "conflict"] }, OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }], AND: [{ OR: [{ retryAt: null }, { retryAt: { lte: new Date() } }] }] }, data: { leaseToken: lease, leaseUntil: until, state: "running", error: null, retryAt: null } });
     if (!result.count) {
@@ -126,12 +129,16 @@ async function runPublicationStep(id: string, groupKey: string) {
     job = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } });
     const plan = job.plan as unknown as PublishPlan, snapshot = job.snapshot as unknown as PublishSnapshot;
     const progress = job.progress as unknown as Progress;
+    currentProgress = progress;
+    // Only explicit Resume reaches a paused timeout. Open a new bounded window,
+    // retaining the same page, creation intent and frozen publication snapshot.
+    if (progress.templateWait?.timedOut) progress.templateWait = { startedAt: Date.now(), attempt: 0 };
     const publication = await prisma.notionPublication.findUniqueOrThrow({ where: { groupKey } });
     const bindings = publication.bindings as unknown as Bindings;
     if (publication.activeJobId !== id) throw new NotionError("This publication no longer owns the trade's publishing slot.", 409);
     const trade = await prisma.closedTrade.findUnique({ where: { groupKey }, select: { isStale: true } });
     if (!trade || trade.isStale) throw new WorkstationError("The trade became stale. Publication is paused.");
-    async function checkpoint(patch: { state?: string; error?: string | null } = {}) {
+    async function checkpoint(patch: { state?: string; error?: string | null; retryAt?: Date | null } = {}) {
       const saved = await prisma.notionPublishJob.updateMany({ where: { id, leaseToken: lease, leaseUntil: { gt: new Date() } }, data: { progress: asJson(progress), ...patch } });
       if (!saved.count) throw new NotionError("The publishing lease expired. Resume to reconcile saved progress.", 409);
     }
@@ -154,7 +161,8 @@ async function runPublicationStep(id: string, groupKey: string) {
         }
         await prisma.notionPublication.update({ where: { groupKey }, data: { pageId: progress.pageId } });
       }
-      await checkpoint({ state: "waiting" });
+      if (!bindings.sections || !Object.keys(bindings.sections).length) progress.templateWait ??= { startedAt: Date.now(), attempt: 0 };
+      await checkpoint({ state: "waiting", retryAt: progress.templateWait ? templateRetryAt(progress.templateWait) : null });
       return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
     }
     const pageId = progress.pageId;
@@ -171,14 +179,26 @@ async function runPublicationStep(id: string, groupKey: string) {
         }
         progress.anchors = anchors;
       } else {
+        progress.templateWait ??= { startedAt: Date.now(), attempt: 0 };
+        await checkpoint();
         const tree = await notionTree(pageId), anchors: Record<string, Anchor> = {};
+        const missing: string[] = [];
         for (const section of plan.sections) {
           const found = locate(tree, section.path, pageId);
-          if (!found || found.node.type !== section.type || found.node.text.trim() !== section.label) throw new NotionError("The template is not ready or its structure differs from the preview. Resume after checking Notion; the template will not be reapplied.", 409);
+          if (!found || found.node.type !== section.type || found.node.text.trim() !== section.label) { missing.push([...section.groups, section.label].join(" / ")); continue; }
           anchors[section.key] = { id: found.node.id, parent: found.parent, sourceId: section.sourceId, type: section.type };
+        }
+        if (missing.length) {
+          const wait = progress.templateWait;
+          wait.missing = missing;
+          wait.timedOut = templateWaitExpired(wait);
+          wait.attempt++;
+          await checkpoint({ state: wait.timedOut ? "failed" : "waiting", error: wait.timedOut ? templateTimeoutMessage : null, retryAt: wait.timedOut ? null : templateRetryAt(wait) });
+          return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
         }
         progress.anchors = anchors;
       }
+      delete progress.templateWait;
       await checkpoint();
     }
     if (!progress.checked) {
@@ -278,7 +298,17 @@ async function runPublicationStep(id: string, groupKey: string) {
   } catch (error) {
     if (job) {
       const known = error instanceof NotionError || error instanceof WorkstationError;
-      await prisma.notionPublishJob.updateMany({ where: { id, leaseToken: lease }, data: { state: known && error.status === 409 ? "conflict" : "failed", error: known ? error.message : "Publishing failed. Progress is retained; inspect and resume.", retryAt: error instanceof NotionError ? error.retryAt ?? null : null } });
+      const wait = currentProgress?.templateWait;
+      const waiting = error instanceof NotionError && error.status === 429 && !error.uncertain && wait && !currentProgress?.anchors;
+      const cooldownExceedsWindow = waiting && error.retryAt && templateWaitExpired(wait, error.retryAt.getTime());
+      if (waiting) wait.timedOut = templateWaitExpired(wait) || !!cooldownExceedsWindow;
+      const timedOut = waiting && wait.timedOut;
+      await prisma.notionPublishJob.updateMany({ where: { id, leaseToken: lease }, data: {
+        ...(waiting ? { progress: asJson(currentProgress) } : {}),
+        state: waiting ? timedOut ? "failed" : "waiting" : known && error.status === 409 ? "conflict" : "failed",
+        error: waiting ? cooldownExceedsWindow ? "Notion requested a cooldown beyond this automatic waiting window. Resume after the indicated time to check the same page; the template will not be reapplied." : timedOut ? templateTimeoutMessage : null : known ? error.message : "Publishing failed. Progress is retained; inspect and resume.",
+        retryAt: error instanceof NotionError ? error.retryAt ?? null : null,
+      } });
       return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
     }
     throw error;

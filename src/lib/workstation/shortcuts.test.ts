@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import { bindingConflict, defaultShortcuts, keyBinding, matchCommand, restoreShortcuts } from "./shortcuts";
 
 const key = (value: string, modifiers = {}) => ({ key: value, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, ...modifiers });
+test("Journal toggle is available across the workstation and preserves custom assignments", () => {
+  const event = key("J", { shiftKey: true });
+  for (const scope of ["chart", "workstation"] as const) assert.equal(matchCommand(event, defaultShortcuts(), scope)?.id, "panel.journal");
+  const saved = restoreShortcuts({ version: 1, bindings: { "trade.next": "Shift+J" } });
+  assert.equal(saved.bindings["trade.next"], "Shift+J"); assert.equal(saved.bindings["panel.journal"], null);
+  assert.equal(restoreShortcuts({ version: 1, bindings: { "panel.journal": null } }).bindings["panel.journal"], null);
+  assert.equal(restoreShortcuts({ version: 1, bindings: { "panel.journal": "Shift+Y" } }).bindings["panel.journal"], "Shift+Y");
+  assert.equal(matchCommand(event, { ...defaultShortcuts(), singleKeys: false }, "chart"), undefined);
+});
 test("execution labels have a configurable chart-only shortcut without taking saved keys", () => {
   assert.equal(matchCommand(key("L", { shiftKey: true }), defaultShortcuts(), "chart")?.id, "chart.labels");
   assert.equal(matchCommand(key("L", { shiftKey: true }), defaultShortcuts(), "workstation"), undefined);

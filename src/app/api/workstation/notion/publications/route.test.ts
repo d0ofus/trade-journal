@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { GET, POST } from "./route";
-const mocks = vi.hoisted(() => ({ session: true, preview: vi.fn(), start: vi.fn(), resume: vi.fn(), publication: vi.fn(), job: vi.fn() }));
+const mocks = vi.hoisted(() => ({ session: true, preview: vi.fn(), start: vi.fn(), resume: vi.fn(), publication: vi.fn(), job: vi.fn(), context: vi.fn() }));
 vi.mock("next-auth", () => ({ getServerSession: async () => mocks.session ? { user: { name: "test" } } : null }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/prisma", () => ({ prisma: { notionPublication: { findUnique: mocks.publication }, notionPublishJob: { findFirst: mocks.job, findUnique: mocks.job } } }));
-vi.mock("@/lib/server/notion-publication-plan", () => ({ createNotionPreview: mocks.preview, publicationStatus: (job: unknown) => job }));
+vi.mock("@/lib/server/notion-publication-plan", () => ({ createNotionPreview: mocks.preview, publicationStatus: (job: unknown) => job, publicationContext: mocks.context }));
 vi.mock("@/lib/server/notion-publisher", () => ({ startNotionPublication: mocks.start, resumeNotionPublication: mocks.resume }));
 function request(body?: unknown, origin = "http://localhost") { return new NextRequest("http://localhost/api/workstation/notion/publications?groupKey=test-trade", body ? { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}); }
-beforeEach(() => { mocks.session = true; mocks.preview.mockReset(); mocks.start.mockReset(); mocks.resume.mockReset(); mocks.publication.mockResolvedValue(null); mocks.job.mockResolvedValue(null); vi.stubEnv("TRADES_WORKSTATION_ENABLED", "1"); vi.stubEnv("NOTION_PUBLISH_ENABLED", "0"); });
+beforeEach(() => { mocks.session = true; mocks.preview.mockReset(); mocks.start.mockReset(); mocks.resume.mockReset(); mocks.publication.mockResolvedValue(null); mocks.job.mockResolvedValue(null); mocks.context.mockResolvedValue({ savedRevision: 3, lastPublishedRevision: 1, pageUrl: "https://notion.invalid/linked-page", activeJobId: null }); vi.stubEnv("TRADES_WORKSTATION_ENABLED", "1"); vi.stubEnv("NOTION_PUBLISH_ENABLED", "0"); });
 afterEach(() => vi.unstubAllEnvs());
 describe("Notion publication API boundaries", () => {
   it("requires a session for reads and writes", async () => {
@@ -22,7 +22,16 @@ describe("Notion publication API boundaries", () => {
     expect(mocks.preview).not.toHaveBeenCalled();
   });
   it("does not run jobs during GET status polling", async () => {
-    expect((await GET(request())).status).toBe(200); expect(mocks.resume).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+    const response = await GET(request());
+    expect(response.status).toBe(200); expect(mocks.resume).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+    expect((await response.json()).publication).toMatchObject({ savedRevision: 3, lastPublishedRevision: 1 });
+  });
+  it("returns the active frozen job instead of a newer preview", async () => {
+    mocks.publication.mockResolvedValue({ activeJobId: "frozen-job" }); mocks.job.mockResolvedValue({ id: "frozen-job", revision: 1, state: "waiting" });
+    const response = await GET(request());
+    expect((await response.json()).job).toMatchObject({ id: "frozen-job", revision: 1 });
+    expect(mocks.job).toHaveBeenCalledWith({ where: { id: "frozen-job" } });
+    expect(mocks.preview).not.toHaveBeenCalled();
   });
   it("accepts only saved-review identifiers, not a destination override or document", async () => {
     expect((await POST(request({ action: "preview", groupKey: "test-trade", revision: 1, pageId: "manual-page" }))).status).toBe(400);

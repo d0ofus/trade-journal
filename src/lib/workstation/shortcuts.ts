@@ -31,6 +31,7 @@ export const commands: Command[] = [
   { id: "panel.executions", label: "Show Executions", scope: "workstation", binding: null },
   { id: "panel.evidence", label: "Show Evidence", scope: "workstation", binding: null },
   { id: "panel.drawings", label: "Show Drawings", scope: "workstation", binding: null },
+  { id: "panel.journal", label: "Show/hide Journal", scope: "workstation", binding: "Shift+J" },
   { id: "trade.previous", label: "Previous trade", scope: "workstation", binding: "Alt+ArrowUp" },
   { id: "trade.next", label: "Next trade", scope: "workstation", binding: "Alt+ArrowDown" },
   { id: "shortcuts.help", label: "Keyboard shortcuts", scope: "chart", binding: "?" },
@@ -76,7 +77,7 @@ export function restoreShortcuts(value: unknown): ShortcutPreferences {
   const bindings: Record<string, string | null> = {};
   for (const command of commands) {
     const candidate = saved.bindings?.[command.id] === undefined ? command.binding : saved.bindings[command.id];
-    const newDefault = ["chart.beforeTrade", "chart.fit", "chart.session", "chart.comparison", "chart.labels"].includes(command.id);
+    const newDefault = ["chart.beforeTrade", "chart.fit", "chart.session", "chart.comparison", "chart.labels", "panel.journal"].includes(command.id);
     const defaultConflict = newDefault && saved.bindings?.[command.id] === undefined && typeof candidate === "string" && savedBindings.has(candidate);
     bindings[command.id] = typeof candidate === "string" && !bindingProblem(candidate) && !used.has(candidate) && !defaultConflict ? candidate : null;
     if (bindings[command.id]) used.add(bindings[command.id]!);

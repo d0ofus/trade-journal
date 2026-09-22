@@ -1,5 +1,6 @@
 import { showTakeaways } from "./review-helpers";
 import { expect, test, Page } from "@playwright/test";
+import { defaultPreferences } from "../../src/lib/workstation/types";
 
 async function open(page: Page) {
   const errors: string[] = [], requests: string[] = [];
@@ -15,6 +16,56 @@ async function settings(page: Page) {
   await page.getByRole("button", { name: "Keyboard shortcuts", exact: false }).click();
   return page.getByRole("dialog", { name: "Keyboard shortcuts", exact: true });
 }
+test("Shift+J toggles Journal without leaving normal, Focus or fullscreen mode", async ({ page }) => {
+  const { errors } = await open(page);
+  const chart = page.locator(".ws-chart").first(), journal = page.locator(".ws-notion-review");
+  await expect(journal).toBeVisible(); await chart.focus(); await page.keyboard.press("Shift+J");
+  await expect(journal).not.toBeVisible(); await expect(chart).toBeFocused();
+  await page.keyboard.press("Shift+J"); await expect(journal).toBeVisible();
+  await showTakeaways(page); const editor = page.getByRole("textbox", { name: "Takeaways", exact: true });
+  await editor.fill("Retained while toggling"); await editor.press("Shift+J"); await expect(journal).toBeVisible();
+  await chart.focus(); await page.keyboard.press("Shift+F"); await expect(journal).not.toBeVisible();
+  await page.keyboard.press("Shift+J"); await expect(journal).toBeVisible(); await expect(page.locator(".workstation")).toHaveClass(/ws-focus/);
+  await chart.focus(); await page.keyboard.press("f"); await expect(chart).toHaveClass(/ws-chart-fullscreen/);
+  await page.keyboard.press("Shift+J"); await expect(page.locator(".ws-fullscreen-journal")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveCount(1);
+  await chart.focus(); await page.keyboard.press("Shift+J"); await expect(page.locator(".ws-fullscreen-journal")).toHaveCount(0);
+  await expect(chart).toBeFocused(); await expect(chart).toHaveClass(/ws-chart-fullscreen/);
+  await page.keyboard.press("Escape"); await expect(page.locator(".workstation")).toHaveClass(/ws-focus/); await expect(journal).toBeVisible();
+  await page.keyboard.press("Shift+J"); await expect(journal).not.toBeVisible();
+  await page.keyboard.press("Shift+F"); await expect(journal).toBeVisible();
+  expect(errors).toEqual([]);
+});
+test("Journal shortcut remapping persists and remains inactive in dialogs", async ({ page }) => {
+  await open(page); const dialog = await settings(page);
+  const binding = dialog.getByRole("button", { name: "Set shortcut for Show/hide Journal", exact: true });
+  await binding.click(); await binding.press("Shift+F"); await expect(dialog.getByRole("status")).toContainText("Already assigned");
+  await binding.press("Shift+Y"); await expect(binding).toContainText("Shift + Y");
+  await dialog.getByLabel("Search keyboard shortcuts").press("Shift+Y"); await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Close dialog" }).click(); await page.reload();
+  const chart = page.locator(".ws-chart").first(), journal = page.locator(".ws-notion-review");
+  await expect(journal).toBeVisible(); await chart.focus(); await page.keyboard.press("Shift+J"); await expect(journal).toBeVisible();
+  await page.keyboard.press("Shift+Y"); await expect(journal).not.toBeVisible();
+});
+test("Journal shortcut activates an obscured custom dock tab and hides only that tab's content", async ({ page }) => {
+  const prefs = defaultPreferences();
+  prefs.dock = { grid: { root: { type: "branch", data: [{ type: "leaf", data: { id: "shared", views: ["charts", "journal"], activeView: "charts" }, size: 1200 }], size: 800 }, width: 1200, height: 800, orientation: "HORIZONTAL" }, panels: { charts: { id: "charts", contentComponent: "panel", title: "CHART WORKSPACE" }, journal: { id: "journal", contentComponent: "panel", title: "JOURNAL" } }, activeGroup: "shared" };
+  await page.addInitScript(p => localStorage.setItem("execution-lab:workstation:preferences:demo:v1", JSON.stringify(p)), prefs);
+  await open(page); const chart = page.locator(".ws-chart").first(), journal = page.locator(".ws-notion-review");
+  await chart.focus(); await page.keyboard.press("Shift+J"); await expect(journal).toBeVisible();
+  await page.locator("summary").filter({ hasText: /^Takeaways$/ }).focus(); await page.keyboard.press("Shift+J");
+  await expect(journal).not.toBeVisible(); await expect(chart).toBeVisible(); await expect(chart).toBeFocused();
+});
+test("Journal shortcut uses the mobile view and fullscreen sidebar", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 }); await open(page);
+  const chart = page.locator(".ws-chart").first(); await chart.focus(); await page.keyboard.press("Shift+J");
+  await expect(page.locator(".ws-notion-review")).toBeVisible();
+  await page.locator("summary").filter({ hasText: /^Takeaways$/ }).focus(); await page.keyboard.press("Shift+J"); await expect(chart).toBeVisible();
+  await chart.focus(); await page.keyboard.press("f"); await page.keyboard.press("Shift+J");
+  await expect(page.locator(".ws-fullscreen-journal")).toBeVisible();
+  await page.getByRole("button", { name: "Close fullscreen journal", exact: true }).press("Shift+J");
+  await expect(chart).toHaveClass(/ws-chart-fullscreen/); await expect(chart).toBeFocused();
+});
 test("chart shortcuts respect focus, typing and Escape priority; fullscreen and date navigation work", async ({ page }, info) => {
   const { errors, requests } = await open(page);
   const chart = page.locator(".ws-chart").nth(1);

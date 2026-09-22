@@ -766,6 +766,8 @@ export function TradesWorkstation({
       setFullscreenChart(null);
       changePreferences({ focusMode: !preferences.focusMode });
       handles.current.get(chartId)?.focus();
+    } else if (id === "panel.journal") {
+      toggleJournal(chartId);
     } else if (id.startsWith("panel.")) {
       setFullscreenChart(null);
       showPanel(id.slice(6) as "executions" | "evidence" | "drawings");
@@ -939,6 +941,31 @@ export function TradesWorkstation({
       });
     panel.group.api.setVisible(true);
     panel.api.setActive();
+  };
+  const toggleJournal = (chartId = activeChart) => {
+    let closing = false;
+    if (fullscreenChart) {
+      closing = fullscreenJournal;
+      setFullscreenJournal(!closing);
+    } else if (preferences.focusMode) {
+      closing = focusJournal;
+      setFocusJournal(!closing);
+      if (isSmall) setMobileTab(closing ? "Charts" : "Journal");
+    } else if (isSmall) {
+      closing = mobileTab === "Journal";
+      setMobileTab(closing ? "Charts" : "Journal");
+    } else {
+      const panel = dock.current?.getPanel("journal");
+      closing = !!(panel?.api.isVisible && panel.group.api.isVisible);
+      if (closing) {
+        // A custom dock may tab Journal beside charts or tools. Hide its content
+        // by activating a sibling, never hide that entire shared group.
+        panel?.group.panels.find(sibling => sibling.id !== "journal")?.api.setActive();
+        changePreferences({ journal: false });
+      }
+      else showPanel("journal");
+    }
+    if (closing) requestAnimationFrame(() => handles.current.get(chartId)?.focus());
   };
   const syncClickedDate = (source: string, target: ChartDateTarget) => {
     const mode = prefRef.current.dateLink;
@@ -1331,10 +1358,7 @@ export function TradesWorkstation({
           )}
           <span>{preferences.focusMode ? "Restore" : "Focus"}</span>
         </button>
-        {preferences.focusMode && <button className={`ws-tool-button ${focusJournal ? "active" : ""}`} aria-label={focusJournal ? "Hide focus journal" : "Show focus journal"} aria-expanded={focusJournal} onClick={() => {
-          setFocusJournal(value => !value);
-          if (isSmall) setMobileTab(focusJournal ? "Charts" : "Journal");
-        }}><BookOpen size={15} /><span>Journal</span></button>}
+        {preferences.focusMode && <button className={`ws-tool-button ${focusJournal ? "active" : ""}`} aria-label={focusJournal ? "Hide focus journal" : "Show focus journal"} aria-expanded={focusJournal} title={titleFor("panel.journal", "Show/hide Journal")} onClick={() => toggleJournal()}><BookOpen size={15} /><span>Journal</span></button>}
         <button
           className="ws-tool-button"
           aria-label="Chart settings"
@@ -1429,7 +1453,7 @@ export function TradesWorkstation({
               active={activeChart === panel.id}
               fullscreen={fullscreenChart === panel.id}
               fullscreenJournal={fullscreenJournal}
-              onJournal={() => setFullscreenJournal(value => !value)}
+              onJournal={() => toggleJournal(panel.id)}
               onFullscreen={() => runCommand("chart.fullscreen", panel.id)}
               fullscreenTitle={titleFor("chart.fullscreen", fullscreenChart === panel.id ? "Restore chart" : "Fullscreen chart")}
               beforeTradeTitle={titleFor("chart.beforeTrade", "Before Trade — exclude the first execution candle and all later candles")}
@@ -2361,11 +2385,8 @@ export function TradesWorkstation({
                     preferences.journal ? "Collapse journal" : "Show journal"
                   }
                   aria-expanded={preferences.journal}
-                  onClick={() =>
-                    preferences.journal
-                      ? changePreferences({ journal: false })
-                      : showPanel("journal")
-                  }
+                  title={titleFor("panel.journal", "Show/hide Journal")}
+                  onClick={() => toggleJournal()}
                 >
                   <BookOpen size={13} />
                   Journal

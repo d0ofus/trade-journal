@@ -1,50 +1,56 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import type { publicationStatus } from "@/lib/server/notion-publication-plan";
+import { continuePublication, openPublication, type PublicationResult } from "@/lib/workstation/notion-publication-client";
+import { unfinishedPublication } from "@/lib/workstation/notion-publication-state";
 import { ReviewDialog } from "./review-dialog";
-type Status = ReturnType<typeof publicationStatus>;
+
 export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey: string; revision: number; onClose: () => void }) {
-  const [job, setJob] = useState<Status | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(false), [enabled, setEnabled] = useState(false);
-  const request = useRef<AbortController | null>(null), mounted = useRef(true);
+  const [result, setResult] = useState<PublicationResult | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
+  const request = useRef<AbortController | null>(null);
   useEffect(() => {
-    mounted.current = true;
     const controller = new AbortController(); request.current = controller;
-    void fetch(`/api/workstation/notion/publications?groupKey=${encodeURIComponent(groupKey)}`, { signal: controller.signal, cache: "no-store" }).then(async response => {
-      const result = await response.json(); if (!response.ok) throw new Error(result.error);
-      if (mounted.current) { setJob(result.job); setEnabled(result.enabled); }
-    }).catch(error => { if (!controller.signal.aborted && mounted.current) setError(error.message); });
-    return () => { mounted.current = false; controller.abort(); request.current?.abort(); };
+    void openPublication(groupKey, controller.signal, setResult)
+      .catch(error => { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Unable to prepare publication."); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+    return () => { controller.abort(); request.current?.abort(); };
   }, [groupKey]);
+  const job = result?.job, enabled = result?.enabled ?? false;
+  const savedRevision = Math.max(revision, result?.publication.savedRevision ?? revision);
+  const lastPublished = result?.publication.lastPublishedRevision;
+  const pageUrl = result?.publication.pageUrl ?? job?.pageUrl;
+  const pending = unfinishedPublication(job ?? null), newerEdits = !!job && savedRevision > job.revision;
+  const retryAt = job?.retryAt;
+  useEffect(() => {
+    if (!retryAt) return;
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [retryAt]);
   async function send(action: "preview" | "publish" | "resume") {
     if (busy) return;
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
     setBusy(true); setError("");
     try {
-      let nextAction = action;
-      let id = job?.id;
-      // Ordinary bounded steps continue only while this dialog is open. Errors,
-      // cooldowns and conflicts always require an explicit Resume action.
-      do {
-        const response = await fetch("/api/workstation/notion/publications", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-          body: JSON.stringify({ action: nextAction, groupKey, ...nextAction === "preview" ? { revision } : { id } }) });
-        const result = await response.json(); if (!response.ok) throw new Error(result.error || "Notion request failed.");
-        if (!mounted.current) return;
-        setEnabled(result.enabled); setJob(result.job); id = result.job.id;
-        if (nextAction === "preview" || !["ready", "waiting"].includes(result.job.state)) break;
-        nextAction = "resume";
-      } while (mounted.current && !controller.signal.aborted);
-    } catch (error) { if (!controller.signal.aborted && mounted.current) setError(error instanceof Error ? error.message : "Notion request failed."); }
-    finally { if (mounted.current) setBusy(false); }
+      if (action === "preview" || !result) await openPublication(groupKey, controller.signal, setResult);
+      else await continuePublication(groupKey, action, result, controller.signal, setResult);
+    } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Notion request failed."); }
+    finally { if (!controller.signal.aborted) setBusy(false); }
   }
   return <ReviewDialog title="Publish/update in Notion" onClose={onClose}>
-    <p className="ws-help">Publish one saved revision into an app-owned Notion page. Existing manually created journals are not modified.</p>
-    {!enabled && <p role="status">Publishing is disabled until Notion permissions and live validation are complete. You can still prepare a preview.</p>}
+    <p className="ws-help">Review the latest saved preview, then confirm to publish to the linked app-owned Notion page. Changes are not sent automatically. Manually created journals are not modified.</p>
+    <p role="status">Saved revision {savedRevision} · Last published: {lastPublished == null ? "Not yet published" : `revision ${lastPublished}`}</p>
+    {result && !enabled && <p role="status">Publishing is disabled until Notion permissions and live validation are complete. You can still prepare a preview.</p>}
     {error && <p role="alert">{error}</p>}
+    {busy && !job && <p role="status">Preparing latest saved-review preview…</p>}
+    {pageUrl && <a href={pageUrl} target="_blank" rel="noreferrer">Open app-owned Notion page</a>}
     {job && <>
-      <p role="status">Revision {job.revision} · {job.state}{busy ? " · Working…" : ""}</p>
+      <p role="status">{pending ? "Publishing frozen" : job.state === "preview" ? "Preview" : "Published"} revision {job.revision} · {job.state}{busy && job.phase !== "template_wait" ? " · Working…" : ""}</p>
+      {job.phase === "template_wait" && <p role="status">Waiting for Notion to apply the template…{!busy ? " Resume/check progress to continue." : " This page will be checked automatically."}</p>}
       {job.error && <p role="alert">{job.error}</p>}
-      {job.retryAt && <p>Resume after {new Date(job.retryAt).toLocaleString()}.</p>}
-      {job.pageUrl && <a href={job.pageUrl} target="_blank" rel="noreferrer">Open app-owned Notion page</a>}
+      {job.phase === "template_timeout" && job.missingSections.length > 0 && <p>Sections not ready: {job.missingSections.join(", ")}</p>}
+      {newerEdits && <p role="status">Newer saved edits in revision {savedRevision} are not included in this {pending ? "unfinished publication. Finish or resolve it first; a fresh preview will then be prepared for your confirmation." : "preview. Prepare the latest preview before confirming."}</p>}
+      {job.state === "succeeded" && !newerEdits && <p role="status">This saved revision has already been published.</p>}
+      {retryAt && new Date(retryAt).getTime() > now && <p>{busy ? "Next check" : "Resume"} after {new Date(retryAt).toLocaleTimeString()}.</p>}
       <h3>Properties</h3><dl className="ws-notion-preview-properties">{job.properties.map(item => <div key={item.name}><dt>{item.name}</dt><dd>{item.value}</dd></div>)}</dl>
       <h3>Section placement</h3>{job.sections.map(section => <details className="ws-template-section" key={section.key}><summary>{section.label}: {section.blocks} text blocks, {section.images} images{section.done ? " · Complete" : ""}</summary>
         {section.html && <div className="ws-notion-preview-text" dangerouslySetInnerHTML={{ __html: section.html }} />}
@@ -58,9 +64,9 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
       {job.errors.length > 0 && <><h3>Resolve before publishing</h3><ul>{job.errors.map(item => <li key={item}>{item}</li>)}</ul></>}
     </>}
     <div className="ws-export-actions">
-      <button disabled={busy || !!job && !["preview", "succeeded"].includes(job.state)} onClick={() => void send("preview")}>Prepare saved-review preview</button>
-      {job?.state === "preview" && <button className="ws-primary" disabled={busy || !enabled || !!job.errors.length || job.revision !== revision} onClick={() => void send("publish")}>Confirm publish revision {job.revision}</button>}
-      {job && !["preview", "succeeded"].includes(job.state) && <button disabled={busy || !enabled || !!job.retryAt && new Date(job.retryAt).getTime() > Date.now()} onClick={() => void send("resume")}>Resume / check progress</button>}
+      <button disabled={busy || pending} onClick={() => void send("preview")}>Refresh saved-review preview</button>
+      {job?.state === "preview" && <button className="ws-primary" disabled={busy || !enabled || !!job.errors.length || job.revision !== savedRevision} onClick={() => void send("publish")}>Confirm {pageUrl ? "update" : "publish"} revision {job.revision}</button>}
+      {pending && <button disabled={busy || !enabled || !!retryAt && new Date(retryAt).getTime() > now} onClick={() => void send("resume")}>Resume/check progress</button>}
     </div>
     <p className="ws-help">Closing pauses client-driven continuation; an already submitted server step may finish. Reopen to inspect or resume the same job.</p>
   </ReviewDialog>;

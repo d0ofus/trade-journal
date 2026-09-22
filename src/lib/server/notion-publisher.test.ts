@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { initialSectionIds, NOTION_DATA_SOURCE_ID, NOTION_TEMPLATE_ID, type TemplateBlock } from "@/lib/workstation/template-layout";
+import { initialSectionIds, NOTION_DATA_SOURCE_ID, NOTION_TEMPLATE_ID, setSectionText, type TemplateBlock } from "@/lib/workstation/template-layout";
 import { jsonHash, NotionError, remoteText, type JsonObject, type RemoteBlock } from "./notion-client";
 import { readTemplateLayout } from "./notion-template-sync";
-import { readWorkstationDocument } from "./trade-workstation";
-import { resumeNotionPublication, startNotionPublication } from "./notion-publisher";
+import { readWorkstationDocument, saveWorkstationDocument } from "./trade-workstation";
+import { resumeNotionPublication as resumeStep, startNotionPublication } from "./notion-publisher";
+import { createNotionPreview, publicationContext } from "./notion-publication-plan";
 import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
 import type { PublishPlan, PublishSnapshot } from "./notion-publication-plan";
 
@@ -109,7 +110,86 @@ async function finish(id: string, groupKey: string) {
   for (let i = 0; i < 20 && result.state === "waiting"; i++) result = await resumeNotionPublication(id, groupKey);
   return result;
 }
+// Advance only this test job's persisted next-check time, without changing the
+// PostgreSQL clock or waiting real seconds. Cooldown tests call resumeStep directly.
+async function resumeNotionPublication(id: string, groupKey: string) {
+  await prisma.notionPublishJob.update({ where: { id }, data: { retryAt: null } });
+  return resumeStep(id, groupKey);
+}
 describe("durable Notion publishing against isolated PostgreSQL", () => {
+  it("waits for empty/partial templates with bounded backoff before writing any sections", async () => {
+    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);
+    const tree = remote.tree.getMockImplementation()!; let available = 0;
+    remote.tree.mockImplementation(async id => id === NOTION_TEMPLATE_ID ? tree(id) : (await tree(id)).slice(0, available));
+    let result = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(result.phase).toBe("template_wait"); expect(result.retryAt!.getTime() - Date.now()).toBeGreaterThan(1500);
+    const calls = remote.call.mock.calls.length;
+    expect((await resumeStep(f.job.id, f.groupKey)).state).toBe("waiting"); expect(remote.call.mock.calls).toHaveLength(calls);
+    for (const delay of [4000, 8000, 10000]) {
+      result = await resumeNotionPublication(f.job.id, f.groupKey);
+      expect(result.state).toBe("waiting"); expect(result.error).toBeNull(); expect(result.missingSections.length).toBeGreaterThan(0);
+      expect(result.retryAt!.getTime() - Date.now()).toBeGreaterThan(delay - 500);
+      expect([...nodes.values()].filter(n => n.type === "callout")).toHaveLength(0);
+      available = 1;
+    }
+    available = 2; expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect(pages.size).toBe(1);
+  });
+  it("times out without reapplying the template and resumes on the same page", async () => {
+    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
+    const tree = remote.tree.getMockImplementation()!;
+    remote.tree.mockImplementation(async id => id === NOTION_TEMPLATE_ID ? tree(id) : []);
+    const job = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    await prisma.notionPublishJob.update({ where: { id: job.id }, data: { progress: { ...job.progress as Prisma.JsonObject, templateWait: { startedAt: Date.now() - 121000, attempt: 10 } } } });
+    const paused = await resumeNotionPublication(job.id, f.groupKey);
+    expect(paused.state).toBe("failed"); expect(paused.phase).toBe("template_timeout"); expect(paused.error).toMatch(/two minutes/);
+    const pageId = [...pages.keys()][0]; remote.tree.mockImplementation(tree);
+    expect((await finish(job.id, f.groupKey)).state).toBe("succeeded"); expect([...pages.keys()]).toEqual([pageId]);
+    expect(remote.call.mock.calls.filter(([path, method]) => path === "/pages" && method === "POST")).toHaveLength(1);
+  });
+  it("retains a readiness cooldown but stops for missing permissions", async () => {
+    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
+    const retryAt = new Date(Date.now() + 5000);
+    remote.tree.mockRejectedValueOnce(new NotionError("Cooldown", 429, retryAt));
+    const waiting = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(waiting.state).toBe("waiting"); expect(waiting.retryAt).toEqual(retryAt); expect(waiting.error).toBeNull();
+    remote.tree.mockRejectedValueOnce(new NotionError("Notion access is missing", 403));
+    const denied = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(denied.state).toBe("failed"); expect(denied.phase).toBe("failed"); expect(denied.error).toMatch(/access is missing/);
+    expect([...nodes.values()].filter(n => n.type === "callout")).toHaveLength(0);
+  });
+  it("returns an active frozen job when newer saved edits request a preview", async () => {
+    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);
+    await prisma.closedTradeNote.update({ where: { groupKey: f.groupKey }, data: { workstationVersion: 3, content: "New saved edit" } });
+    const preview = await createNotionPreview(f.groupKey, 3, "https://journal.invalid");
+    expect(preview.id).toBe(f.job.id); expect(preview.revision).toBe(f.doc.revision);
+    expect(await publicationContext(f.groupKey)).toMatchObject({ savedRevision: 3, activeJobId: f.job.id, lastPublishedRevision: null });
+    expect(await prisma.notionPublishJob.count({ where: { groupKey: f.groupKey } })).toBe(1);
+  });
+  it("fresh previews load saved section edits while unchanged requests reuse the same snapshot", async () => {
+    const f = await fixture();
+    let doc = await readWorkstationDocument(f.groupKey);
+    doc.review = setSectionText(doc.review, "entry", "<p>Original entry note</p>");
+    await saveWorkstationDocument(f.groupKey, doc, doc.revision); doc = await readWorkstationDocument(f.groupKey);
+    const first = await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid");
+    expect(first.sections.find(section => section.key === "entry")?.html).toContain("Original entry note");
+    expect((await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid")).id).toBe(first.id);
+    doc.review = setSectionText(doc.review, "entry", "<p>Edited entry note</p>");
+    await saveWorkstationDocument(f.groupKey, doc, doc.revision); doc = await readWorkstationDocument(f.groupKey);
+    const next = await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid");
+    expect(next.id).not.toBe(first.id); expect(next.revision).toBeGreaterThan(first.revision);
+    expect(next.sections.find(section => section.key === "entry")?.html).toContain("Edited entry note");
+    const original = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: first.id } });
+    expect(JSON.stringify(original.snapshot)).toContain("Original entry note"); expect(pages.size).toBe(0);
+  });
+  it("pauses rather than extending automatic waiting beyond a long provider cooldown", async () => {
+    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
+    const retryAt = new Date(Date.now() + 300000);
+    remote.tree.mockRejectedValueOnce(new NotionError("Cooldown", 429, retryAt));
+    const paused = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(paused.state).toBe("failed"); expect(paused.retryAt).toEqual(retryAt); expect(paused.error).toMatch(/cooldown beyond/);
+    const calls = remote.call.mock.calls.length;
+    expect((await resumeStep(f.job.id, f.groupKey)).state).toBe("failed"); expect(remote.call.mock.calls).toHaveLength(calls);
+  });
   it("publishes one page, correct section parents, shared images once, and preserves local review", async () => {
     const f = await fixture(true); await startNotionPublication(f.job.id, f.groupKey);
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
@@ -186,7 +266,7 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);
     await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { retryAt: new Date(Date.now() + 60_000), state: "failed" } });
     const before = remote.call.mock.calls.length;
-    expect((await resumeNotionPublication(f.job.id, f.groupKey)).state).toBe("failed"); expect(remote.call.mock.calls).toHaveLength(before);
+    expect((await resumeStep(f.job.id, f.groupKey)).state).toBe("failed"); expect(remote.call.mock.calls).toHaveLength(before);
   });
   it("updates only app-owned containers and reuses uploaded images", async () => {
     const f = await fixture(true); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
@@ -195,6 +275,26 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     await startNotionPublication(update.id, f.groupKey); expect((await finish(update.id, f.groupKey)).state).toBe("succeeded");
     expect(pages.size).toBe(1); expect(uploads.size).toBe(1); expect(nodes.get(manual.id)?.archived).toBe(false);
     expect([...nodes.values()].filter(n => n.type === "callout" && !n.archived)).toHaveLength(2);
+  });
+  it("publishes edited and cleared section content at a newer revision on the same page", async () => {
+    const f = await fixture(true); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
+    const pageId = [...pages.keys()][0], doc = await readWorkstationDocument(f.groupKey);
+    doc.review.takeaway = "Newly saved journal edit";
+    await saveWorkstationDocument(f.groupKey, doc, doc.revision);
+    const saved = await readWorkstationDocument(f.groupKey);
+    const plan = copy(f.plan);
+    plan.sections[0].blocks = [{ type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: "Changed entry review" } }] } }];
+    plan.sections[1].blocks = []; plan.sections[1].images = [];
+    const snapshot = { ...f.job.snapshot as unknown as PublishSnapshot, doc: saved, digest: jsonHash(saved) };
+    const update = await prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: saved.revision, templateId: f.job.templateId, plan: plan as unknown as Prisma.InputJsonValue, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(update.id, f.groupKey); expect((await finish(update.id, f.groupKey)).state).toBe("succeeded");
+    expect([...pages.keys()]).toEqual([pageId]); expect(uploads.size).toBe(1);
+    const containers = readChildren(pageId).filter(n => n.type === "callout"); expect(containers).toHaveLength(2);
+    const content = containers.map(n => readChildren(n.id));
+    expect(content.flat().filter(n => n.type === "paragraph").map(remoteText)).toEqual(["Changed entry review"]);
+    expect(content.filter(blocks => blocks.length === 0)).toHaveLength(1);
+    expect(content.flat().filter(n => n.type === "image")).toHaveLength(1);
+    expect(await publicationContext(f.groupKey)).toMatchObject({ savedRevision: saved.revision, lastPublishedRevision: saved.revision, activeJobId: null });
   });
   it("detects edits to previously published app-managed content without overwriting it", async () => {
     const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);

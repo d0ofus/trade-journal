@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { notionRouteAuth, notionRouteError } from "@/lib/server/notion-route";
-import { createNotionPreview, publicationStatus } from "@/lib/server/notion-publication-plan";
+import { createNotionPreview, publicationContext, publicationStatus } from "@/lib/server/notion-publication-plan";
 import { resumeNotionPublication, startNotionPublication } from "@/lib/server/notion-publisher";
 import { withNotionBudget } from "@/lib/server/notion-client";
 export const maxDuration = 120;
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   try {
     const publication = await prisma.notionPublication.findUnique({ where: { groupKey } });
     const job = publication?.activeJobId ? await prisma.notionPublishJob.findUnique({ where: { id: publication.activeJobId } }) : await prisma.notionPublishJob.findFirst({ where: { groupKey }, orderBy: { createdAt: "desc" } });
-    return NextResponse.json({ job: job ? publicationStatus(job, job.state === "preview") : null, enabled: process.env.NOTION_PUBLISH_ENABLED === "1" }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ job: job ? publicationStatus(job, job.state === "preview") : null, publication: await publicationContext(groupKey), enabled: process.env.NOTION_PUBLISH_ENABLED === "1" }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return notionRouteError(error); }
 }
 const command = z.discriminatedUnion("action", [
@@ -31,6 +31,6 @@ export async function POST(request: NextRequest) {
     const input = result.data;
     const job = await withNotionBudget(() => input.action === "preview" ? createNotionPreview(input.groupKey, input.revision, request.nextUrl.origin)
       : input.action === "publish" ? startNotionPublication(input.id, input.groupKey) : resumeNotionPublication(input.id, input.groupKey));
-    return NextResponse.json({ job, enabled: process.env.NOTION_PUBLISH_ENABLED === "1" }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ job, publication: await publicationContext(input.groupKey), enabled: process.env.NOTION_PUBLISH_ENABLED === "1" }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return notionRouteError(error); }
 }

@@ -1,4 +1,8 @@
 import { defineConfig } from "@playwright/test";
+import { assertLoopbackBaseUrl } from "./src/lib/test-database-safety";
+
+const baseURL = process.env.WORKSTATION_PREVIEW_BASE_URL ?? "http://127.0.0.1:3000";
+assertLoopbackBaseUrl(baseURL);
 
 // Mock preview only: no seed, migrations, database configuration, or authentication changes.
 export default defineConfig({
@@ -8,7 +12,7 @@ export default defineConfig({
   workers: 1,
   outputDir: "test-results/workstation-preview",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL,
     viewport: { width: 1920, height: 1080 },
     browserName: "chromium",
     // Native scrollbars affect ResizeObserver measurements; Chromium normally hides them.
