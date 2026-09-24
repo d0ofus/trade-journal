@@ -1,4 +1,5 @@
 export type StorageUsage = {
+  evidence?: { originals: number; thumbnails: number; assets: number; pending: number; account: { measuredAt: string; standardBytes: number; otherClassBytes: number | null; stale: boolean; warning: string | null; estimatedMonthlyStorageUsd: number } | null };
   measuredAt: string;
   database: { currentBytes: number; branchBytes: number; cacheBytes: number; metricCacheBytes: number } | null;
   payloads: { inlineBytes: number; inlineCount: number; workstationInlineBytes: number; workstationInlineCount: number; externalCount: number; localCount: number; invalidReviews: number; importBytes: number; importCount: number } | null;

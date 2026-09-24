@@ -46,4 +46,11 @@ describe("Notion file import", () => {
     expect(() => attachEvidence(doc, evidence, "exit")).toThrow("30 images");
     expect(doc.evidence).toHaveLength(1);
   });
+  it("stores identical originals once while preserving separate evidence captions and assignments", async () => {
+    const doc = attachEvidence(attachEvidence(emptyDocument(), evidence, "entry"), { ...evidence, id: "two", name: "Reused original" }, "exit");
+    const files = unzipSync(new Uint8Array(await notionPageArchive({ trade: demoTrades[0], doc, url: "" }).arrayBuffer()));
+    expect(Object.keys(files).filter(name => name.endsWith(".png"))).toEqual(["assets/chart-1.png"]);
+    const html = strFromU8(files["review.html"]);
+    expect(html).toContain("Reused original"); expect(html.split('src="assets/chart-1.png"')).toHaveLength(3);
+  });
 });

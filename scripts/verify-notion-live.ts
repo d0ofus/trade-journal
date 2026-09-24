@@ -1,6 +1,6 @@
 /** Explicit, opt-in live Notion validation. Never uses the production app DB. */
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { rawImportArchiveIdentity } from "../src/lib/import/raw-archive";
 import sharp from "sharp";
 import { prisma } from "../src/lib/prisma";
 import { assertTestDatabaseSafety } from "../src/lib/test-database-safety";
@@ -15,17 +15,49 @@ import { notionProperties, type NotionValue } from "../src/lib/workstation/notio
 import { attachEvidence, assignSectionEvidence } from "../src/lib/workstation/evidence";
 import { workstationDocumentSchema } from "../src/lib/workstation/schema";
 import type { RemoteProperty } from "../src/lib/server/notion-properties";
+import { createEvidenceUpload, finalizeEvidenceUpload, readOriginalAsset } from "../src/lib/server/evidence-assets";
+import { evidenceStorageConfig } from "../src/lib/server/evidence-r2";
+import type { TradeDocument } from "../src/lib/workstation/types";
 
-const groupKey = "NOTION-LIVE-VALIDATION-20260921", symbol = "NOTIONTEST";
-const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const privateEvidence = process.argv.includes("--r2");
+// A separate identity/database prevents an R2 validation from adopting an older test page/job.
+const groupKey = privateEvidence ? "NOTION-R2-VALIDATION-20260924" : "NOTION-LIVE-VALIDATION-20260921";
+const symbol = privateEvidence ? "R2NOTIONTEST" : "NOTIONTEST";
 const report = (value: unknown) => console.log(JSON.stringify(value));
+async function storeSyntheticOriginals(doc: TradeDocument) {
+  if (!privateEvidence) return;
+  for (const evidence of doc.evidence) {
+    if (evidence.asset) continue;
+    const bytes = Buffer.from(evidence.image.split(",")[1], "base64");
+    const upload = await createEvidenceUpload(groupKey, "local-user", `live-test:${evidence.id}`, bytes.length);
+    if (upload.asset) evidence.asset = upload.asset;
+    else {
+      assert(upload.url && upload.headers);
+      const result = await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bytes, signal: AbortSignal.timeout(30_000) });
+      assert([200, 412].includes(result.status), `Synthetic R2 PUT failed: ${result.status}`);
+      evidence.asset = await finalizeEvidenceUpload(upload.id, groupKey, "local-user");
+    }
+    assert((await readOriginalAsset(evidence.asset.id)).bytes.equals(bytes), "R2 must retain exact original bytes.");
+    evidence.image = "";
+  }
+  doc.evidenceProtocol = 2;
+}
 async function seed() {
-  if (await prisma.closedTrade.findUnique({ where: { groupKey } })) return;
+  const csv = `Account,Symbol,Side,Quantity,Price,DateTime\n${groupKey},${symbol},BUY,10,100,2026-09-10T14:00:00Z\n${groupKey},${symbol},SELL,10,110,2026-09-10T15:00:00Z\n`;
+  const identity = rawImportArchiveIdentity(csv);
+  if (await prisma.closedTrade.findUnique({ where: { groupKey } })) {
+    // Repair only this script's older synthetic artifact, never arbitrary imported records.
+    const old = await prisma.importArtifact.findUnique({ where: { storageKey: groupKey } });
+    if (old) {
+      assert.equal(old.content, csv); assert.equal(old.rawSha256, identity.rawSha256);
+      await prisma.importArtifact.update({ where: { storageKey: groupKey }, data: { storageKey: identity.rawStorageKey } });
+    }
+    return;
+  }
   await prisma.$transaction(async tx => {
     const account = await tx.account.create({ data: { ibkrAccount: groupKey, name: "Synthetic live Notion test only", baseCurrency: "USD" } });
     const instrument = await tx.instrument.create({ data: { symbol, exchange: "SYNTHETIC", assetType: "STOCK", currency: "USD" } });
-    const csv = `Account,Symbol,Side,Quantity,Price,DateTime\n${groupKey},${symbol},BUY,10,100,2026-09-10T14:00:00Z\n${groupKey},${symbol},SELL,10,110,2026-09-10T15:00:00Z\n`;
-    const artifact = await tx.importArtifact.create({ data: { storageKey: groupKey, content: csv, rawSha256: sha(csv), rawBytes: Buffer.byteLength(csv) } });
+    const artifact = await tx.importArtifact.create({ data: { storageKey: identity.rawStorageKey, content: csv, rawSha256: identity.rawSha256, rawBytes: identity.rawBytes } });
     const batch = await tx.importBatch.create({ data: { id: groupKey, accountId: account.id, filename: "synthetic-notion-validation.csv", fileType: "executions", sourceSection: "trades", parserVersion: "synthetic-notion-validation", rawStorageKey: artifact.storageKey, rawSha256: artifact.rawSha256, status: "SUCCEEDED" } });
     const open = new Date("2026-09-10T14:00:00Z"), close = new Date("2026-09-10T15:00:00Z");
     await tx.closedTrade.create({ data: { groupKey, accountId: account.id, instrumentId: instrument.id, symbol, direction: "LONG", openTime: open, closeTime: close, tradeDate: new Date("2026-09-10"), totalQuantity: 10, avgEntryPrice: 100, avgExitPrice: 110, grossRealizedPnl: 100, openingQuantity: 10, closingQuantity: 10, realizedPnl: 100, totalCommission: 0 } });
@@ -73,6 +105,7 @@ async function prepare() {
     for (const section of layout.sections.slice(1)) doc.review.notion = assignSectionEvidence(doc.review.notion!, section.key, "synthetic-shared-image", true);
     doc = attachEvidence(doc, { id: "synthetic-imported-image", name: "Synthetic imported evidence B", image: await png("B: IMPORTED IMAGE - FUNDAMENTALS ONLY", "#38bdf8"), origin: "upload", time: Date.now() / 1000, revision: doc.revision, timeframe: "" }, "fundamentals", layout);
     doc.evidence.push({ id: "synthetic-unassigned", name: "Unassigned evidence - must stay in app", image: await png("UNASSIGNED: MUST NOT APPEAR IN NOTION", "#f97316"), origin: "clipboard", time: Date.now() / 1000, revision: doc.revision, timeframe: "" });
+    await storeSyntheticOriginals(doc);
     doc = await saveWorkstationDocument(groupKey, workstationDocumentSchema.parse(doc), doc.revision);
   }
   const preview = await withNotionBudget(() => createNotionPreview(groupKey, doc.revision, "http://127.0.0.1:3101"));
@@ -128,7 +161,8 @@ async function verify() {
         const fileUrl = (image.image as { file: { url: string } }).file.url;
         assert.equal(new URL(fileUrl).protocol, "https:");
         const response = await fetch(fileUrl, { signal: AbortSignal.timeout(15_000) }); assert(response.ok, "Uploaded evidence must be downloadable.");
-        assert.equal(Buffer.from(await response.arrayBuffer()).toString("base64"), asset.image.split(",")[1], "Uploaded PNG bytes must remain unchanged.");
+        const original = asset.asset ? (await readOriginalAsset(asset.asset.id)).bytes : Buffer.from(asset.image.split(",")[1], "base64");
+        assert(Buffer.from(await response.arrayBuffer()).equals(original), "Uploaded PNG bytes must remain unchanged.");
         verifiedAssets.add(asset.id);
       }
     }
@@ -160,7 +194,14 @@ async function inspect() {
 }
 async function main() {
   const target = assertTestDatabaseSafety(process.env);
-  assert.equal(target.databaseUrl.host, "127.0.0.1:15439"); assert.equal(target.databaseUrl.database, "trade_journal_notion_live_test");
+  assert(["127.0.0.1:15439", "127.0.0.1:55439"].includes(target.databaseUrl.host));
+  assert.equal(target.databaseUrl.database, privateEvidence ? "trade_journal_evidence_notion_live_test" : "trade_journal_notion_live_test");
+  if (privateEvidence) {
+    assert.equal(evidenceStorageConfig().bucket, "trade-journal-evidence-nonproduction");
+    assert.notEqual(process.env.VERCEL_ENV, "production");
+    assert.equal(process.env.EVIDENCE_R2_WRITES_ENABLED, "1");
+    assert.equal(process.env.ALLOW_LIVE_R2_TEST, "1", "Explicit isolated R2 test approval is required.");
+  }
   const action = process.argv[2];
   assert(["prepare", "step", "verify", "update", "inspect"].includes(action), "Choose prepare, step, verify, update or inspect.");
   if (action === "step") { assert.equal(process.env.ALLOW_LIVE_NOTION_TEST, "1", "Explicit live test approval is required."); assert.equal(process.env.NOTION_PUBLISH_ENABLED, "1"); }

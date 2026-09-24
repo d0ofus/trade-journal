@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import { REPOSITORY_SAFETY_ALLOWLIST } from "./allowlist.mjs";
@@ -299,6 +299,37 @@ export function scanRepository(root = process.cwd(), allowlistEntries = REPOSITO
     filesScanned += 1;
   }
 
+  findings.sort(stableFindingOrder);
+  return { filesScanned, findings };
+}
+
+/** Scan the unpacked deployment source, including ignored files accidentally uploaded by a client.
+ * Installed dependencies, build output and Vercel/Git metadata are not application source.
+ * This is explicit; a failing local Git scan never silently falls back to filesystem discovery.
+ */
+export function scanDeploymentTree(root = process.cwd(), allowlistEntries = REPOSITORY_SAFETY_ALLOWLIST) {
+  const resolvedRoot = path.resolve(root), findings = [];
+  const generatedRoots = new Set(["node_modules", ".next", ".git", ".vercel"]);
+  let filesScanned = 0;
+  function visit(directory, prefix = "") {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = path.join(directory, entry.name), stat = lstatSync(absolutePath);
+      // Never follow links, even when their name resembles an ignored generated directory.
+      if (stat.isSymbolicLink()) {
+        findings.push(...scanBuffer({ relativePath, buffer: Buffer.alloc(0), symbolicLink: true, allowlistEntries, source: "deployment" }));
+        filesScanned++;
+      } else if (!prefix && generatedRoots.has(entry.name) && stat.isDirectory()) continue;
+      else if (stat.isDirectory()) visit(absolutePath, relativePath);
+      else if (stat.isFile()) {
+        if (stat.size > 50 * 1024 * 1024) throw new Error("Deployment source exceeds the bounded scan size.");
+        findings.push(...scanBuffer({ relativePath, buffer: readFileSync(absolutePath), allowlistEntries, source: "deployment" }));
+        filesScanned++;
+      } else throw new Error("Unsupported deployment source file type.");
+      if (filesScanned > 10000) throw new Error("Deployment source exceeds the bounded file count.");
+    }
+  }
+  visit(resolvedRoot);
   findings.sort(stableFindingOrder);
   return { filesScanned, findings };
 }

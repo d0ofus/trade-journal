@@ -10,6 +10,8 @@ import { buildClosedTradeWhere, TradeFilters } from "./closed-trade-filters";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "@/lib/workstation/payload";
 import { applyAccountTimePolicy } from "./execution-time-policy";
 import { newestTradesFirst } from "@/lib/workstation/trade-order";
+import { validateReviewAssets } from "./evidence-assets";
+import { EvidenceStorageError } from "./evidence-r2";
 type Reader = Prisma.TransactionClient;
 export class WorkstationError extends Error { constructor(message: string, public status = 409) { super(message); } }
 
@@ -56,6 +58,8 @@ export async function saveWorkstationDocument(groupKey: string, incoming: TradeD
     const previous = await readWorkstationDocument(groupKey, tx);
     if (previous.revision !== expectedRevision || (incoming.noteUpdatedAt ?? null) !== (previous.noteUpdatedAt ?? null) || (incoming.journalUpdatedAt ?? null) !== (previous.journalUpdatedAt ?? null)) throw new WorkstationError("This review changed in another tab. Reload the saved review; your local draft is preserved.");
     const r = incoming.review, next: TradeDocument = { ...incoming, revision: expectedRevision + 1, legacy: previous.legacy };
+    try { await validateReviewAssets(tx, groupKey, next, previous); }
+    catch (error) { if (error instanceof EvidenceStorageError || error instanceof Error) throw new WorkstationError(error.message, error instanceof EvidenceStorageError ? error.status : 413); throw error; }
     if (jsonBytes(next) + 2048 > REVIEW_PACKAGE_MAX_BYTES) throw new WorkstationError(REVIEW_PACKAGE_TOO_LARGE, 413);
     const noteData = { content: r.notes, setup: r.setup, entryReview: r.execution, lesson: r.takeaway, thesis: r.thesis, exitReview: r.exit, mistake: r.mistake, followUp: r.followUp, workstationVersion: next.revision, workstationJson: JSON.stringify({ ...next, review: { ...next.review, notion: undefined } }), updatedAt: new Date(Math.max(Date.now(), previous.noteUpdatedAt ? Date.parse(previous.noteUpdatedAt) + 1 : 0)) };
     const note = await tx.closedTradeNote.upsert({ where: { groupKey }, create: { groupKey, ...noteData }, update: noteData });

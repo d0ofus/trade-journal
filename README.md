@@ -65,7 +65,7 @@ Recommended free-tier stack:
 
 - App hosting: Vercel
 - Database: Neon or Supabase Postgres
-- File storage: PostgreSQL archive by default; optional R2 for screenshot assets
+- File storage: PostgreSQL import archive; private R2 originals/thumbnails for workstation Evidence, with separate legacy standalone-journal storage
 
 ### 1) Create a managed Postgres database
 
@@ -140,9 +140,9 @@ Current behavior:
 - Uploaded CSV files are read from request form-data.
 - They are parsed in-memory and applied transactionally.
 - Raw content is archived by SHA-256 with import lifecycle and row-error metadata.
-- Verified JSON backups include archived imports and screenshot assets.
+- JSON backups include archived imports and legacy inline screenshots. R2-backed Evidence requires the complete database-and-images backup, not a Neon-only or JSON-only backup.
 
-Object storage (S3/R2/Supabase Storage) is only needed if you want:
+Workstation Evidence uses dedicated private R2 storage; see [private evidence setup and rollout](docs/private-evidence-r2.md). Other optional object-storage uses include:
 
 - long-term raw file retention
 - audit/archive requirements
@@ -180,7 +180,7 @@ Journal integrations:
 - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` - optional R2 screenshot storage
 - `NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH` - optional licensed TradingView Advanced Charts bundle path
 
-If R2 is not configured, journal screenshots still save as inline data URLs in the database so chart capture does not fail. Configure R2 before heavy use to keep the database small.
+The standalone journal retains its existing inline fallback. New workstation Evidence does **not** fall back to inline Neon images. Configure the separate `EVIDENCE_R2_*` secrets and complete the release gates before enabling writes; legacy inline reviews remain readable. New reviews allow 30 images, 50,000,000 unique original bytes in total, and 20,000,000 bytes / 16 megapixels per original. Metadata-only saves retain the 4,000,000-byte request guard.
 
 ## Test Database Safety
 

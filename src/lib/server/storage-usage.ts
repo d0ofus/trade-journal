@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { StorageUsage } from "@/lib/storage-usage";
+import { parseR2AccountMetrics } from "./evidence-usage";
 
 /** Aggregate in PostgreSQL: image contents, trade identities and credentials never leave this service. */
 export async function loadStorageUsage(): Promise<StorageUsage> {
@@ -45,5 +46,16 @@ export async function loadStorageUsage(): Promise<StorageUsage> {
     issues,
   };
   if (result.payloads?.invalidReviews) issues.push(`${result.payloads.invalidReviews} unreadable review documents were excluded from attachment totals.`);
+  try {
+    const [assets, pending, snapshot] = await Promise.all([
+      prisma.evidenceAsset.aggregate({ where: { state: "ready" }, _sum: { bytes: true, thumbnailBytes: true }, _count: true }),
+      prisma.evidenceUploadSession.aggregate({ where: { state: { in: ["pending", "verifying"] } }, _sum: { expectedBytes: true } }),
+      prisma.evidenceMaintenanceState.findUnique({ where: { key: "r2-account-usage" } }),
+    ]);
+    const saved = snapshot?.payload as { measuredAt?: string; metrics?: unknown } | undefined;
+    const counters = parseR2AccountMetrics(saved?.metrics), measuredAt = saved?.measuredAt && Number.isFinite(Date.parse(saved.measuredAt)) ? saved.measuredAt : null;
+    const standardBytes = counters?.standardBytes ?? 0;
+    result.evidence = { originals: assets._sum.bytes ?? 0, thumbnails: assets._sum.thumbnailBytes ?? 0, assets: assets._count, pending: pending._sum.expectedBytes ?? 0, account: measuredAt && counters ? { measuredAt, standardBytes, otherClassBytes: counters.otherClassBytes, stale: Date.now() - Date.parse(measuredAt) > 36 * 3600_000, warning: standardBytes >= 10e9 ? "Above 10 GB: additional Standard storage is metered; uploads continue." : standardBytes >= 9e9 ? "Above 9 GB account-wide usage." : standardBytes >= 8e9 ? "Above 8 GB account-wide usage." : null, estimatedMonthlyStorageUsd: Math.max(0, Math.ceil(standardBytes / 1e9) - 10) * .015 } : null };
+  } catch { issues.push("Private image storage measurements are unavailable; no zero-usage assumption was made."); }
   return result;
 }

@@ -10,10 +10,11 @@ import { htmlToNotionBlocks } from "./notion-format";
 import { planNotionProperties, type RemoteProperty } from "./notion-properties";
 import type { TradeDocument } from "@/lib/workstation/types";
 import { notionPageUrl, unfinishedPublication, type PublicationContext, type TemplateWait } from "@/lib/workstation/notion-publication-state";
+import type { ImageAssetReference } from "@/lib/workstation/image-assets";
 
 export type PublishSection = SectionDefinition & { blocks: JsonObject[]; images: string[] };
 export type PublishPlan = { layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
-export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; caption: string; image: string }[] };
+export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; caption: string; image: string; asset?: ImageAssetReference }[] };
 
 export async function createNotionPreview(groupKey: string, revision: number, sourceOrigin: string) {
   const existing = await prisma.notionPublication.findUnique({ where: { groupKey } });
@@ -45,14 +46,24 @@ export async function createNotionPreview(groupKey: string, revision: number, so
   const assigned = new Set(sections.flatMap(section => section.images));
   for (const id of assigned) if (!doc.evidence.some(image => image.id === id)) errors.push(`Missing evidence asset ${id}. Recover it before publishing.`);
   const unassigned = doc.evidence.filter(image => !assigned.has(image.id));
+  if (doc.evidence.some(image => assigned.has(image.id) && !image.asset)) throw new WorkstationError("Save this review to finish private image migration before preparing a new Notion publication. Existing publication jobs remain resumable.", 409);
   if (unassigned.length) omitted.push(`${unassigned.length} image(s) outside active template sections remain in Evidence.`);
+  const storedAssets = doc.evidence.some(image => image.asset) ? await prisma.evidenceAsset.findMany({ where: { tradeId: groupKey, id: { in: doc.evidence.flatMap(image => image.asset ? [image.asset.id] : []) }, state: "ready" } }) : [];
   const assets = doc.evidence.filter(image => assigned.has(image.id)).map(image => {
     const bytes = Buffer.from(image.image.split(",")[1] ?? "", "base64");
-    if (!/^data:image\/png;base64,/.test(image.image)) errors.push(`Evidence “${image.name}” must be normalized to PNG before publishing.`);
-    const hash = jsonHash(bytes.toString("base64"));
+    if (!image.asset && !/^data:image\/png;base64,/.test(image.image)) errors.push(`Evidence “${image.name}” must be normalized to PNG before publishing.`);
+    const stored = image.asset ? storedAssets.find(a => a.id === image.asset!.id) : undefined;
+    if (image.asset && (!stored || stored.sha256 !== image.asset.sha256)) errors.push(`The original image “${image.name}” is unavailable or does not match its checksum.`);
+    const hash = stored?.notionHash ?? jsonHash(bytes.toString("base64"));
     const context = image.origin ? `Imported ${image.origin}` : [image.timeframe, image.peerCapture ? JSON.stringify(image.peerCapture) : "Workspace", new Date(image.time * 1000).toISOString()].join(" · ");
-    return { id: image.id, hash, image: image.image, caption: `${evidenceCaption(image)} · ${context} · image ${hash.slice(0, 12)}` };
+    return { id: image.id, hash, image: image.asset ? "" : image.image, asset: image.asset, caption: `${evidenceCaption(image)} · ${context} · image ${hash.slice(0, 12)}`.slice(0, 1900) };
   });
+  if (assets.length) {
+    const bot = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>("/users/me");
+    const limit = bot.bot?.workspace_limits?.max_file_upload_size_in_bytes;
+    if (!limit || !Number.isFinite(limit)) errors.push("Notion's workspace file allowance could not be verified. Check connection access before publishing images.");
+    else for (const image of assets) if ((image.asset?.bytes ?? Buffer.from(image.image.split(",")[1] ?? "", "base64").length) > limit) errors.push(`Evidence ${image.id} exceeds this Notion workspace's ${limit.toLocaleString()}-byte file allowance. The original will not be compressed or omitted.`);
+  }
   const origin = new URL(sourceOrigin); if (!/^https?:$/.test(origin.protocol)) throw new NotionError("Invalid application origin.", 400);
   const plan: PublishPlan = { layout, schemaHash: jsonHash(propertyPlan.schemaHashInput), properties: propertyPlan.values, propertyDisplay: propertyPlan.display, sections, omitted, errors,
     titleId: Object.values(schema.properties).find(p => p.type === "title")?.id ?? "", sourceUrl: `${origin.origin}/trades?groupKey=${encodeURIComponent(groupKey)}` };
@@ -68,8 +79,20 @@ export async function createNotionPreview(groupKey: string, revision: number, so
       const active = await tx.notionPublishJob.findUniqueOrThrow({ where: { id: current.activeJobId } });
       if (unfinishedPublication(active)) return active;
     }
-    return tx.notionPublishJob.upsert({ where: { requestKey }, create: { groupKey, revision, templateId: layout.id, requestKey,
+    const prepared = await tx.notionPublishJob.upsert({ where: { requestKey }, create: { groupKey, revision, templateId: layout.id, requestKey,
       snapshot: snapshot as unknown as Prisma.InputJsonValue, plan: plan as unknown as Prisma.InputJsonValue }, update: {} });
+    if (storedAssets.length) {
+      const { lockClosedTradeForReview } = await import("./closed-trade-review-lock");
+      await lockClosedTradeForReview(tx, groupKey);
+      for (const asset of assets) if (asset.asset) {
+        const ready = await tx.evidenceAsset.findFirst({ where: { id: asset.asset.id, tradeId: groupKey, state: "ready" } });
+        if (!ready) throw new WorkstationError("An original image changed availability while preparing. Open a fresh preview.");
+        const expiresAt = prepared.state === "preview" ? new Date(Date.now() + 86_400_000) : null;
+        await tx.evidenceAssetReference.upsert({ where: { assetId_kind_key: { assetId: ready.id, kind: "publication", key: prepared.id } }, create: { assetId: ready.id, kind: "publication", key: prepared.id, expiresAt }, update: { expiresAt } });
+        await tx.evidenceAsset.update({ where: { id: ready.id }, data: { unreferencedAt: null } });
+      }
+    }
+    return prepared;
   });
   return publicationStatus(job, true);
 }
@@ -92,6 +115,6 @@ export function publicationStatus(job: { id: string; groupKey: string; revision:
     templateVersion: plan.layout.id, properties: plan.propertyDisplay, omitted: plan.omitted, errors: plan.errors,
     sections: plan.sections.map(section => ({ key: section.key, label: [...section.groups, section.label].join(" · "), images: section.images.length, blocks: section.blocks.length, done: progress.sections?.[section.key]?.done ?? false,
       html: includeDetails ? richHtml(sectionText(snapshot.doc.review, section.key)) : undefined, imageIds: includeDetails ? section.images : undefined })),
-    assets: includeDetails ? snapshot.assets.map(asset => ({ id: asset.id, image: asset.image, caption: asset.caption })) : undefined,
+    assets: includeDetails ? snapshot.assets.map(asset => ({ id: asset.id, image: asset.image, asset: asset.asset, caption: asset.caption })) : undefined,
   };
 }

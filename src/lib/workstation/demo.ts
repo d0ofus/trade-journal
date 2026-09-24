@@ -6,6 +6,7 @@ import { aggregateCandles } from "./math";
 import { initialHistoryRange } from "./history";
 import { Candle, RevisionConflict, Trade, TradeDocument, WorkstationAdapter, emptyDocument } from "./types";
 import { diagnosticComparisonCandles, diagnosticDemoTrade } from "./diagnostic-demo";
+import { clearDemoImages, externalizeEvidence, forgetPendingEvidence } from "./evidence-storage";
 
 const day = Date.UTC(2026, 8, 9) / 1000;
 const configurations = [
@@ -98,7 +99,16 @@ export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
     async loadView(id) { const raw = localStorage.getItem(DEMO_PREFIX + "view:" + id); return raw ? JSON.parse(raw) : { revision: 0, updatedAt: null, view: null }; },
     async saveView(id, view, expectedRevision) { const key = DEMO_PREFIX + "view:" + id, raw = localStorage.getItem(key), previous = raw ? JSON.parse(raw) : null; if ((previous?.revision ?? 0) !== expectedRevision) throw new Error("Chart view changed in another tab. Your local view is preserved."); const next = { view, revision: expectedRevision + 1, updatedAt: new Date().toISOString() }; localStorage.setItem(key, JSON.stringify(next)); return next; },
     async load(id) { const trade = trades.find(t => t.id === id); if (!trade) throw new Error("Demo trade not found"); const raw = localStorage.getItem(DEMO_PREFIX + id); if (!raw) return initialDemoDocument(trade); const doc = JSON.parse(raw) as TradeDocument; if (doc.schema !== 1) throw new Error("Unsupported saved demo format. Export your local data before resetting."); doc.review.notion = executedTradeReviewDefaults(doc.review.notion); return doc; },
-    async save(id, doc, revision) { const raw = localStorage.getItem(DEMO_PREFIX + id); const current = raw ? JSON.parse(raw) as TradeDocument : null; if ((current?.revision ?? 0) !== revision) throw new RevisionConflict(); const next = { ...doc, revision: revision + 1, updatedAt: new Date().toISOString() }; localStorage.setItem(DEMO_PREFIX + id, JSON.stringify(next)); return next; },
+    async save(id, doc, revision) {
+      if (doc.evidence.some(e => !e.asset)) doc = await externalizeEvidence(id, "demo", doc);
+      const raw = localStorage.getItem(DEMO_PREFIX + id), current = raw ? JSON.parse(raw) as TradeDocument : null;
+      if ((current?.revision ?? 0) !== revision) throw new RevisionConflict();
+      if (current?.evidenceProtocol === 2 && doc.evidenceProtocol !== 2) throw new Error("Reload this older browser tab before saving image references.");
+      const next = { ...doc, revision: revision + 1, updatedAt: new Date().toISOString() };
+      localStorage.setItem(DEMO_PREFIX + id, JSON.stringify(next));
+      for (const image of next.evidence) if (image.asset) void forgetPendingEvidence(id, "demo", image.id).catch(() => {});
+      return next;
+    },
     async candles(trade, interval, signal, range = initialHistoryRange(trade, interval)) {
       signal?.throwIfAborted();
       // Aggregate before slicing so page boundaries never create partial daily/weekly candles.
@@ -112,6 +122,6 @@ export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
       if (diagnostic) return { candles, warning: "Synthetic context with two audited comparison bars · source timezone unverified", source: "Diagnostic fixture", session: { timezone: "UTC", calendar: "utc", marketHours: "unknown" } };
       return { candles, warning: "Synthetic candles · UTC · regular session", source: "Demo", session: { timezone: "UTC", calendar: "utc", marketHours: "unknown" } };
     },
-    reset() { for (const key of Object.keys(localStorage)) if (key.startsWith(DEMO_PREFIX) || key.startsWith("execution-lab:workstation:draft:demo:")) localStorage.removeItem(key); },
+    async reset() { await clearDemoImages(); for (const key of Object.keys(localStorage)) if (key.startsWith(DEMO_PREFIX) || key.startsWith("execution-lab:workstation:draft:demo:")) localStorage.removeItem(key); },
   };
 }

@@ -51,7 +51,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
         dirty: !!draft,
         error: conflict ? "Recovered draft conflicts with a newer saved review. Export the draft, then reload the saved review." : "",
         save: doc => adapter.save(id, doc, doc.revision),
-        merge: (doc, next) => ({ ...doc, revision: next.revision, updatedAt: next.updatedAt, noteUpdatedAt: next.noteUpdatedAt, journalUpdatedAt: next.journalUpdatedAt, journalEntryId: next.journalEntryId }),
+        merge: (doc, next) => ({ ...doc, evidenceProtocol: next.evidenceProtocol ?? doc.evidenceProtocol, evidence: doc.evidence.map(e => { const saved = next.evidence.find(s => s.id === e.id); return !e.asset && saved?.asset ? { ...e, image: "", asset: saved.asset } : e; }), revision: next.revision, updatedAt: next.updatedAt, noteUpdatedAt: next.noteUpdatedAt, journalUpdatedAt: next.journalUpdatedAt, journalEntryId: next.journalEntryId }),
         checkpoint: store.write, clearCheckpoint: store.clear,
       });
       state.current = session;
@@ -59,7 +59,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
         if (own !== generation.current) return;
         const next = session.getSnapshot().value, previous = published.current;
         // Text subscribers update immediately; charts only see structural changes.
-        if (!previous || previous.drawings !== next.drawings || previous.evidence !== next.evidence || previous.review.status !== next.review.status || !sameEvidenceAssignments(previous.review.notion, next.review.notion)) {
+        if (!previous || previous.comparison !== next.comparison || previous.drawings !== next.drawings || previous.evidence !== next.evidence || previous.review.status !== next.review.status || !sameEvidenceAssignments(previous.review.notion, next.review.notion)) {
           published.current = next; setDocument(next);
         }
         emit();

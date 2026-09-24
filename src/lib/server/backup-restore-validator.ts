@@ -33,6 +33,10 @@ type ForeignKeySpec = {
 };
 
 const RESTORE_KEYS: KeySpec[] = [
+  { table: "evidenceAssets", fields: ["id"] },
+  { table: "evidenceUploadSessions", fields: ["id"] },
+  { table: "evidenceAssetReferences", fields: ["assetId", "kind", "key"] },
+  { table: "evidenceMaintenanceStates", fields: ["key"] },
   { table: "notionTemplateDefinitions", fields: ["id"] },
   { table: "notionPublications", fields: ["groupKey"] },
   { table: "notionPublishJobs", fields: ["id"] },
@@ -85,6 +89,8 @@ const RESTORE_KEYS: KeySpec[] = [
 ];
 
 const FOREIGN_KEYS: ForeignKeySpec[] = [
+  { table: "evidenceUploadSessions", field: "assetId", targetTable: "evidenceAssets", optional: true },
+  { table: "evidenceAssetReferences", field: "assetId", targetTable: "evidenceAssets" },
   { table: "notionPublishJobs", field: "groupKey", targetTable: "notionPublications", targetField: "groupKey" },
   { table: "importBatches", field: "accountId", targetTable: "accounts", optional: true },
   { table: "importBatches", field: "rawStorageKey", targetTable: "importArtifacts", targetField: "storageKey", optional: true },
@@ -636,6 +642,11 @@ function validateJsonStateFields(payload: JsonRecord) {
     if (!Number.isInteger(row.policyRevision) || Number(row.policyRevision) < 1 || (policy && Number(row.policyRevision) > Number(policy.revision)) || !["ready", "unresolved", "exception"].includes(String(row.status))) errors.push(issue("INVALID_TIME_POLICY_APPLICATION", "Invalid timestamp application revision or status.", `executionTimePolicyApplications.${index}`));
   });
   const evidence = workstationEvidenceManifest(tableRows(payload, "closedTradeNotes").filter(isRecord));
+  const storedAssets = tableRows(payload, "evidenceAssets").filter(isRecord);
+  for (const entry of evidence.entries) if (entry.assetId) {
+    const asset = storedAssets.find(row => row.id === entry.assetId);
+    if (!asset || asset.tradeId !== entry.groupKey || asset.sha256 !== entry.sha256 || asset.bytes !== entry.bytes || asset.state !== "ready") errors.push(issue("INVALID_WORKSTATION_ASSET_REFERENCE", "Review image reference has missing or inconsistent asset metadata.", `closedTradeNotes.${entry.groupKey}.evidence.${entry.index}`));
+  }
   if (evidence.invalid.length) errors.push(issue("INVALID_WORKSTATION_EVIDENCE", "Workstation review JSON or inline screenshot is invalid.", "closedTradeNotes"));
   if (isRecord(payload.assets) && payload.assets.workstationEvidence !== undefined && JSON.stringify(payload.assets.workstationEvidence) !== JSON.stringify(evidence.entries)) errors.push(issue("WORKSTATION_EVIDENCE_MISMATCH", "Workstation screenshot checksums do not match the manifest.", "assets.workstationEvidence"));
   tableRows(payload, "workstationTradeViews").forEach((row, index) => {

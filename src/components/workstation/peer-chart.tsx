@@ -8,16 +8,20 @@ import { volumeColor } from "@/lib/workstation/volume-style";
 import type { HistoryRange } from "@/lib/workstation/history";
 import type { Candle, Trade, WorkspacePreferences } from "@/lib/workstation/types";
 import { assertCaptureSize, captureRenderFrame, chartBitmapRatio, type CaptureFrame } from "@/lib/workstation/capture-resolution";
+import { createPeerDrawingLayer, type PeerDrawingControls } from "./peer-drawing-layer";
+import { paintChart } from "./chart-paint";
+import { logicalTimeIndex } from "@/lib/workstation/math";
 
-export type PeerChartHandle = { capture: (scale: number) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; range: () => HistoryRange | null };
-type Props = { symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
+export type PeerChartHandle = { capture: (scale: number, plotOnly?: boolean) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; bounds: () => DOMRect; range: () => HistoryRange | null; cancelDrawing: () => void };
+type Props = { drawingControls: PeerDrawingControls; symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
 const numericRange = (chart: IChartApi): HistoryRange | null => {
   const range = chart.timeScale().getVisibleRange();
   return range && typeof range.from === "number" && typeof range.to === "number" ? { from: range.from, to: range.to } : null;
 };
 export function PeerChart(props: Props) {
   const host = useRef<HTMLDivElement>(null), latest = useRef(props);
-  const model = useRef<{ update: () => void; sync: () => void } | null>(null);
+  const model = useRef<{ update: () => void; sync: () => void; draw: () => void; cancel: () => void } | null>(null);
+  const appearance = JSON.stringify([props.preferences.theme, props.preferences.gridlines, props.preferences.volume, props.preferences.volumeAverage, props.preferences.volumeStyle, props.preferences.averages]);
   useEffect(() => { latest.current = props; });
   useEffect(() => {
     if (!host.current) return;
@@ -31,9 +35,10 @@ export function PeerChart(props: Props) {
     const averages = preferences.averages.map((period, i) => ({ period, series: chart.addSeries(LineSeries, { color: ["#f59e0b", "#60a5fa", "#c084fc", "#f472b6"][i % 4], lineWidth: 1, lastValueVisible: false, priceLineVisible: false }) }));
     const markers = createSeriesMarkers(price, []);
     let applying = true, frame = 0, candles: Candle[] = [];
+    const drawingLayer = createPeerDrawingLayer(node, chart, price, () => ({ controls: latest.current.drawingControls, candles, view: latest.current.view, trade: latest.current.trade, preferences: latest.current.preferences }));
     const describeRange = () => { const range = numericRange(chart); if (range) { node.dataset.visibleFrom = String(range.from); node.dataset.visibleTo = String(range.to); } return range; };
     const beginSync = () => { applying = true; cancelAnimationFrame(frame); };
-    const finishSync = () => { describeRange(); frame = requestAnimationFrame(() => { applying = false; }); };
+    const finishSync = () => { describeRange(); drawingLayer.draw(); frame = requestAnimationFrame(() => { applying = false; }); };
     const sync = () => {
       if (!candles.length) return;
       const range = peerReplayRange(latest.current.view.range, latest.current.view.replayAt), current = numericRange(chart);
@@ -72,18 +77,22 @@ export function PeerChart(props: Props) {
       latest.current.onRange(props.symbol, bounded);
     };
     chart.timeScale().subscribeVisibleTimeRangeChange(changed);
-    model.current = { update, sync }; update();
+    model.current = { update, sync, draw: drawingLayer.draw, cancel: drawingLayer.cancel }; update();
     props.register(props.symbol, {
       range: () => numericRange(chart),
+      bounds: () => node.getBoundingClientRect(),
+      cancelDrawing: drawingLayer.cancel,
       frame: () => ({ width: node.clientWidth, height: node.clientHeight + 76 }),
-      capture: async (scale: number) => {
+      capture: async (scale: number, plotOnly = false) => {
         if (!candles.length) throw new Error("Wait for chart history before attaching.");
         const { view, series } = latest.current;
+        const frozen = drawingLayer.snapshot(), snapshotBars = [...candles], extra = plotOnly ? 0 : 76, top = plotOnly ? 0 : 43;
+        frozen.selected = null; frozen.export = true;
         // Freeze every series/range/marker before the first asynchronous yield.
         const range = numericRange(chart) ?? view.range, logical = chart.timeScale().getVisibleLogicalRange(), priceRange = price.priceScale().getVisibleRange();
         const fontFamily = chart.options().layout.fontFamily;
         const ratio = chartBitmapRatio(node, window.devicePixelRatio || 1), render = captureRenderFrame({ width: node.clientWidth, height: node.clientHeight }, scale, ratio);
-        assertCaptureSize(render.width * ratio, render.height * ratio + Math.ceil(76 * scale));
+        assertCaptureSize(render.width * ratio, render.height * ratio + Math.ceil(extra * scale));
         const container = document.createElement("div"); container.style.cssText = `position:fixed;left:-100000px;top:0;width:${render.width}px;height:${render.height}px;`; document.body.appendChild(container);
         const clone = createChart(container, { ...chart.options(), autoSize: false, width: render.width, height: render.height,
           layout: { ...chart.options().layout, fontSize: chart.options().layout.fontSize * render.x },
@@ -102,10 +111,14 @@ export function PeerChart(props: Props) {
           if (priceRange) { cs.priceScale().setAutoScale(false); cs.priceScale().setVisibleRange(priceRange); }
           await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
           const plot = clone.takeScreenshot(), canvas = document.createElement("canvas");
-          assertCaptureSize(plot.width, plot.height + Math.ceil(76 * scale));
-          canvas.width = plot.width; canvas.height = plot.height + Math.ceil(76 * scale);
+          assertCaptureSize(plot.width, plot.height + Math.ceil(extra * scale));
+          canvas.width = plot.width; canvas.height = plot.height + Math.ceil(extra * scale);
           const ctx = canvas.getContext("2d")!; ctx.fillStyle = bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(plot, 0, Math.round(43 * scale)); ctx.fillStyle = text; ctx.font = `${13 * scale}px ${fontFamily}`;
+          ctx.drawImage(plot, 0, Math.round(top * scale));
+          ctx.save(); ctx.translate(0, Math.round(top * scale)); ctx.scale(scale, scale);
+          paintChart(ctx, { ...frozen, plotWidth: clone.timeScale().width() / render.x, plotHeight: (render.height - clone.timeScale().height()) / render.y, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozen.interval) as never); return x === null ? null : x / render.x; }, y: value => { const y = cs.priceToCoordinate(value); return y === null ? null : y / render.y; } });
+          ctx.restore(); ctx.fillStyle = text; ctx.font = `${13 * scale}px ${fontFamily}`;
+          if (plotOnly) { ctx.fillText(props.symbol, 10 * scale, 16 * scale); return canvas; }
           ctx.fillText(`${props.symbol} · ${view.interval} · ${view.adjustment} · ${series?.source ?? ""}`, 12 * scale, 19 * scale);
           ctx.font = `${10 * scale}px sans-serif`;
           ctx.fillText(`${new Date(range.from * 1000).toISOString().slice(0, 10)} – ${new Date(range.to * 1000).toISOString().slice(0, 10)} · ${view.session}${view.beforeEntry ? " · Before entry" : ""}`, 12 * scale, 35 * scale);
@@ -114,10 +127,11 @@ export function PeerChart(props: Props) {
         } finally { detach(); clone.remove(); container.remove(); }
       },
     });
-    return () => { cancelAnimationFrame(frame); props.register(props.symbol, null); chart.timeScale().unsubscribeVisibleTimeRangeChange(changed); markers.detach(); chart.remove(); model.current = null; };
+    return () => { cancelAnimationFrame(frame); drawingLayer.dispose(); props.register(props.symbol, null); chart.timeScale().unsubscribeVisibleTimeRangeChange(changed); markers.detach(); chart.remove(); model.current = null; };
     // Date/data updates reuse the canvas; only display configuration rebuilds it.
-  }, [props.symbol, props.view.interval, props.preferences]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [props.symbol, props.view.interval, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { model.current?.update(); }, [props.series, props.trade, props.view.session, props.view.adjustment, props.view.beforeEntry, props.view.replayAt]);
   useEffect(() => { model.current?.sync(); }, [props.view.range]);
-  return <div className="ws-peer-chart" ref={host} data-peer-canvas={props.symbol} />;
+  useEffect(() => { model.current?.draw(); }, [props.drawingControls]);
+  return <div className="ws-peer-chart" ref={host} tabIndex={0} aria-label={`${props.symbol} comparison chart`} data-peer-canvas={props.symbol} />;
 }

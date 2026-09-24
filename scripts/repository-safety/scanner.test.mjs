@@ -11,11 +11,42 @@ import {
   redactResult,
   scanBuffer,
   scanRepository,
+  scanDeploymentTree,
 } from "./scanner.mjs";
 
 function temporaryDirectory() {
   return mkdtempSync(path.join(tmpdir(), "trade-journal-repository-safety-"));
 }
+
+test("deployment archives scan source without Git and never honor ignore rules for uploaded secrets", () => {
+  const root = temporaryDirectory();
+  try {
+    writeFileSync(path.join(root, ".gitignore"), ".env*\n");
+    writeFileSync(path.join(root, ".env.local"), `AUTH_PASSWORD=${["not-", "a-real-password"].join("")}\n`);
+    mkdirSync(path.join(root, "src")); writeFileSync(path.join(root, "src", "safe.ts"), "export const value = 1;\n");
+    mkdirSync(path.join(root, "node_modules")); writeFileSync(path.join(root, "node_modules", "generated.txt"), ["ghp_", "a".repeat(32)].join(""));
+    const result = scanDeploymentTree(root, []);
+    assert.equal(result.filesScanned, 3);
+    assert(result.findings.some(item => item.ruleId === "local-environment-file"));
+    assert(result.findings.some(item => item.ruleId === "nonempty-secret-environment-value"));
+    assert(result.findings.every(item => item.source === "deployment"));
+    assert(!JSON.stringify(redactResult(result)).includes("a-real-password"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("deployment archives retain exact fixture hashes and permit Prisma migration SQL", () => {
+  const root = temporaryDirectory();
+  try {
+    mkdirSync(path.join(root, "prisma", "migrations", "example"), { recursive: true });
+    writeFileSync(path.join(root, "prisma", "migrations", "example", "migration.sql"), "CREATE TABLE example (id text);\n");
+    const bytes = Buffer.from("symbol\nDEMO\n"), relativePath = "fixture.csv";
+    writeFileSync(path.join(root, relativePath), bytes);
+    const allowlist = [{ ruleId: "financial-export-file", path: relativePath, fileSha256: canonicalFileSha256(bytes) }];
+    assert.equal(scanDeploymentTree(root, allowlist).findings.length, 0);
+    writeFileSync(path.join(root, relativePath), "changed\n");
+    assert.equal(scanDeploymentTree(root, allowlist).findings[0]?.ruleId, "financial-export-file");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("scans Git-tracked and non-ignored candidate files", () => {
   const root = temporaryDirectory();

@@ -183,7 +183,7 @@ describe("backup restore planning", () => {
 
     expect(plan.ok).toBe(true);
     expect(plan.tableCount).toBe(BACKUP_TABLES.length);
-    expect(plan.totalRows).toBe(BACKUP_TABLES.length);
+    expect(plan.totalRows).toBe(Object.values(compactGraphPayload()).filter(Array.isArray).reduce((sum, rows) => sum + rows.length, 0));
     expect(plan.dateFieldCount).toBeGreaterThan(10);
     expect(plan.warnings).toEqual(expect.arrayContaining([expect.objectContaining({ code: "NON_CANONICAL_TABLE_ROWS" })]));
 

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { continuePublication, openPublication, type PublicationResult } from "@/lib/workstation/notion-publication-client";
 import { unfinishedPublication } from "@/lib/workstation/notion-publication-state";
 import { ReviewDialog } from "./review-dialog";
+import { EvidenceThumbnail } from "./evidence-preview";
 
 export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey: string; revision: number; onClose: () => void }) {
   const [result, setResult] = useState<PublicationResult | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(true);
@@ -56,8 +57,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
         {section.html && <div className="ws-notion-preview-text" dangerouslySetInnerHTML={{ __html: section.html }} />}
         {section.imageIds?.map(id => { const asset = job.assets?.find(asset => asset.id === id); return asset ? <figure key={id}>
           {/* Saved, size-validated embedded evidence; never a remote image URL. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={asset.image} alt={asset.caption} style={{ maxWidth: "100%", maxHeight: 320, objectFit: "contain" }} /><figcaption>{asset.caption}</figcaption>
+          <EvidenceThumbnail evidence={{ id: asset.id, image: asset.image, asset: asset.asset, name: asset.caption, time: 0, revision: job.revision, timeframe: "" }} /><figcaption>{asset.caption}</figcaption>
         </figure> : null; })}
       </details>)}
       {job.omitted.length > 0 && <><h3>Kept in the app, not published</h3><ul>{job.omitted.map(item => <li key={item}>{item}</li>)}</ul></>}

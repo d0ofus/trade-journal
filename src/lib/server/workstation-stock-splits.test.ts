@@ -1,6 +1,8 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { loadStockSplits, parseStockSplits } from "./workstation-stock-splits";
-vi.mock("./workstation-cache-store", () => ({ takeProviderSlot: async () => true, deferProviderRequests: vi.fn() }));
+const slots = vi.hoisted(() => ({ take: vi.fn(), defer: vi.fn() }));
+vi.mock("./workstation-cache-store", () => ({ takeProviderSlot: slots.take, deferProviderRequests: slots.defer }));
+beforeEach(() => { slots.take.mockReset().mockResolvedValue(true); });
 const credentials = { keyId: "fixture", secretKey: "fixture", baseUrl: "https://data.alpaca.markets", feed: "sip" as const, adjustment: "raw" as const };
 const action = { symbol: "CRWD", ex_date: "2026-07-02", new_rate: 4, old_rate: 1 };
 const body = (rows: unknown[]) => ({ corporate_actions: { forward_splits: rows }, next_page_token: null });
@@ -28,4 +30,13 @@ it("does not turn provider failures into an empty successful split list", async 
   await expect(loadStockSplits("FAIL", credentials)).rejects.toThrow();
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(body([]))));
   expect((await loadStockSplits("FAIL", credentials)).splits).toEqual([]);
+});
+it("promotes shared peer metadata when a foreground workspace request joins", async () => {
+  slots.take.mockImplementation(async background => !background);
+  const fetcher = vi.fn().mockResolvedValue(Response.json(body([]))); vi.stubGlobal("fetch", fetcher);
+  const background = loadStockSplits("PRIORITY", credentials, undefined, true);
+  await vi.waitFor(() => expect(slots.take).toHaveBeenCalledWith(true));
+  const foreground = loadStockSplits("PRIORITY", credentials);
+  expect(await background).toEqual(await foreground);
+  expect(slots.take).toHaveBeenCalledWith(false); expect(fetcher).toHaveBeenCalledTimes(1);
 });

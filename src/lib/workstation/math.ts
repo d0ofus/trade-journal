@@ -38,7 +38,7 @@ export function logicalTimeIndex(time: number, candles: Candle[], interval: Inte
   return lo - 1 + (time - candles[lo - 1].time) / (candles[lo].time - candles[lo - 1].time);
 }
 export function completedCandles(candles: Candle[], interval: Interval, cursor: number | null, session?: CandleSession) { return cursor === null ? candles : candles.filter(bar => candlePeriod(bar.time, interval, session).end <= cursor); }
-export function visibleDrawings(drawings: Drawing[], panelId: string, replay: number | null) { return drawings.filter(d => !d.hidden && (!d.panel || d.panel === panelId) && (replay === null || d.createdAt <= replay)); }
+export function visibleDrawings(drawings: Drawing[], panelId: string, replay: number | null, temporarilyHiddenIds?: ReadonlySet<string>) { return drawings.filter(d => !d.hidden && !temporarilyHiddenIds?.has(d.id) && (!d.panel || d.panel === panelId) && (replay === null || d.createdAt <= replay)); }
 export function movingAverage(candles: Candle[], period: number) {
   let sum = 0;
   return candles.flatMap((c, i) => { sum += c.close; if (i >= period) sum -= candles[i - period].close; return i >= period - 1 ? [{ time: c.time, value: sum / period }] : []; });

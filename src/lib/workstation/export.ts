@@ -7,6 +7,7 @@ import { richPlain, richMarkdown } from "./rich-text";
 import { metricEntries, type MarketMetrics } from "./market-metrics";
 import { strToU8, zipSync } from "fflate";
 import { Trade, TradeDocument } from "./types";
+import { hydrateEvidenceForExport } from "./evidence-storage";
 
 export const exportColumns = ["Name", "Trade ID", "Symbol", "Account", "Direction", "Trade date", "Opened UTC", "Closed UTC", "Broker trade date", "Timestamp basis", "Entry price", "Exit price", "Quantity", "Open quantity", "Executions", "Realized P&L", "Fees", "Currency", "Review status", "Setup", "Execution review", "Takeaway", "Thesis", "Exit review", "Mistake", "Follow up", "Notes", "Tags", "Custom fields", "Review URL", "Attachments", "Revision"];
 for (const name of [...notionProperties.map(p => p.label), ...chartSections.map(([, label]) => label), ...analysisSections.map(([, label]) => `Setup Analysis / ${label}`), "Pre-trade metrics"]) if (!exportColumns.includes(name)) exportColumns.push(name);
@@ -57,15 +58,27 @@ export function compositeCharts(images: HTMLCanvasElement[], light = false, posi
 export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; url: string; metrics?: MarketMetrics }[], columns: string[], headers: Record<string, string>) {
   const files: Record<string, Uint8Array> = { "reviews.csv": strToU8(reviewCsv(rows, columns, headers)) };
   const manifest = { schema: 2, generatedAt: new Date().toISOString(), timezone: "UTC", format: "Execution Lab portable reviews", notion: "CSV imports add rows. Images must be attached or imported separately; Trade ID is not an automatic upsert key.", trades: [] as unknown[] };
-  for (const row of rows) {
+  for (let row of rows) {
+    const hydrated = row.doc.evidence.some(e => e.asset) ? await hydrateEvidenceForExport(row.trade.id, row.doc) : row.doc;
+    row = { ...row, doc: hydrated };
     const name = filename(row.trade), markdown = reviewMarkdown(row.trade, row.doc, row.url, row.metrics), attachments: string[] = [];
-    for (const evidence of row.doc.evidence) { const path = `${name}/assets/${evidence.id.replace(/[^a-z0-9_-]/gi, "_")}.png`; const buffer = Uint8Array.from(atob(evidence.image.split(",")[1]), c => c.charCodeAt(0)); files[path] = buffer; attachments.push(path); }
+    const originals = new Map<string, string>(), paths = new Map<string, string>();
+    for (const evidence of row.doc.evidence) {
+      const identity = evidence.asset?.sha256 ?? evidence.image;
+      let path = originals.get(identity);
+      if (!path) {
+        path = `assets/${evidence.id.replace(/[^a-z0-9_-]/gi, "_")}.png`;
+        files[`${name}/${path}`] = Uint8Array.from(atob(evidence.image.split(",")[1]), c => c.charCodeAt(0));
+        originals.set(identity, path); attachments.push(`${name}/${path}`);
+      }
+      paths.set(evidence.id, path);
+    }
     const blocks = row.doc.review.notion ? notionBlocks(row.trade, row.doc, row.metrics) : null;
     const assigned = assignedEvidenceIds(row.doc.review.notion);
     const sectionImages = (key?: ReviewSectionKey) => {
       return key ? row.doc.evidence.filter(e => sectionEvidenceIds(row.doc.review.notion, key).includes(e.id)) : [];
     };
-    const assetPath = (id: string) => `assets/${id.replace(/[^a-z0-9_-]/gi, "_")}.png`;
+    const assetPath = (id: string) => paths.get(id)!;
     const mdImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `\n![${evidenceCaption(e).replace(/[\[\]]/g, "")} ](${assetPath(e.id)})\n`).join("");
     const htmlImages = (evidence: TradeDocument["evidence"]) => evidence.map(e => `<figure><img alt="${escapeHtml(e.name)}" src="${assetPath(e.id)}" style="max-width:100%">${e.replayAt === undefined ? "" : `<figcaption>${escapeHtml(evidenceCaption(e))}</figcaption>`}</figure>`).join("");
     const unassigned = row.doc.evidence.filter(e => !assigned.has(e.id));
@@ -73,7 +86,7 @@ export async function reviewArchive(rows: { trade: Trade; doc: TradeDocument; ur
     const mappedHtml = blocks ? `<h1>${escapeHtml(row.trade.symbol)}</h1>` + blocks.map(b => `<h${b.level}>${escapeHtml(b.title)}</h${b.level}>${b.html}${htmlImages(sectionImages(b.key))}`).join("") + htmlImages(unassigned) : markdown.split("\n\n").map(p => p.startsWith("## ") ? `<h2>${escapeHtml(p.slice(3))}</h2>` : p.startsWith("# ") ? `<h1>${escapeHtml(p.slice(2))}</h1>` : `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`).join("") + htmlImages(row.doc.evidence);
     files[`${name}/review.md`] = strToU8(mappedMarkdown);
     files[`${name}/review.html`] = strToU8(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(row.trade.symbol)} review</title></head><body><article>${mappedHtml}</article></body></html>`);
-    files[`${name}/review.json`] = strToU8(JSON.stringify({ trade: row.trade, document: { ...row.doc, evidence: row.doc.evidence.map(e => ({ ...e, image: undefined, timeInterpretationVersion: e.timeInterpretationVersion ?? null, earlierTimestampBasis: earlierTimestampBasis(e, row.trade.timeInterpretationVersion ?? "original") })) } }, null, 2));
+    files[`${name}/review.json`] = strToU8(JSON.stringify({ trade: row.trade, document: { ...row.doc, evidence: row.doc.evidence.map(e => ({ ...e, image: undefined, originalFile: assetPath(e.id), timeInterpretationVersion: e.timeInterpretationVersion ?? null, earlierTimestampBasis: earlierTimestampBasis(e, row.trade.timeInterpretationVersion ?? "original") })) } }, null, 2));
     manifest.trades.push({ id: row.trade.id, revision: row.doc.revision, timeInterpretationVersion: row.trade.timeInterpretationVersion ?? "original", folder: name, attachments });
   }
   files["manifest.json"] = strToU8(JSON.stringify(manifest, null, 2));

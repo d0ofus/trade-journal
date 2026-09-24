@@ -90,8 +90,10 @@ for (const ratio of [1, 1.25, 2, 3]) test.describe(`capture DPR ${ratio}`, () =>
     expect(imageSize.display).toBeLessThanOrEqual(imageSize.natural);
     await viewer.getByRole("button", { name: "100%", exact: true }).click();
     expect(Math.round((await image.boundingBox())!.width)).toBe(imageSize.natural);
-    const download = page.waitForEvent("download"); await viewer.getByRole("link", { name: /^Download / }).click();
-    expect(await readFile((await (await download).path())!)).toEqual(Buffer.from((await saved(page)).evidence[0].image.split(",")[1], "base64"));
+    const original = await image.evaluate(async i => Array.from(new Uint8Array(await (await fetch((i as HTMLImageElement).src)).arrayBuffer())));
+    const download = page.waitForEvent("download"); await viewer.getByRole("button", { name: /^Download / }).click();
+    expect(await readFile((await (await download).path())!)).toEqual(Buffer.from(original));
+    expect((await saved(page)).evidence[0].image).toBe("");
     expect(errors).toEqual([]);
   });
 });

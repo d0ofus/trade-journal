@@ -102,6 +102,17 @@ export async function startNotionPublication(id: string, groupKey: string) {
     const publication = await tx.notionPublication.findUniqueOrThrow({ where: { groupKey } });
     if (publication.activeJobId && publication.activeJobId !== id) throw new NotionError("Another publication for this trade needs to finish first.", 409);
     if (publication.dataSourceId !== NOTION_DATA_SOURCE_ID) throw new NotionError("This trade is bound to a different Notion database.", 409);
+    const assets = (job.snapshot as unknown as PublishSnapshot).assets.flatMap(image => image.asset ? [image.asset.id] : []);
+    if (assets.length) {
+      const { lockClosedTradeForReview } = await import("./closed-trade-review-lock");
+      await lockClosedTradeForReview(tx, groupKey);
+      for (const assetId of new Set(assets)) {
+        const asset = await tx.evidenceAsset.findFirst({ where: { id: assetId, tradeId: groupKey, state: "ready" } });
+        if (!asset) throw new NotionError("An original is no longer available. Prepare a fresh preview.", 409);
+        await tx.evidenceAssetReference.upsert({ where: { assetId_kind_key: { assetId, kind: "publication", key: id } }, create: { assetId, kind: "publication", key: id }, update: { expiresAt: null } });
+        await tx.evidenceAsset.update({ where: { id: assetId }, data: { unreferencedAt: null } });
+      }
+    }
     await tx.notionPublication.update({ where: { groupKey }, data: { activeJobId: id } });
     await tx.notionPublishJob.updateMany({ where: { id, state: "preview" }, data: { state: "ready" } });
   });
@@ -332,7 +343,8 @@ async function uploadAsset(asset: PublishSnapshot["assets"][number], write: <T =
     const upload = await write<{ id: string }>("/file_uploads", "POST", { mode: "single_part", filename: `${asset.hash}.png`, content_type: "image/png" });
     row = await prisma.notionUpload.update({ where: { id }, data: { uploadId: upload.id } });
   }
-  const bytes = Buffer.from(asset.image.split(",")[1], "base64"), form = new FormData();
+  const bytes = asset.asset ? (await (await import("./evidence-assets")).readOriginalAsset(asset.asset.id)).bytes : Buffer.from(asset.image.split(",")[1], "base64"), form = new FormData();
+  if (jsonHash(bytes.toString("base64")) !== asset.hash) throw new NotionError("Original image checksum does not match this frozen publication. No substituted image was uploaded.", 409);
   form.append("file", new Blob([bytes], { type: "image/png" }), `${asset.hash}.png`);
   await write(`/file_uploads/${row.uploadId}/send`, "POST", form);
   await prisma.notionUpload.update({ where: { id }, data: { status: "uploaded" } });

@@ -17,6 +17,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
+import { clearEvidenceCache } from "@/lib/workstation/evidence-storage";
 import { cn } from "@/lib/utils";
 import { requestWorkstationNavigation } from "@/lib/workstation-navigation-guard";
 
@@ -59,6 +60,7 @@ export function Sidebar() {
 
   function signOutSafely() {
     if (!requestWorkstationNavigation("sign out")) return;
+    clearEvidenceCache();
     void signOut({ callbackUrl: "/login" });
   }
 

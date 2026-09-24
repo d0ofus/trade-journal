@@ -1,9 +1,10 @@
 import type { Evidence } from "./types";
+import { IMAGE_MAX_BYTES, inlineImageBytes } from "./image-assets";
 
-export type ImportedImage = Pick<Evidence, "id" | "name" | "image"> & { origin: "upload" | "clipboard" };
+export type ImportedImage = Pick<Evidence, "id" | "name" | "image"> & { origin: "upload" | "clipboard"; width?: number; height?: number };
 export function validateImageFile(file: Pick<Blob, "size" | "type">) {
   if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("Choose a PNG, JPEG or WebP image.");
-  if (!file.size || file.size > 4_000_000) throw new Error("Choose a non-empty image no larger than 4 MB.");
+  if (!file.size || file.size > IMAGE_MAX_BYTES) throw new Error("Choose a non-empty image no larger than 20,000,000 bytes.");
 }
 export function validateImageDimensions(width: number, height: number) {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw new Error("This image could not be decoded.");
@@ -16,7 +17,7 @@ export function validateImageSignature(bytes: Uint8Array, mime: string) {
   if (!(mime === "image/png" && png || mime === "image/jpeg" && jpeg || mime === "image/webp" && webp)) throw new Error("This file is not a valid PNG, JPEG or WebP image.");
 }
 
-/** No external upload: normalize into the existing, size-checked review document. */
+/** Decode locally without reducing dimensions or original PNG quality. */
 export async function importEvidenceImage(file: File, origin: ImportedImage["origin"], signal: AbortSignal): Promise<ImportedImage> {
   validateImageFile(file); signal.throwIfAborted();
   validateImageSignature(new Uint8Array(await file.slice(0, 12).arrayBuffer()), file.type); signal.throwIfAborted();
@@ -39,8 +40,9 @@ export async function importEvidenceImage(file: File, origin: ImportedImage["ori
       context.drawImage(image, 0, 0);
       const png = canvas.toDataURL("image/png");
       if (!png.startsWith("data:image/png;base64,")) throw new Error("Could not prepare the image.");
+      if (inlineImageBytes(png) > IMAGE_MAX_BYTES) throw new Error("The normalized PNG exceeds 20,000,000 bytes. Choose a smaller source image; dimensions and quality were not reduced.");
       signal.throwIfAborted();
-      return { id: crypto.randomUUID(), origin, image: png, name: (origin === "clipboard" ? `Clipboard screenshot ${new Date().toISOString().replace(/[:.]/g, "-")}.png` : file.name.replace(/\.[^.]+$/, "") + ".png").slice(0, 240) };
+      return { id: crypto.randomUUID(), origin, image: png, width: canvas.width, height: canvas.height, name: (origin === "clipboard" ? `Clipboard screenshot ${new Date().toISOString().replace(/[:.]/g, "-")}.png` : file.name.replace(/\.[^.]+$/, "") + ".png").slice(0, 240) };
     } finally { canvas.width = 0; canvas.height = 0; }
   } finally { URL.revokeObjectURL(url); }
 }

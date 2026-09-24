@@ -5,6 +5,7 @@ import type { Review, TradeDocument } from "@/lib/workstation/types";
 import { EvidenceDownload, EvidenceThumbnail } from "./evidence-preview";
 import { useJournalSections } from "./use-template-layout";
 import { CaptureQualityControls } from "./capture-quality";
+import { evidenceUsage } from "@/lib/workstation/image-assets";
 
 export function SectionAttachments({ section, document, onChange, onEvidence, onImage, readOnly = false }: {
   section: ReviewSectionKey; document: TradeDocument;
@@ -15,6 +16,7 @@ export function SectionAttachments({ section, document, onChange, onEvidence, on
 }) {
   const label = useJournalSections(document.review.notion?.layout).find(([key]) => key === section)?.[1] ?? "Archived section";
   const ids = sectionEvidenceIds(document.review.notion, section);
+  const usage = evidenceUsage(document.evidence);
   const assign = (id: string, checked: boolean) => onChange(review => ({ ...review,
     notion: assignSectionEvidence(review.notion ?? emptyNotionReview(), section, id, checked),
   }));
@@ -24,6 +26,7 @@ export function SectionAttachments({ section, document, onChange, onEvidence, on
       <button type="button" className="ws-add-evidence" disabled={readOnly} onClick={() => onEvidence(section)}>Attach current chart to {label}</button>
       <button type="button" disabled={readOnly} onClick={() => onImage(section)}>Attach image</button>
     </div>
+    {!readOnly && <small className="ws-help">{(usage.remainingBytes / 1_000_000).toFixed(2)} MB remaining · {30 - usage.count} image slots{usage.warning ? " · Image usage exceeds 80%" : ""}</small>}
     {document.evidence.filter(e => ids.includes(e.id)).map(e => <figure key={e.id} className="ws-section-preview">
       <EvidenceThumbnail evidence={e} />
       <figcaption><EvidenceDownload evidence={e} /><button type="button" disabled={readOnly} onClick={() => assign(e.id, false)} aria-label={`Detach ${e.name} from ${label}`}>Detach</button></figcaption>

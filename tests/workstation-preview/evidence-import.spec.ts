@@ -112,7 +112,8 @@ test("JPEG, WebP and clipboard images normalize without intercepting text paste"
   }
   const doc = await saved(page);
   expect(doc.evidence.map(e => e.origin)).toEqual(["upload", "upload", "clipboard"]);
-  expect(doc.evidence.every(e => e.image.startsWith("data:image/png;base64,"))).toBe(true);
+  expect(doc.evidence.every(e => e.image === "" && e.asset?.storage === "demo" && e.asset.mime === "image/png")).toBe(true);
+  expect(doc.evidence.map(e => [e.asset?.width, e.asset?.height])).toEqual([[32, 24], [32, 24], [32, 24]]);
   const text = page.getByRole("textbox", { name: "Takeaways", exact: true });
   await text.focus();
   await text.evaluate(element => { const data = new DataTransfer(); data.setData("text/plain", "Pasted journal text"); element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true })); });
@@ -124,7 +125,7 @@ test("JPEG, WebP and clipboard images normalize without intercepting text paste"
 test("invalid uploads and cancelled previews do not change evidence", async ({ page }) => {
   await open(page);
   const dialog = await imageDialog(page, "Takeaways");
-  for (const file of [{ name: "document.pdf", mimeType: "application/pdf", buffer: Buffer.from("test") }, { name: "broken.png", mimeType: "image/png", buffer: Buffer.from("invalid") }, { name: "large.png", mimeType: "image/png", buffer: Buffer.alloc(4_000_001) }]) {
+  for (const file of [{ name: "document.pdf", mimeType: "application/pdf", buffer: Buffer.from("test") }, { name: "broken.png", mimeType: "image/png", buffer: Buffer.from("invalid") }, { name: "large.png", mimeType: "image/png", buffer: Buffer.alloc(20_000_001) }]) {
     await dialog.getByLabel("Choose image").setInputFiles(file);
     await expect(dialog.getByRole("alert")).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Attach image to Takeaways" })).toBeDisabled();
@@ -148,7 +149,7 @@ test("an interrupted image save recovers on reload without duplicating the asset
     Storage.prototype.setItem = function(k, value) { if (this === localStorage && k === key) throw new DOMException("Synthetic save failure", "QuotaExceededError"); original.call(this, k, value); };
   }, key);
   await dialog.getByRole("button", { name: "Attach image to Takeaways", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toContainText("recovery draft");
+  await expect(page.locator(".ws-toast")).toContainText("recovery draft");
   expect((await saved(page)).evidence).toEqual([]);
   await page.reload();
   await expect.poll(async () => (await saved(page)).evidence.length).toBe(1);

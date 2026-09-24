@@ -1091,3 +1091,73 @@ model WorkstationMetricCache {
   @@unique([symbol, sessionDate, provider, version])
   @@index([accessedAt])
 }
+
+// Private workstation evidence. Standalone JournalChart storage is deliberately separate.
+model EvidenceAsset {
+  id             String @id @default(cuid())
+  tradeId        String
+  ownerId        String
+  sha256         String
+  notionHash     String
+  objectKey      String @unique
+  thumbnailKey   String @unique
+  bytes          Int
+  thumbnailBytes Int
+  width          Int
+  height         Int
+  state          String @default("ready")
+  unreferencedAt DateTime? @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  references     EvidenceAssetReference[]
+  uploads        EvidenceUploadSession[]
+  @@unique([tradeId, sha256])
+  @@index([state, unreferencedAt])
+}
+
+model EvidenceUploadSession {
+  id           String @id @default(cuid())
+  tradeId      String
+  ownerId      String
+  clientKey    String
+  temporaryKey String @unique
+  expectedBytes Int
+  verifiedSha256 String?
+  state        String @default("pending")
+  assetId      String?
+  asset        EvidenceAsset? @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  leaseUntil   DateTime?
+  error        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  expiresAt    DateTime
+  @@unique([ownerId, tradeId, clientKey])
+  @@index([state, expiresAt])
+}
+
+model EvidenceAssetReference {
+  assetId   String
+  asset     EvidenceAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  kind      String
+  key       String
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+  @@id([assetId, kind, key])
+  @@index([kind, key])
+  @@index([expiresAt])
+}
+
+model EvidenceMaintenanceState {
+  key       String @id
+  payload   Json
+  updatedAt DateTime @updatedAt
+}
+
+model EvidenceBackupSession {
+  id        String @id @default(cuid())
+  ownerId   String
+  manifest  Json
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  @@index([expiresAt])
+}

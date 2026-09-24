@@ -3,6 +3,10 @@
   "buildCommand": "node scripts/vercel-build.mjs",
   "crons": [
     {
+      "path": "/api/cron/evidence-maintenance",
+      "schedule": "0 10 * * *"
+    },
+    {
       "path": "/api/cron/flex-import",
       "schedule": "0 7 * * *"
     },

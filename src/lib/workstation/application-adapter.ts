@@ -6,7 +6,9 @@ import { tradeChartSession } from "./chart-session";
 import { CandleMemory } from "./candle-memory";
 import type { CandleCacheMetadata } from "./candle-ranges";
 import { SharedRequests } from "./shared-requests";
+import { externalizeEvidence, forgetPendingEvidence } from "./evidence-storage";
 export function createApplicationAdapter(): WorkstationAdapter {
+  let privateWrites = false;
   const cache = new CandleMemory();
   const inflight = new SharedRequests<CandleResult>();
   const metricRequests = new SharedRequests<MarketMetrics>();
@@ -46,12 +48,15 @@ export function createApplicationAdapter(): WorkstationAdapter {
     metrics: (trade, signal) => metricRequests.run(metricIdentity(trade), signal, sharedSignal => request(`/api/closed-trades/${encodeURIComponent(trade.id)}/market-metrics`, { signal: sharedSignal, priority: "low" })),
     loadView: id => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`),
     saveView: (id, view, expectedRevision) => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ view, expectedRevision }), keepalive: true }),
-    load: id => request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`),
+    load: async id => { const response = await fetch(`/api/closed-trades/${encodeURIComponent(id)}/workstation`, { credentials: "same-origin", cache: "no-store" }); const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Review load failed"); privateWrites = response.headers.get("X-Evidence-Writes") === "r2"; return body as TradeDocument; },
     async save(id, document, expectedRevision) {
+      if (privateWrites && document.evidence.some(e => !e.asset)) document = await externalizeEvidence(id, "application", document);
       const body = JSON.stringify({ document: { ...document, legacy: undefined }, expectedRevision });
       if (new TextEncoder().encode(body).byteLength > REVIEW_PACKAGE_MAX_BYTES) throw new Error(REVIEW_PACKAGE_TOO_LARGE);
       // The archive is server-owned and need not be uploaded with every keystroke.
-      return request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body });
+      const saved = await request<TradeDocument>(`/api/closed-trades/${encodeURIComponent(id)}/workstation`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body });
+      for (const evidence of saved.evidence) if (evidence.asset) void forgetPendingEvidence(id, "application", evidence.id).catch(() => {});
+      return saved;
     },
     candles: (...args) => candles("fill", undefined, ...args),
     cachedCandles: (...args) => candles("cache", undefined, ...args),

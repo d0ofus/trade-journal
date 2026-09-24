@@ -1,6 +1,7 @@
 import { chartSections, emptyNotionReview, reviewSections, type AdditionalReviewSectionKey, type ChartSectionKey, type NotionReview, type ReviewSectionKey } from "./notion-template";
 import { jsonBytes, REVIEW_PACKAGE_MAX_BYTES, REVIEW_PACKAGE_TOO_LARGE } from "./payload";
 import type { Evidence, TradeDocument } from "./types";
+import { assertEvidenceCapacity } from "./image-assets";
 import { preserveLayoutArchive, type TemplateLayout } from "./template-layout-schema";
 
 export function evidenceSource(e: Evidence) { return e.origin === "upload" ? "Uploaded image" : e.origin === "clipboard" ? "Clipboard screenshot" : e.peerCapture ? "Peer comparison" : "Workspace chart"; }
@@ -36,6 +37,7 @@ export function attachEvidence(doc: TradeDocument, evidence: Evidence, destinati
   const next = { ...doc, evidence: [...doc.evidence, evidence], review: { ...doc.review,
     notion: { ...assignSectionEvidence(doc.review.notion ?? emptyNotionReview(), destination, evidence.id, true), ...layout ? { layout: preserveLayoutArchive(layout, doc.review.notion?.layout) } : {} },
   } };
+  assertEvidenceCapacity(next.evidence);
   if (jsonBytes({ document: { ...next, legacy: undefined }, expectedRevision: doc.revision }) > REVIEW_PACKAGE_MAX_BYTES) throw new Error(REVIEW_PACKAGE_TOO_LARGE);
   return next;
 }

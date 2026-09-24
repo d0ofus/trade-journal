@@ -134,8 +134,8 @@ test("image import validation rejects unsupported, oversized and invalid inputs"
   validateImageSignature(new Uint8Array([255, 216, 255]), "image/jpeg");
   validateImageSignature(new TextEncoder().encode("RIFFxxxxWEBP"), "image/webp");
   assert.throws(() => validateImageSignature(new TextEncoder().encode("<svg></svg>"), "image/png"));
-  for (const type of ["image/png", "image/jpeg", "image/webp"]) validateImageFile({ type, size: 4_000_000 });
-  for (const file of [{ type: "application/pdf", size: 1 }, { type: "image/svg+xml", size: 1 }, { type: "image/png", size: 0 }, { type: "image/png", size: 4_000_001 }]) assert.throws(() => validateImageFile(file));
+  for (const type of ["image/png", "image/jpeg", "image/webp"]) validateImageFile({ type, size: 20_000_000 });
+  for (const file of [{ type: "application/pdf", size: 1 }, { type: "image/svg+xml", size: 1 }, { type: "image/png", size: 0 }, { type: "image/png", size: 20_000_001 }]) assert.throws(() => validateImageFile(file));
   validateImageDimensions(4000, 4000);
   for (const [w, h] of [[0, 1], [NaN, 1], [1.5, 2], [4001, 4000]]) assert.throws(() => validateImageDimensions(w, h));
 });
@@ -290,7 +290,7 @@ test("application saves measure UTF-8 bytes and reject oversized reviews before 
   assert.equal(jsonBytes("界"), 5);
   const adapter = createApplicationAdapter();
   const document = emptyDocument(); document.review.notes = "界".repeat(Math.ceil(REVIEW_PACKAGE_MAX_BYTES / 3));
-  await assert.rejects(adapter.save("oversized", document, 0), /4 MB save limit/);
+  await assert.rejects(adapter.save("oversized", document, 0), /4 MB request limit/);
 });
 
 test("application saves serialize the outgoing package once and exclude server-owned archives", async context => {

@@ -12,6 +12,51 @@ import { candlePeriod } from "./execution-diagnostics";
 import { translateMeasurement } from "./measurement-drag";
 import { workstationDocumentSchema } from "./schema";
 import { defaultShortcuts, restoreShortcuts } from "./shortcuts";
+import { hideExistingDrawings, hiddenDrawingIdsFor } from "./drawing-visibility";
+import { visibleDrawings } from "./math";
+import { beforeEntryDrawings } from "./before-entry";
+
+test("temporary visibility snapshots current IDs, preserves saved flags, and never hides new IDs", () => {
+  const trade = demoTrades[0], original = initialDemoDocument(trade).drawings[0];
+  const old = { ...original, id: "old", hidden: false, panel: null }, individual = { ...old, id: "individual", hidden: true };
+  const drawings = [old, individual], before = JSON.stringify(drawings);
+  const batch = hideExistingDrawings(trade.id, drawings), hidden = hiddenDrawingIdsFor(batch, trade.id);
+  const added = { ...old, id: "new", text: "New annotation" };
+  assert.deepEqual(visibleDrawings([...drawings, added], "chart-1", null, hidden), [added]);
+  assert.equal(JSON.stringify(drawings), before);
+  assert.deepEqual([...batch.ids], ["old", "individual"]);
+  assert.equal(hiddenDrawingIdsFor(batch, "another-trade"), undefined);
+  assert.equal(hiddenDrawingIdsFor(null, trade.id), undefined);
+  assert.deepEqual(visibleDrawings([...drawings, added], "chart-1", null), [old, added]);
+  // Deletion, undo and an edited placement draft all retain the original ID.
+  assert.deepEqual(visibleDrawings([added], "chart-1", null, hidden), [added]);
+  assert.deepEqual(visibleDrawings([added, { ...old, text: "Restored old annotation" }], "chart-1", null, hidden), [added]);
+  const next = hideExistingDrawings(trade.id, [...drawings, added]);
+  assert.deepEqual(visibleDrawings([...drawings, added], "chart-1", null, next.ids), []);
+  assert.deepEqual(visibleDrawings([added], "chart-1", null, hideExistingDrawings(trade.id, []).ids), [added]);
+});
+
+test("temporary visibility composes with panel, replay and Before entry restrictions", () => {
+  const base = { ...initialDemoDocument(demoTrades[0]).drawings[0], points: [{ time: 100, price: 10 }], hidden: false, createdAt: 100, panel: null };
+  const old = { ...base, id: "old" }, shared = { ...base, id: "shared" }, otherPanel = { ...base, id: "other", panel: "chart-2" }, future = { ...base, id: "future", createdAt: 500 }, laterAnchor = { ...base, id: "later", points: [{ time: 700, price: 10 }] };
+  const hidden = hideExistingDrawings("trade", [old]).ids;
+  const drawings = [old, shared, otherPanel, future, laterAnchor];
+  assert.deepEqual(visibleDrawings(drawings, "chart-1", 200, hidden).map(d => d.id), ["shared", "later"]);
+  assert.deepEqual(visibleDrawings(drawings, "chart-2", 200, hidden).map(d => d.id), ["shared", "other", "later"]);
+  const bars = [{ time: 0, open: 10, high: 12, low: 9, close: 11, volume: 100 }];
+  assert.deepEqual(visibleDrawings(beforeEntryDrawings(drawings, bars, "5m"), "chart-1", 200, hidden).map(d => d.id), ["shared"]);
+});
+
+test("live and captured drawing geometry has no hidden hit targets or pin notes", () => {
+  const base = { ...initialDemoDocument(demoTrades[0]).drawings[0], hidden: false, panel: null };
+  const old: Drawing = { ...base, id: "hidden-pin", tool: "pin", text: "Hidden pin note" }, added: Drawing = { ...base, id: "new-pin", tool: "pin", text: "New pin note" };
+  const drawings = visibleDrawings([old, added], "chart-1", null, hideExistingDrawings("trade", [old]).ids);
+  for (const exporting of [false, true]) {
+    const result = paint(added, { drawings, export: exporting, selected: old.id, pinPreview: added.id, capturePinNotes: true });
+    assert.ok(result.hits.every(hit => hit.id !== old.id));
+    assert.deepEqual(result.texts, ["New pin note"]);
+  }
+});
 
 test("volume overrides validate independently, preserve old defaults and reach all renderers", () => {
   assert.deepEqual(restoreVolumeAppearance({ up: { color: "red", transparency: -1 }, down: { color: "#010203", transparency: 0 }, average: { transparency: 100 } }), { down: { color: "#010203", transparency: 0 }, average: { transparency: 100 } });

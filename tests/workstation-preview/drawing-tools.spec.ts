@@ -15,13 +15,13 @@ declare global {
   }
 }
 
-async function open(page: Page, drawings?: Drawing[], legacyStyle?: { color: string; width: number; dashed: boolean }) {
+async function open(page: Page, drawings?: Drawing[], legacyStyle?: { color: string; width: number; dashed: boolean }, overrides: Partial<WorkspacePreferences> = {}) {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/**", route => route.abort());
   const doc = initialDemoDocument(demoTrades[0]);
   doc.drawings = drawings ?? [{ ...doc.drawings[0], text: "" }];
-  const preferences: Record<string, unknown> = { ...defaultPreferences(), panels: [{ id: "chart-1", interval: "5m" }], labels: "hidden", journal: false };
+  const preferences: Record<string, unknown> = { ...defaultPreferences(), panels: [{ id: "chart-1", interval: "5m" }], labels: "hidden", journal: false, ...overrides };
   if (legacyStyle) { delete preferences.drawingStyles; preferences.style = legacyStyle; }
   await page.addInitScript(({ preferences, doc, preferenceKey, documentKey }) => {
     if (!localStorage.getItem(preferenceKey)) localStorage.setItem(preferenceKey, JSON.stringify(preferences));
@@ -65,7 +65,7 @@ async function open(page: Page, drawings?: Drawing[], legacyStyle?: { color: str
     };
   }, { preferences, doc, preferenceKey, documentKey });
   await page.goto(`/preview/trades?groupKey=${encodeURIComponent(demoTrades[0].id)}`);
-  await expect(page.locator(".ws-chart")).toHaveAttribute("data-visible-from", /\d+/);
+  await expect(page.locator(".ws-chart").first()).toHaveAttribute("data-visible-from", /\d+/);
   return errors;
 }
 const saved = (page: Page) => page.evaluate(key => JSON.parse(localStorage.getItem(key)!) as TradeDocument, documentKey);
@@ -122,7 +122,101 @@ test("measurement label controls, rigid dragging, cancellation, visibility and c
   await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
   await page.getByRole("button", { name: "Hide all drawings", exact: true }).click();
   await page.getByRole("button", { name: "Price & time measurement", exact: true }).click();
-  await expect.poll(() => liveText(page)).toEqual(["Rigid move"]);
+  await expect.poll(() => liveText(page)).toEqual([]);
+  await expect(page.getByRole("button", { name: "Show all drawings", exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("Hide all keeps older drawings hidden through new notes, placement previews, duplication and undo", async ({ page }) => {
+  const old: Drawing = { ...initialDemoDocument(demoTrades[0]).drawings[0], id: "old-ray", text: "Older ray", hidden: false };
+  const individual: Drawing = { ...old, id: "individual-ray", text: "Individually hidden", hidden: true };
+  const errors = await open(page, [old, individual]);
+  await expect.poll(() => liveText(page)).toContain("Older ray");
+  await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
+  const before = await saved(page);
+  await page.getByRole("button", { name: "Hide all drawings", exact: true }).click();
+  expect(await saved(page)).toEqual(before);
+  await expect.poll(() => liveText(page)).toEqual([]);
+  await expect(page.getByText("Existing drawings hidden; new drawings remain visible.", { exact: true })).toBeVisible();
+  await place(page, "n"); await page.getByLabel("Annotation text", { exact: true }).fill("Fresh note");
+  await expect.poll(() => liveText(page)).toContain("Fresh note");
+  expect(await liveText(page)).not.toContain("Older ray");
+  await expect.poll(async () => (await saved(page)).drawings.at(-1)).toMatchObject({ text: "Fresh note", hidden: false });
+  // A two-anchor placement preview is visible before it is committed.
+  const chart = page.locator(".ws-chart"); await chart.focus(); await page.keyboard.press("m");
+  const rect = (await chart.locator(".ws-plot").boundingBox())!;
+  await page.mouse.click(rect.x + rect.width * .3, rect.y + rect.height * .35);
+  await page.mouse.move(rect.x + rect.width * .55, rect.y + rect.height * .55);
+  await expect.poll(() => liveText(page)).toContainEqual(expect.stringMatching(/bars/));
+  expect(await liveText(page)).not.toContain("Older ray");
+  await page.keyboard.press("Escape");
+  await expect.poll(async () => (await saved(page)).drawings.length).toBe(3);
+  const rows = page.locator(".ws-object-list > div");
+  await rows.filter({ hasText: "Individually hidden" }).getByRole("button").first().click();
+  await page.getByTitle("Duplicate drawing", { exact: true }).click();
+  await expect.poll(async () => (await saved(page)).drawings.length).toBe(4);
+  expect((await saved(page)).drawings.at(-1)).toMatchObject({ hidden: false, text: "Individually hidden" });
+  await expect.poll(() => liveText(page)).toContain("Individually hidden");
+  // Deleting and restoring a batched drawing must not reveal its old ID.
+  await rows.filter({ hasText: "Older ray" }).getByRole("button").first().click();
+  await page.getByTitle("Delete drawing", { exact: true }).click();
+  await expect.poll(async () => (await saved(page)).drawings.some(d => d.id === old.id)).toBe(false);
+  await chart.focus(); await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await saved(page)).drawings.some(d => d.id === old.id)).toBe(true);
+  expect(await liveText(page)).not.toContain("Older ray");
+  await page.keyboard.press("Control+Shift+z");
+  await expect.poll(async () => (await saved(page)).drawings.some(d => d.id === old.id)).toBe(false);
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await saved(page)).drawings.some(d => d.id === old.id)).toBe(true);
+  expect(await liveText(page)).not.toContain("Older ray");
+  // A fresh capture uses the visible mix, not all or none of the drawings.
+  await page.evaluate(() => { window.drawingExportText = []; });
+  await page.getByRole("button", { name: "Export chart-1", exact: true }).click();
+  const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Active chart PNG", exact: true }).click(); await download;
+  expect(await page.evaluate(() => window.drawingExportText)).toContain("Fresh note");
+  expect(await page.evaluate(() => window.drawingExportText)).not.toContain("Older ray");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.getByRole("button", { name: "Show all drawings", exact: true }).click();
+  await expect.poll(() => liveText(page)).toContain("Older ray");
+  expect((await saved(page)).drawings.find(d => d.id === individual.id)?.hidden).toBe(true);
+  await page.getByRole("button", { name: "Hide all drawings", exact: true }).click();
+  await expect.poll(() => liveText(page)).toEqual([]);
+  await page.reload(); await expect.poll(() => liveText(page)).toContain("Older ray"); await expect.poll(() => liveText(page)).toContain("Fresh note");
+  expect((await saved(page)).drawings.find(d => d.id === individual.id)?.hidden).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("batched pins stay hidden across charts, fullscreen and replay; trade navigation clears the batch", async ({ page }) => {
+  const trade = demoTrades[0], old: Drawing = { ...initialDemoDocument(trade).drawings[0], id: "old-pin", tool: "pin", text: "Old shared pin", hidden: false, panel: null, createdAt: trade.openTime - 3600, points: [{ time: trade.openTime - 600, price: trade.entry }] };
+  const errors = await open(page, [old], undefined, { panels: [{ id: "chart-1", interval: "5m" }, { id: "chart-2", interval: "5m" }] });
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(2);
+  await page.getByRole("button", { name: "Show Drawings", exact: true }).click();
+  await page.getByRole("button", { name: "Hide all drawings", exact: true }).click();
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Replay trade", exact: true }).click();
+  const chart = page.locator('[data-chart-id="chart-1"]');
+  await page.getByRole("button", { name: "Pin note", exact: true }).click();
+  await chart.locator(".ws-plot").click({ position: { x: 160, y: 150 } });
+  await page.getByLabel("Annotation text", { exact: true }).fill("New replay pin");
+  await page.getByLabel("Annotation visibility", { exact: true }).selectOption("all");
+  await expect.poll(async () => (await saved(page)).drawings.length).toBe(2);
+  const added = (await saved(page)).drawings.at(-1)!;
+  await expect(page.locator(`[data-pin-target="${added.id}"]`)).toHaveCount(2);
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(0);
+  await chart.focus(); await page.keyboard.press("f");
+  await expect(chart).toHaveClass(/ws-chart-fullscreen/);
+  await expect(chart.locator(`[data-pin-target="${added.id}"]`)).toBeVisible();
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(0);
+  await page.keyboard.press("Shift+B");
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await chart.focus(); await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Exit replay", exact: true }).click();
+  // Switching away and back restores normal per-drawing visibility.
+  await chart.focus(); await page.keyboard.press("Alt+ArrowDown");
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(0);
+  await page.locator(".ws-chart").first().focus(); await page.keyboard.press("Alt+ArrowUp");
+  await expect(page.locator('[data-pin-target="old-pin"]')).toHaveCount(2);
   expect(errors).toEqual([]);
 });
 async function selectRay(page: Page) {

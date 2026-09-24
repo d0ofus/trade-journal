@@ -31,12 +31,12 @@ export function ImageAttachment({ sectionLabel, onAttach, validate }: { sectionL
       if (files.length !== 1) { setImage(null); setError("Paste one screenshot at a time, or choose an image file."); return; }
       void prepare(files[0], "clipboard");
     }}>Click here, then paste a screenshot with Ctrl+V or ⌘V.</div>
-    <p className="ws-help">PNG, JPEG or WebP · up to 4 MB and 16 megapixels. The entire review must fit within 4 MB after conversion; up to 30 images.</p>
+    <p className="ws-help">PNG, JPEG or WebP · up to 20 MB and 16 megapixels. Lossless PNG originals share a 50 MB review allowance; up to 30 images. Original quality is never reduced automatically.</p>
     {image && <figure>
       {/* Normalized local PNG, not a remote image. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={image.image} alt={`Preview of ${image.name}`} />
-      <figcaption>{image.name}</figcaption>
+      <figcaption>{image.name} · {image.width} × {image.height} px</figcaption>
     </figure>}
     {error && <p role="alert">{error}</p>}
     {busy && <p role="status">Preparing or saving image…</p>}

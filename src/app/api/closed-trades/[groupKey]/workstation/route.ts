@@ -10,7 +10,7 @@ type Params = { params: Promise<{ groupKey: string }> };
 export async function GET(_request: NextRequest, { params }: Params) {
   const error = await requireApiSession(); if (error) return error;
   if (process.env.TRADES_WORKSTATION_ENABLED !== "1") return NextResponse.json({ error: "Workstation is not enabled." }, { status: 404 });
-  try { return NextResponse.json(await readWorkstationDocument((await params).groupKey), { headers: { "Cache-Control": "no-store" } }); }
+  try { return NextResponse.json(await readWorkstationDocument((await params).groupKey), { headers: { "Cache-Control": "no-store", "X-Evidence-Writes": process.env.EVIDENCE_R2_WRITES_ENABLED === "1" ? "r2" : "disabled" } }); }
   catch (e) { if (e instanceof WorkstationError) return NextResponse.json({ error: e.message }, { status: e.status }); throw e; }
 }
 export async function PATCH(request: NextRequest, { params }: Params) {

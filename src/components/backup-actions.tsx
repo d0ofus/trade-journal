@@ -4,6 +4,7 @@ import { CheckCircle2, Download, Loader2, ShieldCheck, XCircle } from "lucide-re
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { downloadCompleteBackup } from "@/lib/workstation/complete-backup";
 
 type BackupVerifyResult = {
   ok?: boolean;
@@ -146,6 +147,9 @@ function scheduleSettingsRefresh(router: ReturnType<typeof useRouter>, auditId?:
   url.searchParams.set("backupVerified", auditId || String(Date.now()));
   router.refresh();
   window.setTimeout(() => {
+    // Deliberate full reload: discard stale client state and restore the verified
+    // backup result from sessionStorage after the server freshness check.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign(`${url.pathname}${url.search}`);
   }, 100);
 }
@@ -163,6 +167,7 @@ export function BackupActions() {
   const router = useRouter();
   const [state, setState] = useState<BackupActionState>(idleState);
   const [loading, setLoading] = useState(false);
+  const [completeStatus, setCompleteStatus] = useState("");
 
   useEffect(() => {
     const restored = storedVerifiedState();
@@ -244,7 +249,9 @@ export function BackupActions() {
         </Button>
       </div>
 
-      <p className="mt-3 text-xs text-slate-600">Includes journal text, drawings, screenshots, timestamp interpretations and saved chart views. Downloaded candle history is recoverable cache and is excluded. Download &amp; Verify checks structure, references and asset checksums; it does not perform a database restore. Keep the downloaded file outside this repository. Release backups are separately restored into isolated PostgreSQL.</p>
+      <Button type="button" size="sm" disabled={loading} onClick={() => { setLoading(true); void downloadCompleteBackup(setCompleteStatus).catch(error => setCompleteStatus(error instanceof Error ? error.message : "Complete backup failed")).finally(() => setLoading(false)); }}>Complete database + images backup</Button>
+      {completeStatus && <p role="status" className="mt-2 text-xs">{completeStatus}</p>}
+      <p className="mt-3 text-xs text-slate-600">Use Complete database + images for private R2 evidence. Allow multiple downloads and retain every self-contained ZIP part. A database-only JSON/Neon backup is incomplete for R2 images. Downloaded candle history is recoverable cache and is excluded. Verification does not perform a database restore. Keep backup files outside this repository. Standalone external screenshots retain their existing backup requirements.</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <ResultTile label="SHA-256" value={state.sha256 ?? "-"} testId="backup-verify-sha256" />
         <ResultTile label="Payload Size" value={formatBytes(state.payloadBytes)} testId="backup-verify-payload-bytes" />

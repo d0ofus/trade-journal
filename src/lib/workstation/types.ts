@@ -114,6 +114,7 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  asset?: import("./image-assets").ImageAssetReference;
   /** Replay cutoff at capture time; absent for ordinary captures and imports. */
   replayAt?: number;
   origin?: "upload" | "clipboard";
@@ -127,6 +128,8 @@ export type Evidence = {
   timeframe: string;
 };
 export type TradeDocument = {
+  evidenceProtocol?: number;
+  comparison?: import("./peer-arrangement").PeerComparisonState;
   schema: 1;
   revision: number;
   review: Review;

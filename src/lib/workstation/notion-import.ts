@@ -36,11 +36,13 @@ export function notionImportCsv({ trade, doc, url }: NotionImportReview) {
 export function notionPageArchive({ trade, doc, url, metrics }: NotionImportReview) {
   const files: Record<string, Uint8Array> = {};
   const images = new Map<string, string>();
+  const originals = new Map<string, string>();
   doc.evidence.forEach((evidence, index) => {
     const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(evidence.image);
     if (!match) throw new Error(`Unable to include chart “${evidence.name}”. Download or replace the image before exporting.`);
-    const path = `assets/chart-${index + 1}.${match[1] === "jpeg" ? "jpg" : match[1]}`;
-    files[path] = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0));
+    const identity = evidence.asset?.sha256 ?? evidence.image;
+    const path = originals.get(identity) ?? `assets/chart-${index + 1}.${match[1] === "jpeg" ? "jpg" : match[1]}`;
+    if (!originals.has(identity)) { files[path] = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0)); originals.set(identity, path); }
     images.set(evidence.id, `<figure><img src="${path}" alt="${escapeHtml(evidence.name)}"><figcaption>${escapeHtml(evidenceCaption(evidence))}</figcaption></figure>`);
   });
   const assigned = assignedEvidenceIds(doc.review.notion);

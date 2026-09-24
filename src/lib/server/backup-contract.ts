@@ -10,9 +10,15 @@ export type BackupTableContract = {
 
 // Disposable market-data cache and jobs are reconstructed from the provider and trade read model.
 // They are deliberately excluded from user-data backup payloads, freshness, and restores.
-export const REGENERABLE_CACHE_MODELS = ["WorkstationMetricCache", "WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease", "NotionRequestGate"] as const;
+// Backup sessions contain temporary download manifests, not authoritative images or reviews;
+// restoring a backup starts a new session rather than reviving expired download/pin state.
+export const REGENERABLE_CACHE_MODELS = ["WorkstationMetricCache", "WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease", "NotionRequestGate", "EvidenceBackupSession"] as const;
 
 export const BACKUP_TABLES = [
+  { key: "evidenceAssets", prismaModel: "EvidenceAsset", dependencies: [], restoreOrder: 470, canonicalRows: true, optionalInLegacy: true },
+  { key: "evidenceUploadSessions", prismaModel: "EvidenceUploadSession", dependencies: ["evidenceAssets"], restoreOrder: 480, canonicalRows: true, optionalInLegacy: true },
+  { key: "evidenceAssetReferences", prismaModel: "EvidenceAssetReference", dependencies: ["evidenceAssets"], restoreOrder: 490, canonicalRows: true, optionalInLegacy: true },
+  { key: "evidenceMaintenanceStates", prismaModel: "EvidenceMaintenanceState", dependencies: [], restoreOrder: 500, canonicalRows: true, optionalInLegacy: true },
   { key: "notionTemplateDefinitions", prismaModel: "NotionTemplateDefinition", dependencies: [], restoreOrder: 430, canonicalRows: true, optionalInLegacy: true },
   { key: "notionPublications", prismaModel: "NotionPublication", dependencies: [], restoreOrder: 440, canonicalRows: true, optionalInLegacy: true },
   { key: "notionPublishJobs", prismaModel: "NotionPublishJob", dependencies: ["notionPublications"], restoreOrder: 450, canonicalRows: true, optionalInLegacy: true },

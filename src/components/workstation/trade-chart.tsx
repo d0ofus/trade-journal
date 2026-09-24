@@ -76,7 +76,7 @@ type Props = {
   preferences: WorkspacePreferences;
   labelMode: WorkspacePreferences["labels"];
   drawings: Drawing[];
-  drawingsHidden?: boolean;
+  temporarilyHiddenIds?: ReadonlySet<string>;
   selected: string | null;
   selectedExecution: string | null;
   tool: Tool;
@@ -461,14 +461,10 @@ export function TradeChart(input: Props) {
       ),
       x,
       y: (price) => candles.priceToCoordinate(price),
-      drawings: latest.current.drawingsHidden ? [] : [
-        ...visibleDrawings(
-          beforeEntryActive.current ? beforeEntryDrawings(latest.current.drawings, bars.current, latest.current.panel.interval, historyResult.current.session) : latest.current.drawings,
-          p.panel.id,
-          latest.current.replay,
-        ).filter((d) => d.id !== draft.current?.id),
+      drawings: visibleDrawings([
+        ...(beforeEntryActive.current ? beforeEntryDrawings(latest.current.drawings, bars.current, latest.current.panel.interval, historyResult.current.session) : latest.current.drawings).filter((d) => d.id !== draft.current?.id),
         ...(draft.current ? beforeEntryActive.current ? beforeEntryDrawings([draft.current], bars.current, latest.current.panel.interval, historyResult.current.session) : [draft.current] : []),
-      ],
+      ], p.panel.id, latest.current.replay, latest.current.temporarilyHiddenIds),
       trade: beforeEntryActive.current ? { ...latest.current.trade, executions: [] } : latest.current.trade,
       executionColors: executionColors(latest.current.preferences.executionColors),
       beforeEntry: beforeEntryActive.current,
@@ -1196,7 +1192,7 @@ export function TradeChart(input: Props) {
     paintRef.current();
   }, [
     props.drawings,
-    props.drawingsHidden,
+    props.temporarilyHiddenIds,
     props.selected,
     props.selectedExecution,
     props.labelMode,
@@ -1210,7 +1206,7 @@ export function TradeChart(input: Props) {
     drag.current = null;
     previewPin.current = null; touchPin.current = null;
     paintRef.current();
-  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, beforeEntry, props.replay, props.drawingsHidden, result.splitAdjustment]);
+  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, beforeEntry, props.replay, props.temporarilyHiddenIds, result.splitAdjustment]);
 
   const pointer = (event: React.PointerEvent) => {
     const rect = host.current!.getBoundingClientRect();
@@ -1424,7 +1420,8 @@ export function TradeChart(input: Props) {
   const up = () => {
     if (drag.current && draft.current && draft.current.points.some((p, i) => p.time !== drag.current!.drawing.points[i]?.time || p.price !== drag.current!.drawing.points[i]?.price)) props.onDrawing(draft.current);
     drag.current = null;
-    draft.current = null;
+    // A two-point tool still needs its placement preview after the first click.
+    if (!pending.current) draft.current = null;
     paintRef.current();
   };
   const clickDate = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1578,7 +1575,7 @@ export function TradeChart(input: Props) {
           clickGesture.current = null; drag.current = null; draft.current = null; paintRef.current();
         }}
       >
-      {!props.drawingsHidden && visibleDrawings(beforeEntry ? beforeEntryDrawings(props.drawings, data, props.panel.interval, result.session) : props.drawings, props.panel.id, props.replay).filter(d => d.tool === "pin").map(d => <button
+      {visibleDrawings(beforeEntry ? beforeEntryDrawings(props.drawings, data, props.panel.interval, result.session) : props.drawings, props.panel.id, props.replay, props.temporarilyHiddenIds).filter(d => d.tool === "pin").map(d => <button
         key={d.id} type="button" className="ws-pin-target" data-pin-target={d.id} hidden
         aria-label={`Pin: ${d.text || "Empty note"}`}
         onFocus={() => { previewPin.current = d.id; paintRef.current(); }}

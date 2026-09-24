@@ -7,6 +7,7 @@ import { localDateTimeToEpoch } from "./market-session-calendar";
 
 const requests = new SharedRequests<SplitAdjustment>();
 const cache = new Map<string, { expires: number; value: SplitAdjustment }>();
+const foregroundDemand = new Map<string, number>();
 
 export function parseStockSplits(body: unknown, symbol: string, now: number): StockSplit[] {
   if (!body || typeof body !== "object" || !("corporate_actions" in body)) throw new Error("Invalid corporate action response.");
@@ -30,17 +31,19 @@ export function parseStockSplits(body: unknown, symbol: string, now: number): St
 }
 
 /** Small public metadata cache, shared across panels; failures are never cached as 'no splits'. */
-export async function loadStockSplits(symbol: string, credentials: AlpacaCandleCredentials, signal?: AbortSignal): Promise<SplitAdjustment> {
+export async function loadStockSplits(symbol: string, credentials: AlpacaCandleCredentials, signal?: AbortSignal, background = false): Promise<SplitAdjustment> {
   const today = new Date().toISOString().slice(0, 10), key = `${credentials.baseUrl}:${symbol}:${today}`;
   signal?.throwIfAborted();
   const saved = cache.get(key);
   if (saved && saved.expires > Date.now()) return saved.value;
-  return requests.run(key, signal, async signal => {
+  if (!background) foregroundDemand.set(key, (foregroundDemand.get(key) ?? 0) + 1);
+  try { return await requests.run(key, signal, async signal => {
     const splits: StockSplit[] = [], seen = new Set<string>();
     let token: string | null = null;
     const deadline = Date.now() + 45_000;
     do {
-      while (!(await takeProviderSlot(false))) {
+      // A workspace request joining peer metadata work promotes the shared request.
+      while (!(await takeProviderSlot(background && !foregroundDemand.has(key)))) {
         if (Date.now() > deadline) throw new CacheBusyError();
         await waitForHistory(525, signal);
       }
@@ -69,5 +72,7 @@ export async function loadStockSplits(symbol: string, credentials: AlpacaCandleC
     if (cache.size >= 128) cache.delete(cache.keys().next().value!);
     cache.set(key, { expires: Date.now() + 300_000, value });
     return value;
-  });
+  }); } finally {
+    if (!background) { const remaining = (foregroundDemand.get(key) ?? 1) - 1; if (remaining) foregroundDemand.set(key, remaining); else foregroundDemand.delete(key); }
+  }
 }

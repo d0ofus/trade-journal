@@ -49,7 +49,7 @@ export const peerCandleQuerySchema = z.object({
 export type PeerCandleQuery = z.infer<typeof peerCandleQuerySchema>;
 export type PeerSeries = { symbol: string; candles: Candle[]; status: "ready" | "empty" | "error"; error?: string; source: string; identity: string; range: HistoryRange; adjustment: "raw" | "split"; feed: string; retryAfter?: number };
 export type PeerCandleResponse = { series: PeerSeries[] };
-export type PeerCapture = { replayAt?: number; source: "peer-comparison"; symbols: string[]; groupId: string; groupName: string; interval: Interval; session: "regular" | "extended"; adjustment: "raw" | "split"; ranges: Record<string, HistoryRange>; capturedAt: string; beforeEntry: boolean; entryTime: number | null };
+export type PeerCapture = { arrangement?: { symbol: string; x: number; y: number; width: number; height: number }[]; replayAt?: number; source: "peer-comparison"; symbols: string[]; groupId: string; groupName: string; interval: Interval; session: "regular" | "extended"; adjustment: "raw" | "split"; ranges: Record<string, HistoryRange>; capturedAt: string; beforeEntry: boolean; entryTime: number | null };
 export function peerReplayRange(range: HistoryRange, replayAt?: number): HistoryRange {
   if (replayAt === undefined || range.to <= replayAt) return range;
   const width = Math.max(1, range.to - range.from);

@@ -71,4 +71,10 @@ export const REPOSITORY_SAFETY_ALLOWLIST = Object.freeze([
     fileSha256: "2b8ad2d33455a8f736fc3a8ebf8f0bdea8848ad4c0db48a2833bd0f9cd775932",
     reason: "Reviewed 32x32 application favicon.",
   },
+  {
+    ruleId: "database-url",
+    path: "scripts/start-isolated-evidence-browser-server.mjs",
+    fileSha256: "21793df4c078ea111790d9fa40bcad688c812ee46a85ec96af67963aa548a65a",
+    reason: "Reviewed fixed loopback disposable test database without a password; manual isolated browser launch only.",
+  },
 ]);

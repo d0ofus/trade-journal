@@ -3,6 +3,7 @@ import { buildBackupTableManifest } from "@/lib/server/backup-contract";
 
 const mocks = vi.hoisted(() => {
   const modelNames = [
+    "evidenceAsset", "evidenceUploadSession", "evidenceAssetReference", "evidenceMaintenanceState",
     "notionTemplateDefinition", "notionPublication", "notionPublishJob", "notionUpload",
     "account", "accountExecutionTimePolicy", "executionTimePolicyApplication",
     "instrument",

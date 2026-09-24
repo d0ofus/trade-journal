@@ -12,5 +12,5 @@ if (process.env.VERCEL_ENV === "production") {
   if (!process.env.DATABASE_URL || !process.env.DIRECT_URL) throw new Error("Production migrations require DATABASE_URL and DIRECT_URL.");
   run("node_modules/prisma/build/index.js", ["migrate", "deploy"]);
 }
-run("scripts/repository-safety/cli.mjs", []);
+run("scripts/repository-safety/cli.mjs", process.env.VERCEL === "1" ? ["--deployment-tree"] : []);
 run("node_modules/next/dist/bin/next", ["build"]);

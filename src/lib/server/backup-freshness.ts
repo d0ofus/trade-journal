@@ -12,7 +12,19 @@ const SOURCE_TABLE_KEYS = BACKUP_TABLES
   .map((table) => table.key)
   .filter((key) => key !== "backupAudits") as BackupTableKey[];
 
+// Explicit, test-audited exceptions for operational clocks. Authoritative content
+// changes are tracked by review/job timestamps and immutable asset creation.
+export const BACKUP_OPERATIONAL_TIMESTAMPS: Partial<Record<BackupTableKey, Record<string, string>>> = {
+  evidenceAssets: { updatedAt: "Only retention/reference state changes after immutable asset creation." },
+  evidenceUploadSessions: { createdAt: "Pending reservations are not backed up; ready assets and saved reviews track content.", updatedAt: "Upload polling/lease renewal must not invalidate a completed backup." },
+  evidenceAssetReferences: { createdAt: "Retention pins are operational; saved reviews and publication jobs track assignments." },
+  evidenceMaintenanceStates: { updatedAt: "Usage polling does not change journal content." },
+};
+
 export const BACKUP_RELEVANT_TIMESTAMP_SOURCES = [
+  // Immutable content creation matters; pin/unreference clocks and usage polling
+  // must not invalidate a backup merely because generating it retained assets.
+  { key: "evidenceAssets", prismaModel: "EvidenceAsset", timestampFields: ["createdAt"] },
   { key: "notionTemplateDefinitions", prismaModel: "NotionTemplateDefinition", timestampFields: ["createdAt"] },
   { key: "notionPublications", prismaModel: "NotionPublication", timestampFields: ["createdAt", "updatedAt"] },
   { key: "notionPublishJobs", prismaModel: "NotionPublishJob", timestampFields: ["createdAt", "updatedAt"] },

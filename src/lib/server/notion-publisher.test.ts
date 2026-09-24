@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import sharp from "sharp";
 import { prisma } from "@/lib/prisma";
 import { initialSectionIds, NOTION_DATA_SOURCE_ID, NOTION_TEMPLATE_ID, setSectionText, type TemplateBlock } from "@/lib/workstation/template-layout";
 import { jsonHash, NotionError, remoteText, type JsonObject, type RemoteBlock } from "./notion-client";
@@ -10,8 +11,13 @@ import { resumeNotionPublication as resumeStep, startNotionPublication } from ".
 import { createNotionPreview, publicationContext } from "./notion-publication-plan";
 import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
 import type { PublishPlan, PublishSnapshot } from "./notion-publication-plan";
+import { verifyEvidencePng } from "./evidence-r2";
+import { assetReference } from "./evidence-assets";
+import { assignSectionEvidence, attachEvidence } from "@/lib/workstation/evidence";
 
 const remote = vi.hoisted(() => ({ call: vi.fn(), children: vi.fn(), tree: vi.fn() }));
+const originals = vi.hoisted(() => new Map<string, Buffer>());
+vi.mock("./evidence-r2", async original => ({ ...await original<typeof import("./evidence-r2")>(), readEvidenceObject: vi.fn(async (key: string) => { const bytes = originals.get(key); if (!bytes) throw new Error("Missing isolated original"); return bytes; }) }));
 vi.mock("./notion-client", async original => ({ ...await original<typeof import("./notion-client")>(), notionRequest: remote.call, notionChildren: remote.children, notionTree: remote.tree }));
 const fixtures: { groupKey: string; accountId: string; instrumentId: string }[] = [];
 const nodes = new Map<string, RemoteBlock>(), children = new Map<string, string[]>(), pages = new Map<string, JsonObject>(), uploads = new Map<string, string>();
@@ -29,7 +35,7 @@ function add(parent: string, input: JsonObject, after?: string) {
 }
 beforeEach(async () => {
   vi.stubEnv("NOTION_TOKEN", "local-mocked-notion-connection"); vi.stubEnv("NOTION_PUBLISH_ENABLED", "1"); vi.stubEnv("E2E_DEMO_ONLY_WRITES", "0");
-  nodes.clear(); children.clear(); pages.clear(); uploads.clear(); remote.call.mockReset(); remote.children.mockReset(); remote.tree.mockReset(); failAfter = null;
+  nodes.clear(); children.clear(); pages.clear(); uploads.clear(); originals.clear(); remote.call.mockReset(); remote.children.mockReset(); remote.tree.mockReset(); failAfter = null;
   await prisma.notionTemplateDefinition.deleteMany();
   await prisma.notionRequestGate.deleteMany();
   source = ["entry", "exit"].map(key => ({ id: initialSectionIds[key], type: "heading_2", text: key === "entry" ? "Entry Screen" : "Exit Screen", children: [] }));
@@ -44,7 +50,7 @@ beforeEach(async () => {
   remote.call.mockImplementation(async (path: string, method = "GET", value?: unknown) => {
     const body = bodyObject(value), url = new URL(`https://notion.invalid${path}`), parts = url.pathname.split("/").filter(Boolean);
     let result: unknown;
-    if (parts[0] === "users") result = { id: "test-bot" };
+    if (parts[0] === "users") result = { id: "test-bot", bot: { workspace_limits: { max_file_upload_size_in_bytes: 20_000_000 } } };
     else if (parts[0] === "data_sources" && parts[2] === "query") {
       const filter = body.filter as { title: { equals: string } };
       result = { results: [...pages.values()].filter(page => JSON.stringify(page.properties).includes(filter.title.equals)).map(page => ({ id: page.id, created_by: { id: "test-bot" } })), has_more: false };
@@ -83,6 +89,8 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   for (const fixture of fixtures.splice(0)) {
+    await prisma.evidenceAssetReference.deleteMany({ where: { asset: { tradeId: fixture.groupKey } } });
+    await prisma.evidenceAsset.deleteMany({ where: { tradeId: fixture.groupKey } });
     await prisma.notionPublishJob.deleteMany({ where: { groupKey: fixture.groupKey } });
     await prisma.notionPublication.deleteMany({ where: { groupKey: fixture.groupKey } });
     await prisma.closedTradeNote.deleteMany({ where: { groupKey: fixture.groupKey } });
@@ -100,7 +108,7 @@ async function fixture(images = false) {
   await prisma.closedTradeNote.create({ data: { groupKey, content: "Legacy LPTH-like note", mistake: "Preserve SHLS/TATT-like improvement" } });
   const doc = await readWorkstationDocument(groupKey), { layout } = await readTemplateLayout(true);
   const plan: PublishPlan = { layout, schemaHash: jsonHash(propertySchemaSignature(Object.values(schema))), titleId: titleProperty.id, sourceUrl: `https://journal.invalid/trades?groupKey=${groupKey}`, properties: { title: { title: [{ type: "text", text: { content: "NTST review" } }] }, "entry-price": { number: 100 } }, propertyDisplay: [], sections: layout.sections.map(section => ({ ...section, blocks: [{ type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: `Saved ${section.key}` } }] } }], images: images ? ["image"] : [] })), omitted: ["Review details: notes", "Review details: mistake"], errors: [] };
-  const snapshot: PublishSnapshot = { doc, digest: jsonHash(doc), symbol: "NTST", assets: images ? [{ id: "image", hash: "test-image-hash", caption: "Original screenshot context", image: "data:image/png;base64,aW1hZ2U=" }] : [] };
+  const snapshot: PublishSnapshot = { doc, digest: jsonHash(doc), symbol: "NTST", assets: images ? [{ id: "image", hash: jsonHash("aW1hZ2U="), caption: "Original screenshot context", image: "data:image/png;base64,aW1hZ2U=" }] : [] };
   await prisma.notionPublication.create({ data: { groupKey, dataSourceId: NOTION_DATA_SOURCE_ID } });
   const job = await prisma.notionPublishJob.create({ data: { groupKey, requestKey: randomUUID(), revision: doc.revision, templateId: layout.id, plan: plan as unknown as Prisma.InputJsonValue, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
   return { job, plan, doc, groupKey };
@@ -117,6 +125,41 @@ async function resumeNotionPublication(id: string, groupKey: string) {
   return resumeStep(id, groupKey);
 }
 describe("durable Notion publishing against isolated PostgreSQL", () => {
+  it("uploads exact private PNG originals once across sections and freezes only asset references", async () => {
+    const f = await fixture(true), bytes = await sharp({ create: { width: 128, height: 96, channels: 4, background: "#123456" } }).png().toBuffer(), verified = await verifyEvidencePng(bytes);
+    const row = await prisma.evidenceAsset.create({ data: { tradeId: f.groupKey, ownerId: "owner", sha256: verified.sha256, notionHash: verified.notionHash, bytes: bytes.length, width: verified.width, height: verified.height, thumbnailBytes: verified.thumbnail.length, objectKey: `originals/${randomUUID()}/${verified.sha256}.png`, thumbnailKey: `thumbnails/${randomUUID()}/${verified.sha256}.png` } }); originals.set(row.objectKey, bytes);
+    const ref = assetReference(row);
+    let doc = attachEvidence(f.doc, { id: "image", image: "", asset: ref, name: "Exact original", timeframe: "1d", time: 1, revision: 0 }, "entry");
+    doc.review.notion = assignSectionEvidence(doc.review.notion!, "exit", "image", true);
+    doc = await saveWorkstationDocument(f.groupKey, doc, doc.revision);
+    doc = await readWorkstationDocument(f.groupKey);
+    const preview = await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid");
+    const fresh = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: preview.id } });
+    expect(JSON.stringify(fresh.snapshot)).not.toContain("data:image");
+    expect((fresh.snapshot as unknown as PublishSnapshot).assets[0]).toMatchObject({ image: "", asset: ref, hash: verified.notionHash });
+    // Use the existing isolated publication fixture's complete property plan, not a live database.
+    const snapshot: PublishSnapshot = { doc: { ...doc, evidence: [], drawings: [], legacy: null }, digest: jsonHash(doc), symbol: "NTST", assets: [{ id: "image", image: "", asset: ref, hash: verified.notionHash, caption: "Exact original context" }] };
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { revision: doc.revision, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(f.job.id, f.groupKey); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    const sent = remote.call.mock.calls.filter(([path]) => String(path).endsWith("/send"));
+    expect(sent).toHaveLength(1);
+    expect(Buffer.from(await ((sent[0][2] as FormData).get("file") as Blob).arrayBuffer())).toEqual(bytes);
+    expect([...nodes.values()].filter(node => node.type === "image" && !node.archived)).toHaveLength(2);
+    expect(await prisma.evidenceAssetReference.count({ where: { assetId: row.id, kind: "publication" } })).toBeGreaterThan(0);
+  });
+  it("blocks new inline snapshots and reports an unverified or insufficient Notion allowance", async () => {
+    const f = await fixture(), bytes = await sharp({ create: { width: 4, height: 4, channels: 4, background: "#123456" } }).png().toBuffer();
+    vi.stubEnv("EVIDENCE_R2_WRITES_ENABLED", "0");
+    let doc = await saveWorkstationDocument(f.groupKey, attachEvidence(f.doc, { id: "image", image: `data:image/png;base64,${bytes.toString("base64")}`, name: "Legacy", timeframe: "1d", time: 1, revision: 0 }, "entry"), 0);
+    await expect(createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid")).rejects.toThrow(/migration/);
+    const v = await verifyEvidencePng(bytes), row = await prisma.evidenceAsset.create({ data: { tradeId: f.groupKey, ownerId: "owner", sha256: v.sha256, notionHash: v.notionHash, bytes: bytes.length, width: v.width, height: v.height, thumbnailBytes: v.thumbnail.length, objectKey: `originals/${randomUUID()}/${v.sha256}.png`, thumbnailKey: `thumbnails/${randomUUID()}/${v.sha256}.png` } });
+    doc = await saveWorkstationDocument(f.groupKey, { ...doc, evidence: [{ ...doc.evidence[0], image: "", asset: assetReference(row) }] }, doc.revision);
+    const base = remote.call.getMockImplementation()!;
+    remote.call.mockImplementation((path, ...rest) => path === "/users/me" ? Promise.resolve({ bot: { workspace_limits: { max_file_upload_size_in_bytes: 1 } } }) : base(path, ...rest));
+    expect((await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid")).errors.join(" ")).toMatch(/exceeds this Notion workspace/);
+    remote.call.mockImplementation((path, ...rest) => path === "/users/me" ? Promise.resolve({ bot: {} }) : base(path, ...rest));
+    expect((await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid")).errors.join(" ")).toMatch(/allowance could not be verified/);
+  });
   it("waits for empty/partial templates with bounded backoff before writing any sections", async () => {
     const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);
     const tree = remote.tree.getMockImplementation()!; let available = 0;

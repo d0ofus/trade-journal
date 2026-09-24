@@ -4,6 +4,7 @@ import path from "node:path";
 import { BACKUP_TABLES } from "@/lib/server/backup-contract";
 import {
   BACKUP_RELEVANT_TIMESTAMP_SOURCES,
+  BACKUP_OPERATIONAL_TIMESTAMPS,
   buildBackupSourceMetadata,
   readBackupSourceMetadata,
 } from "@/lib/server/backup-freshness";
@@ -69,7 +70,7 @@ describe("backup freshness source metadata", () => {
     expect(readBackupSourceMetadata({ manifest: {} })).toBeNull();
   });
 
-  it("tracks every timestamped backup table except backup audit rows", () => {
+  it("tracks every content timestamp and explicitly accounts for operational clocks", () => {
     const schema = prismaSchema();
     const sourceByKey = new Map<string, (typeof BACKUP_RELEVANT_TIMESTAMP_SOURCES)[number]>(
       BACKUP_RELEVANT_TIMESTAMP_SOURCES.map((source) => [source.key, source]),
@@ -88,9 +89,14 @@ describe("backup freshness source metadata", () => {
     for (const table of BACKUP_TABLES) {
       if (table.key === "backupAudits" || table.key === "marketCandles") continue;
 
-      const mutationFields = modelDateFields(schema, table.prismaModel).filter((field) =>
-        MUTATION_TIMESTAMP_FIELDS.has(field),
-      );
+      const ignored = BACKUP_OPERATIONAL_TIMESTAMPS[table.key] ?? {};
+      const dateFields = modelDateFields(schema, table.prismaModel);
+      for (const [field, reason] of Object.entries(ignored)) {
+        expect(dateFields).toContain(field);
+        expect(reason.length).toBeGreaterThan(20);
+        expect(sourceByKey.get(table.key)?.timestampFields ?? []).not.toContain(field);
+      }
+      const mutationFields = dateFields.filter((field) => MUTATION_TIMESTAMP_FIELDS.has(field) && !(field in ignored));
       if (mutationFields.length === 0) continue;
 
       const source = sourceByKey.get(table.key);
