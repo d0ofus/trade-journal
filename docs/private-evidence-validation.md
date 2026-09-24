@@ -2,7 +2,16 @@
 
 ## Status — 24 September 2026
 
-Implemented locally in `D:\Python\trade-journal` and validated in an isolated Vercel Preview. The user authorized committing and pushing the release to `main` on 24 September; its automatic production build applies the additive migration. The initial release retains disabled R2 writes and maintenance pending explicit cutover approval. The private **non-production** R2 bucket and dedicated Neon test database are provisioned and tested. The pre-existing drawing-visibility work remains intact. This record describes pre-release validation, not confirmation of production deployment.
+Implemented locally in `D:\Python\trade-journal`, validated in an isolated Vercel Preview, and deployed to production at `13963f3` with the additive migration. The user subsequently authorized the complete production R2 cutover. Production uploads and migration have passed the checks recorded below; maintenance activation follows complete-backup verification. Earlier disabled/held status entries below describe the historical pre-release gates, not a continuing approval requirement.
+
+## Authorized production activation
+
+- Fresh pre-migration snapshot `backups/pre-r2-Qvplny` was restore-verified on 24 September: all 62 tables, 15 reviews, 52 images / 13,476,284 original bytes, 49 assignments and three unassigned images matched. Private backups and rollout helpers remain excluded from Git and deployment archives.
+- Production browser authentication, direct signed upload/CORS, server finalization and exact-byte retrieval passed using the deployed credentials. The probe reused an existing original's migration identity without adding or changing journal evidence.
+- All 52 images across nine reviews were migrated; six other reviews needed no image transfer. One timed-out transfer resumed safely. Every original and thumbnail was retrieved and verified; saved text, drawings, assignments, scalar/legacy content and existing Notion publication jobs were unchanged. No new Notion page was published.
+- Review JSON decreased from 18,052,173 to 92,883 bytes. This measures logical review payload, not an immediate reduction in allocated Neon database size; retained historical publication snapshots remain untouched.
+- The live application's authorized image endpoints served all 52 originals/thumbnails and denied anonymous access. No other application's bucket or Worker was changed.
+- The post-migration full-data backup check exposed a pre-existing validator mismatch: the supported `confirmed-flex-new-york` policy basis and `user-confirmed` application status were rejected. The validator now accepts these exact supported values while retaining revision, source, timezone and normalizer checks. Regression cases cover all four application statuses and rejection of unsupported values. No timestamp-policy records were rewritten. Read-only backup preparation against production then passed with zero validation errors; hosted complete-backup verification and maintenance activation are the final rollout steps.
 
 R2 writes and maintenance default to disabled. This is not approval to enable production writes.
 

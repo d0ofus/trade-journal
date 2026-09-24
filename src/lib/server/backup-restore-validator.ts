@@ -634,12 +634,12 @@ function validateJsonStateFields(payload: JsonRecord) {
   const errors: BackupRestoreDryRunIssue[] = [];
   const policies = tableRows(payload, "accountExecutionTimePolicies").filter(isRecord);
   policies.forEach((row, index) => {
-    if (row.source !== "IBKR_EXECUTIONS" || row.timezone !== "America/New_York" || row.basis !== "user-confirmed" || row.normalizerVersion !== 1 || !Number.isInteger(row.revision) || Number(row.revision) < 1 || typeof row.active !== "boolean") errors.push(issue("INVALID_TIME_POLICY", "Unsupported account timestamp policy.", `accountExecutionTimePolicies.${index}`));
+    if (row.source !== "IBKR_EXECUTIONS" || row.timezone !== "America/New_York" || !["user-confirmed", "confirmed-flex-new-york"].includes(String(row.basis)) || row.normalizerVersion !== 1 || !Number.isInteger(row.revision) || Number(row.revision) < 1 || typeof row.active !== "boolean") errors.push(issue("INVALID_TIME_POLICY", "Unsupported account timestamp policy.", `accountExecutionTimePolicies.${index}`));
   });
   tableRows(payload, "executionTimePolicyApplications").forEach((row, index) => {
     if (!isRecord(row)) return;
     const policy = policies.find(p => p.id === row.policyId);
-    if (!Number.isInteger(row.policyRevision) || Number(row.policyRevision) < 1 || (policy && Number(row.policyRevision) > Number(policy.revision)) || !["ready", "unresolved", "exception"].includes(String(row.status))) errors.push(issue("INVALID_TIME_POLICY_APPLICATION", "Invalid timestamp application revision or status.", `executionTimePolicyApplications.${index}`));
+    if (!Number.isInteger(row.policyRevision) || Number(row.policyRevision) < 1 || (policy && Number(row.policyRevision) > Number(policy.revision)) || !["ready", "unresolved", "exception", "user-confirmed"].includes(String(row.status))) errors.push(issue("INVALID_TIME_POLICY_APPLICATION", "Invalid timestamp application revision or status.", `executionTimePolicyApplications.${index}`));
   });
   const evidence = workstationEvidenceManifest(tableRows(payload, "closedTradeNotes").filter(isRecord));
   const storedAssets = tableRows(payload, "evidenceAssets").filter(isRecord);

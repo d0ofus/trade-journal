@@ -160,6 +160,28 @@ function planTable(plan: ReturnType<typeof buildBackupRestorePlan>, key: BackupT
 }
 
 describe("backup restore planning", () => {
+  it.each(["ready", "unresolved", "exception", "user-confirmed"])("preserves confirmed Flex New York policies and %s application history", status => {
+    const payload = compactGraphPayload();
+    Object.assign(payload.accountExecutionTimePolicies[0] as object, { basis: "confirmed-flex-new-york", revision: 2 });
+    Object.assign(payload.executionTimePolicyApplications[0] as object, { status, policyRevision: 2 });
+    const plan = buildBackupRestorePlan(payload);
+    expect(planTable(plan, "accountExecutionTimePolicies").rows[0]).toMatchObject({ basis: "confirmed-flex-new-york", revision: 2 });
+    expect(planTable(plan, "executionTimePolicyApplications").rows[0]).toMatchObject({ status, policyRevision: 2 });
+  });
+  it.each([
+    ["accountExecutionTimePolicies", "basis", "unrecognized-mode", "INVALID_TIME_POLICY"],
+    ["accountExecutionTimePolicies", "normalizerVersion", 99, "INVALID_TIME_POLICY"],
+    ["executionTimePolicyApplications", "status", "unrecognized-status", "INVALID_TIME_POLICY_APPLICATION"],
+    ["executionTimePolicyApplications", "policyRevision", 99, "INVALID_TIME_POLICY_APPLICATION"],
+  ] as const)("rejects unsupported %s.%s values without rewriting them", (table, field, value, code) => {
+    const payload = compactGraphPayload();
+    Object.assign(payload[table][0] as object, { [field]: value });
+    expect(() => buildBackupRestorePlan(payload)).toThrow(BackupRestorePlanError);
+    try { buildBackupRestorePlan(payload); } catch (error) {
+      expect((error as BackupRestorePlanError).issues).toEqual(expect.arrayContaining([expect.objectContaining({ code })]));
+    }
+    expect(payload[table][0]).toHaveProperty(field, value);
+  });
   it("preserves template content and per-panel review controls without copying metric caches", () => {
     const payload = compactGraphPayload();
     const templateData = { version: 1, properties: { marketRegime: "Rotation" }, sections: { entry: { html: "<p><strong>Setup</strong></p>", evidenceIds: ["chart-1"] } } };
