@@ -74,7 +74,7 @@ export const REPOSITORY_SAFETY_ALLOWLIST = Object.freeze([
   {
     ruleId: "database-url",
     path: "scripts/start-isolated-evidence-browser-server.mjs",
-    fileSha256: "21793df4c078ea111790d9fa40bcad688c812ee46a85ec96af67963aa548a65a",
-    reason: "Reviewed fixed loopback disposable test database without a password; manual isolated browser launch only.",
+    fileSha256: "6d7daa5f6daabc3cdd9d10437a5c5cbd693c2654ac3ce671b8b6091c71efc2eb",
+    reason: "Reviewed two fixed password-free loopback databases for isolated evidence or storage-health browser tests; remote targets cannot be selected.",
   },
 ]);

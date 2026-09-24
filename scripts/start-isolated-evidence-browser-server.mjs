@@ -8,7 +8,9 @@ import path from "node:path";
 
 if (Number(process.versions.node.split(".")[0]) < 22) throw new Error("Use Node 22 or later.");
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const database = "postgresql://postgres@127.0.0.1:55439/trades_workstation_auth_test?schema=public";
+const database = process.argv.includes("--storage-health")
+  ? "postgresql://postgres@127.0.0.1:55439/trade_storage_health_browser_test?schema=public"
+  : "postgresql://postgres@127.0.0.1:55439/trades_workstation_auth_test?schema=public";
 const environment = { ...process.env,
   DATABASE_URL: database, DIRECT_URL: database,
   AUTH_USERNAME: "phase2-reviewer", AUTH_PASSWORD: "phase2-local-test-only",

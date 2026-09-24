@@ -988,26 +988,19 @@ test("settings route covers accounts, Flex status, health, backup, and import hi
   await expect(page.getByText("IBKR Flex Auto Import")).toBeVisible();
   await expect(page.getByText(/Status: Configured|Status: Missing IBKR_FLEX_TOKEN/)).toBeVisible();
   await expect(page.getByTestId("settings-storage-health")).toBeVisible();
-  await expect(page.getByText("Storage Health & Backup")).toBeVisible();
+  await expect(page.getByText("Storage & Data Health", { exact: true })).toBeVisible();
   await expect(page.getByTestId("storage-health-db-size")).toContainText(/B|Unavailable/);
-  await expect(page.getByTestId("storage-health-inline-screenshot-bytes")).toContainText(/B/);
-  await expect(page.getByTestId("storage-health-import-artifact-bytes")).toContainText(/B/);
-  await expect(page.getByTestId("storage-health-candle-rows")).toContainText(/\d/);
-  await expect(page.getByTestId("storage-health-stale-closed-trades")).toContainText(/\d/);
+  await expect(page.getByText("All inline image payloads", { exact: true })).toBeVisible();
+  await expect(page.getByText("Archived import text payload", { exact: true })).toBeVisible();
+  await expect(page.getByText("Legacy candle rows", { exact: true })).toBeVisible();
+  await expect(page.getByText("Stale trades", { exact: true })).toBeVisible();
   await expect(page.getByTestId("storage-health-latest-change")).toBeVisible();
-  await expect(page.getByTestId("backup-readiness-status")).toContainText("Complete");
-  await expect(page.getByTestId("backup-freshness-status")).toContainText(/Current|Needs Backup|No Verified Backup/);
-  await expect(page.getByTestId("backup-latest-verified")).toBeVisible();
-  await expect(page.getByTestId("backup-latest-sha")).toBeVisible();
-  await expect(page.getByTestId("backup-latest-payload-bytes")).toBeVisible();
-  const reviewArtifactReadiness = page.getByTestId("backup-review-artifacts");
-  await expect(reviewArtifactReadiness).toContainText("Review Notes");
-  await expect(reviewArtifactReadiness).toContainText("Chart Layouts");
-  await expect(reviewArtifactReadiness).toContainText("Drawing States");
-  await expect(reviewArtifactReadiness).toContainText("Drawings");
-  await expect(reviewArtifactReadiness).toContainText("Review Tags");
-  await expect(reviewArtifactReadiness).toContainText("Linked Executions");
-  await expect(reviewArtifactReadiness).toContainText("Journal Links");
+  await expect(page.getByTestId("backup-freshness-status")).toContainText(/Current|Needs backup|No verified database backup/);
+  await expect(page.getByText("Last database verification", { exact: true })).toBeVisible();
+  await expect(page.getByText("Last verified database SHA-256", { exact: true })).toBeVisible();
+  await expect(page.getByText("Last verified database payload", { exact: true })).toBeVisible();
+  await expect(page.getByText("R2 originals required by complete backup", { exact: true })).toBeVisible();
+  await expect(page.getByText("These are metadata checks", { exact: false })).toBeVisible();
   await expect(page.getByTestId("backup-action-download-verify")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Import History" })).toBeVisible();
   await expect(page.getByText("demo-workstation-seed.json", { exact: true })).toBeVisible();
@@ -1023,10 +1016,7 @@ test("settings backup freshness transitions to Current after Download & Verify",
     await makeBackupFreshnessStale(page);
     await gotoReady(page, "/settings");
 
-    await expect(page.getByTestId("backup-freshness-status")).toContainText("Needs Backup");
-    await expect(page.getByTestId("backup-freshness-detail")).toContainText(
-      "Data changed after the last verified backup export.",
-    );
+    await expect(page.getByTestId("backup-freshness-status")).toContainText("Needs backup");
 
     const [backupDownload] = await Promise.all([
       page.waitForEvent("download"),
@@ -1035,21 +1025,15 @@ test("settings backup freshness transitions to Current after Download & Verify",
     expect(backupDownload.suggestedFilename()).toMatch(/^trade-journal-backup-\d{4}-\d{2}-\d{2}\.json$/);
     expect(await backupDownload.failure()).toBeNull();
 
-    await expect(page.getByTestId("backup-verify-status")).toContainText("Verified", { timeout: 30_000 });
+    await expect(page.getByTestId("backup-verify-status")).toContainText("Database verified", { timeout: 30_000 });
     await expect(page.getByTestId("backup-verify-sha256")).toContainText(/[a-f0-9]{64}/);
     await expect(page.getByTestId("backup-verify-total-rows")).toContainText(/\d/);
     await expect(page.getByTestId("backup-verify-table-count")).toContainText(/\d/);
-    await expect
-      .poll(() => new URL(page.url()).searchParams.has("backupVerified"), { timeout: 30_000 })
-      .toBe(true);
+    expect(new URL(page.url()).searchParams.has("backupVerified")).toBe(false);
     await expect(page.getByTestId("backup-freshness-status")).toContainText("Current", { timeout: 30_000 });
-    await expect(page.getByTestId("backup-freshness-detail")).toContainText(
-      "Last verified backup covers the latest tracked data change.",
-    );
-    await expect(page.getByTestId("backup-latest-verified")).not.toContainText("-");
-    await expect(page.getByTestId("backup-latest-sha")).toContainText(/[a-f0-9]{12}/);
-    await expect(page.getByTestId("backup-latest-payload-bytes")).toContainText(/B|KB|MB|GB/);
-    await expect(page.getByTestId("backup-covers-through")).not.toContainText("-");
+    const summary = page.getByTestId("backup-readiness");
+    await expect(summary).toContainText(/[a-f0-9]{64}/);
+    await expect(summary).toContainText(/B|KB|MB|GB/);
   } finally {
     await cleanupBackupFreshnessSentinel();
   }

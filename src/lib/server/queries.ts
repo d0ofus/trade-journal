@@ -5,14 +5,8 @@ import { ensureMaterializedClosedTrades } from "@/lib/server/closed-trades-mater
 import { buildClosedTradeWhere, normalizeTradeTagName, type TradeFilters } from "@/lib/server/closed-trade-filters";
 import { ensureMaterializedExecutionAnalytics } from "@/lib/server/execution-analytics-materialized";
 import { getImportHistoryPage } from "@/lib/server/import-history-query";
-import {
-  buildBackupReadinessManifest,
-  buildImportArtifactBackupManifest,
-  buildJournalScreenshotBackupAssets,
-  inspectInlineDataUrl,
-} from "@/lib/server/backup-assets";
-import { BACKUP_RELEVANT_TIMESTAMP_SOURCES, buildBackupSourceMetadata } from "@/lib/server/backup-freshness";
-import { buildBackupTableManifestFromRowCounts, type BackupTableKey } from "@/lib/server/backup-contract";
+import { BACKUP_RELEVANT_TIMESTAMP_SOURCES } from "@/lib/server/backup-freshness";
+import { type BackupTableKey } from "@/lib/server/backup-contract";
 import { aggregateCalendarPerformance } from "@/lib/stats/calendar-performance";
 import { aggregateDashboardData } from "@/lib/stats/dashboard-aggregation";
 import { computeTradeSummaryMetrics, latestPriorEquitySnapshot } from "@/lib/stats/trade-summary-metrics";
@@ -154,24 +148,6 @@ async function latestTimestampForModelField(client: BackupFreshnessClient, prism
   return value instanceof Date && !Number.isNaN(value.getTime()) ? value : null;
 }
 
-async function getDatabaseSizeBytes() {
-  try {
-    const rows = await prisma.$queryRaw<Array<{ bytes: bigint | number | string | null }>>`
-      SELECT pg_database_size(current_database())::bigint AS bytes
-    `;
-    const raw = rows[0]?.bytes;
-    if (typeof raw === "bigint") return Number(raw);
-    if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
-    if (typeof raw === "string") {
-      const parsed = Number(raw);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 export async function getLatestBackupRelevantUpdateAt(client: BackupFreshnessClient = prisma) {
   const latestTimestamps = await Promise.all(
     BACKUP_RELEVANT_TIMESTAMP_SOURCES.flatMap((source) =>
@@ -180,15 +156,6 @@ export async function getLatestBackupRelevantUpdateAt(client: BackupFreshnessCli
   );
 
   return latestDate(...latestTimestamps);
-}
-
-async function getLatestStaleClosedTradeAt() {
-  const row = await prisma.closedTrade.findFirst({
-    where: { staleAt: { not: null } },
-    orderBy: { staleAt: "desc" },
-    select: { staleAt: true },
-  });
-  return row?.staleAt ?? null;
 }
 
 export async function getTrades(filters: {
@@ -916,165 +883,11 @@ export async function getBackupTableRowCounts(): Promise<Record<BackupTableKey, 
   };
 }
 
-export async function getSettingsData(options: { includeBackupReadiness?: boolean; historyCursor?: string | null } = {}) {
-  const [
-    accounts,
-    importHistory,
-    executionCount,
-    activeClosedTradeCount,
-    staleClosedTradeCount,
-    allClosedTradeCount,
-    annotationCount,
-    journalEntryCount,
-    journalChartCount,
-    marketCandleCount,
-    failedImportBatchCount,
-    materializationFailedImportBatchCount,
-    skippedImportBatchCount,
-    importRowErrorCount,
-    screenshotRefs,
-    rawImportBytes,
-    rawArchivedBytes,
-    importArtifactCount,
-    missingRawArchiveCount,
-    legacyRawArchiveCount,
-    databaseSizeBytes,
-    latestBackupRelevantUpdateAt,
-    latestStaleClosedTradeAt,
-    latestBackupAudit,
-  ] = await Promise.all([
+/** Page-shell data only. Live health and backup summaries use /api/settings/storage. */
+export async function getSettingsData(options: { historyCursor?: string | null } = {}) {
+  const [accounts, importHistory] = await Promise.all([
     prisma.account.findMany({ orderBy: { createdAt: "asc" } }),
     getImportHistoryPage({ cursor: options.historyCursor }),
-    prisma.execution.count(),
-    prisma.closedTrade.count({ where: { isStale: false } }),
-    prisma.closedTrade.count({ where: { isStale: true } }),
-    prisma.closedTrade.count(),
-    prisma.closedTradeAnnotation.count(),
-    prisma.journalEntry.count(),
-    prisma.journalChart.count(),
-    Promise.resolve(0), // Historical provider cache is not part of journal backup freshness.
-    prisma.importBatch.count({ where: { status: "FAILED" } }),
-    prisma.importBatch.count({ where: { status: "MATERIALIZATION_FAILED" } }),
-    prisma.importBatch.count({
-      where: {
-        rowsSkipped: { gt: 0 },
-        status: { in: ["SUCCEEDED", "ROWS_APPLIED", "MATERIALIZED", "MATERIALIZATION_FAILED"] },
-      },
-    }),
-    prisma.importRowError.count(),
-    prisma.journalChart.findMany({
-      where: {
-        OR: [
-          { screenshotUrl: { not: null } },
-          { screenshotKey: { not: null } },
-        ],
-      },
-      select: { id: true, journalEntryId: true, screenshotKey: true, screenshotUrl: true, mimeType: true },
-    }),
-    prisma.importBatch.aggregate({ _sum: { rawBytes: true } }),
-    prisma.importArtifact.aggregate({ _sum: { rawBytes: true } }),
-    prisma.importArtifact.count(),
-    prisma.importBatch.count({
-      where: {
-        rawSha256: { not: null },
-        rawStorageKey: null,
-      },
-    }),
-    prisma.importBatch.count({ where: { rawSha256: null } }),
-    getDatabaseSizeBytes(),
-    getLatestBackupRelevantUpdateAt(),
-    getLatestStaleClosedTradeAt(),
-    prisma.backupAudit.findFirst({ orderBy: { verifiedAt: "desc" } }),
   ]);
-
-  const inlineScreenshotRefs = screenshotRefs.filter((chart) => chart.screenshotUrl?.startsWith("data:"));
-  const inlineScreenshotInspections = inlineScreenshotRefs.map((chart) => inspectInlineDataUrl(chart.screenshotUrl ?? ""));
-
-  const backupReadiness = options.includeBackupReadiness
-    ? await (async () => {
-        const [journalScreenshotAssets, importBatchesForBackup, importArtifactsForBackup, tableRowCounts] = await Promise.all([
-          buildJournalScreenshotBackupAssets(screenshotRefs, { includeDataUrl: false }),
-          prisma.importBatch.findMany({
-            select: { id: true, filename: true, rawSha256: true, rawBytes: true, rawStorageKey: true },
-            orderBy: { importedAt: "asc" },
-          }),
-          prisma.importArtifact.findMany({
-            select: { storageKey: true, rawSha256: true, rawBytes: true, content: true },
-            orderBy: { createdAt: "asc" },
-          }),
-          getBackupTableRowCounts(),
-        ]);
-
-        const tableManifest = buildBackupTableManifestFromRowCounts(tableRowCounts);
-        const source = buildBackupSourceMetadata({
-          latestDataChangeAt: latestBackupRelevantUpdateAt,
-          rowCounts: tableManifest.rowCounts,
-        });
-
-        return buildBackupReadinessManifest({
-          generatedAt: new Date().toISOString(),
-          journalScreenshotAssets,
-          importArtifactManifest: buildImportArtifactBackupManifest(importBatchesForBackup, importArtifactsForBackup),
-          tableManifest,
-          source,
-        });
-      })()
-    : undefined;
-
-  const backupSource = backupReadiness?.source;
-
-  return {
-    accounts,
-    importHistory,
-    backupReadiness,
-    health: {
-      executionCount,
-      activeClosedTradeCount,
-      staleClosedTradeCount,
-      allClosedTradeCount,
-      annotationCount,
-      journalEntryCount,
-      journalChartCount,
-      marketCandleCount,
-      failedImportBatchCount,
-      materializationFailedImportBatchCount,
-      skippedImportBatchCount,
-      importRowErrorCount,
-      inlineScreenshotCount: inlineScreenshotRefs.length,
-      inlineScreenshotBytes: inlineScreenshotInspections.reduce((sum, parsed) => sum + (parsed?.bytes ?? 0), 0),
-      invalidInlineScreenshotCount: inlineScreenshotInspections.filter((parsed) => !parsed).length,
-      localScreenshotCount: screenshotRefs.filter((chart) => chart.screenshotKey?.startsWith("local:")).length,
-      externalScreenshotCount: screenshotRefs.filter((chart) => {
-        if (chart.screenshotUrl?.startsWith("data:")) return false;
-        if (chart.screenshotKey?.startsWith("local:")) return false;
-        return Boolean(chart.screenshotKey || chart.screenshotUrl);
-      }).length,
-      rawImportBytes: rawImportBytes._sum.rawBytes ?? 0,
-      rawArchivedBytes: rawArchivedBytes._sum.rawBytes ?? 0,
-      importArtifactCount,
-      missingRawArchiveCount,
-      legacyRawArchiveCount,
-      databaseSizeBytes,
-      latestBackupRelevantUpdateAt: latestBackupRelevantUpdateAt?.toISOString() ?? null,
-      latestStaleClosedTradeAt: latestStaleClosedTradeAt?.toISOString() ?? null,
-      backupSourceSignature: backupSource?.signature ?? null,
-      backupSourceLatestDataChangeAt: backupSource?.latestDataChangeAt ?? null,
-      latestBackupAudit: latestBackupAudit
-        ? {
-            id: latestBackupAudit.id,
-            sha256: latestBackupAudit.sha256,
-            exportedAt: latestBackupAudit.exportedAt.toISOString(),
-            verifiedAt: latestBackupAudit.verifiedAt.toISOString(),
-            payloadBytes: latestBackupAudit.payloadBytes,
-            totalRows: latestBackupAudit.totalRows,
-            tableCount: latestBackupAudit.tableCount,
-            strippedFieldCount: latestBackupAudit.strippedFieldCount,
-            warningCount: latestBackupAudit.warningCount,
-            errorCount: latestBackupAudit.errorCount,
-            sourceSignature: latestBackupAudit.sourceSignature,
-            sourceLatestDataChangeAt: latestBackupAudit.sourceLatestDataChangeAt?.toISOString() ?? null,
-          }
-        : null,
-    },
-  };
+  return { accounts, importHistory };
 }

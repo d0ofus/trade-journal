@@ -4,6 +4,12 @@
     "incremental": false
   },
   "include": [
+    "src/lib/storage-format.test.ts",
+    "src/lib/server/storage-usage.test.ts",
+    "src/lib/server/storage-counts.test.ts",
+    "src/lib/server/storage-physical.test.ts",
+    "src/lib/server/r2-account-metrics.test.ts",
+    "src/app/api/settings/storage/route.ts",
     "scripts/audit-evidence-preservation.ts",
     "scripts/verify-evidence-services.ts",
     "scripts/verify-evidence-r2-live.ts",

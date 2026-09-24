@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { loadStorageUsage } from "./storage-usage";
 import { storageGuard } from "@/lib/storage-usage";
 import { GET } from "@/app/api/settings/storage/route";
+import { readPhysicalStorage } from "./storage-physical";
+
+vi.mock("./storage-physical", () => ({ readPhysicalStorage: vi.fn(async () => ({ currentBytes: BigInt(1000), branchBytes: BigInt(2000), cacheBytes: BigInt(100), metricCacheBytes: BigInt(10), measuredAt: new Date() })) }));
 
 vi.mock("next-auth", () => ({ getServerSession: vi.fn(async () => null) }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
@@ -20,14 +23,17 @@ describe("storage monitor", () => {
   it("rejects unauthenticated requests before querying storage", async () => {
     expect((await GET(new NextRequest("http://localhost/api/settings/storage"))).status).toBe(401);
   });
-  it("returns a partial measurement if one query fails, and fails if neither query succeeds", async () => {
+  it("returns partial groups when a query fails, and fails only if every database group fails", async () => {
     const query = vi.spyOn(prisma, "$queryRaw");
     try {
-      query.mockRejectedValueOnce(new Error("Size permission denied"));
+      vi.mocked(readPhysicalStorage).mockRejectedValueOnce(new Error("Size permission denied"));
       const partial = await loadStorageUsage();
       expect(partial.database).toBeNull(); expect(partial.payloads).not.toBeNull();
-      expect(partial.issues).toEqual(["Database size measurements are unavailable."]);
-      query.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline"));
+      expect(partial.issues).toContain("Database size measurements are unavailable.");
+      vi.mocked(readPhysicalStorage).mockRejectedValueOnce(new Error("offline")); query.mockRejectedValueOnce(new Error("offline"));
+      const backupOnly = await loadStorageUsage();
+      expect(backupOnly.backup).not.toBeNull(); expect(backupOnly.database).toBeNull();
+      vi.mocked(readPhysicalStorage).mockRejectedValueOnce(new Error("offline")); query.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new Error("offline"));
       await expect(loadStorageUsage()).rejects.toThrow("Storage measurements unavailable");
     } finally { query.mockRestore(); }
   });

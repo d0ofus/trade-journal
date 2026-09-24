@@ -1,7 +1,8 @@
 "use client";
 
 import { CheckCircle2, Download, Loader2, ShieldCheck, XCircle } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { STORAGE_CHANGED_EVENT } from "@/lib/storage-usage";
+import { formatStorageBytes as formatBytes, formatStorageTime as formatDateTime, exactStorageBytes } from "@/lib/storage-format";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { downloadCompleteBackup } from "@/lib/workstation/complete-backup";
@@ -56,28 +57,6 @@ const idleState: BackupActionState = {
   errorCount: 0,
 };
 const verifiedStateStorageKey = "trade-journal.backup.verifiedState";
-
-function formatBytes(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-}
-
-function formatDateTime(value: string | null) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
 
 function downloadBackup(text: string, exportedAt: unknown) {
   const date = typeof exportedAt === "string" && !Number.isNaN(new Date(exportedAt).getTime()) ? exportedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
@@ -138,20 +117,8 @@ function persistVerifiedState(state: BackupActionState) {
   }
 }
 
-function scheduleSettingsRefresh(router: ReturnType<typeof useRouter>, auditId?: string) {
-  if (typeof window === "undefined") {
-    router.refresh();
-    return;
-  }
-  const url = new URL(window.location.href);
-  url.searchParams.set("backupVerified", auditId || String(Date.now()));
-  router.refresh();
-  window.setTimeout(() => {
-    // Deliberate full reload: discard stale client state and restore the verified
-    // backup result from sessionStorage after the server freshness check.
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-    window.location.assign(`${url.pathname}${url.search}`);
-  }, 100);
+function scheduleSettingsRefresh() {
+  window.dispatchEvent(new Event(STORAGE_CHANGED_EVENT));
 }
 
 function ResultTile({ label, value, testId }: { label: string; value: string; testId?: string }) {
@@ -164,7 +131,6 @@ function ResultTile({ label, value, testId }: { label: string; value: string; te
 }
 
 export function BackupActions() {
-  const router = useRouter();
   const [state, setState] = useState<BackupActionState>(idleState);
   const [loading, setLoading] = useState(false);
   const [completeStatus, setCompleteStatus] = useState("");
@@ -201,7 +167,7 @@ export function BackupActions() {
 
       const nextState: BackupActionState = {
         status: "verified",
-        message: "Verified and recorded",
+        message: "Database verified and recorded; R2 originals require the complete backup",
         exportedAt: verifyPayload.audit?.exportedAt ?? (typeof payload.exportedAt === "string" ? payload.exportedAt : null),
         verifiedAt: verifyPayload.audit?.verifiedAt ?? new Date().toISOString(),
         sha256: verifyPayload.sha256 ?? null,
@@ -214,7 +180,7 @@ export function BackupActions() {
       };
       setState(nextState);
       persistVerifiedState(nextState);
-      scheduleSettingsRefresh(router, verifyPayload.audit?.id);
+      scheduleSettingsRefresh();
       downloadBackup(backupText, payload.exportedAt);
     } catch (error) {
       setState({
@@ -237,7 +203,7 @@ export function BackupActions() {
         <div className="flex items-center gap-2">
           <StatusIcon className={`h-4 w-4 ${loading ? "animate-spin text-sky-700" : state.status === "verified" ? "text-emerald-700" : state.status === "error" ? "text-red-700" : "text-slate-500"}`} />
           <div>
-            <p className="text-sm font-semibold text-slate-950">Verified Backup</p>
+            <p className="text-sm font-semibold text-slate-950">Verified database backup</p>
             <p className={`text-xs ${state.status === "error" ? "text-red-700" : "text-slate-600"}`} data-testid="backup-verify-status">
               {state.message}
             </p>
@@ -249,12 +215,12 @@ export function BackupActions() {
         </Button>
       </div>
 
-      <Button type="button" size="sm" disabled={loading} onClick={() => { setLoading(true); void downloadCompleteBackup(setCompleteStatus).catch(error => setCompleteStatus(error instanceof Error ? error.message : "Complete backup failed")).finally(() => setLoading(false)); }}>Complete database + images backup</Button>
+      <Button type="button" size="sm" disabled={loading} onClick={() => { setLoading(true); void downloadCompleteBackup(setCompleteStatus).then(() => scheduleSettingsRefresh()).catch(error => setCompleteStatus(error instanceof Error ? error.message : "Complete backup failed")).finally(() => setLoading(false)); }}>Complete database + images backup</Button>
       {completeStatus && <p role="status" className="mt-2 text-xs">{completeStatus}</p>}
       <p className="mt-3 text-xs text-slate-600">Use Complete database + images for private R2 evidence. Allow multiple downloads and retain every self-contained ZIP part. A database-only JSON/Neon backup is incomplete for R2 images. Downloaded candle history is recoverable cache and is excluded. Verification does not perform a database restore. Keep backup files outside this repository. Standalone external screenshots retain their existing backup requirements.</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <ResultTile label="SHA-256" value={state.sha256 ?? "-"} testId="backup-verify-sha256" />
-        <ResultTile label="Payload Size" value={formatBytes(state.payloadBytes)} testId="backup-verify-payload-bytes" />
+        <div><ResultTile label="Payload Size" value={formatBytes(state.payloadBytes)} testId="backup-verify-payload-bytes" /><details className="text-xs"><summary>Exact bytes</summary>{exactStorageBytes(state.payloadBytes)}</details></div>
         <ResultTile label="Rows" value={state.totalRows?.toLocaleString() ?? "-"} testId="backup-verify-total-rows" />
         <ResultTile label="Tables" value={state.tableCount?.toLocaleString() ?? "-"} testId="backup-verify-table-count" />
         <ResultTile label="Exported At" value={formatDateTime(state.exportedAt)} testId="backup-exported-at" />

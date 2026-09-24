@@ -1,8 +1,7 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { lockClosedTradeForReview } from "./closed-trade-review-lock";
 import { deleteEvidenceObject } from "./evidence-r2";
-import { parseR2AccountMetrics } from "./evidence-usage";
+export { refreshR2AccountUsage } from "./r2-account-metrics";
 
 const DAY = 86_400_000;
 /** Bounded daily maintenance. No review, completed original, or other bucket is archived/deleted. */
@@ -50,16 +49,4 @@ export async function maintainEvidence(deadline = Date.now() + 45_000) {
     await prisma.evidenceBackupSession.delete({ where: { id: session.id } }); backups++;
   }
   return { uploads, originals, backups, bounded: Date.now() > deadline };
-}
-
-export async function refreshR2AccountUsage() {
-  const token = process.env.EVIDENCE_R2_METRICS_TOKEN, account = process.env.EVIDENCE_R2_ACCOUNT_ID;
-  if (!token || !account) return { available: false, reason: "Account-wide R2 metrics credentials are not configured." };
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/r2/metrics`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error("Account-wide R2 metrics are unavailable.");
-  const body = await response.json();
-  if (!body.success || !parseR2AccountMetrics(body.result)) throw new Error("Account-wide R2 metrics are incomplete or invalid; the last valid reading was retained.");
-  const payload = { measuredAt: new Date().toISOString(), metrics: body.result };
-  await prisma.evidenceMaintenanceState.upsert({ where: { key: "r2-account-usage" }, create: { key: "r2-account-usage", payload: payload as Prisma.InputJsonValue }, update: { payload: payload as Prisma.InputJsonValue } });
-  return { available: true };
 }
