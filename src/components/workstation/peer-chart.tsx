@@ -115,7 +115,7 @@ export function PeerChart(props: Props) {
           canvas.width = plot.width; canvas.height = plot.height + Math.ceil(extra * scale);
           const ctx = canvas.getContext("2d")!; ctx.fillStyle = bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
           ctx.drawImage(plot, 0, Math.round(top * scale));
-          ctx.save(); ctx.translate(0, Math.round(top * scale)); ctx.scale(scale, scale);
+          ctx.save(); ctx.translate(0, Math.round(top * scale)); ctx.scale(plot.width / frozen.width, plot.height / frozen.height);
           paintChart(ctx, { ...frozen, plotWidth: clone.timeScale().width() / render.x, plotHeight: (render.height - clone.timeScale().height()) / render.y, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozen.interval) as never); return x === null ? null : x / render.x; }, y: value => { const y = cs.priceToCoordinate(value); return y === null ? null : y / render.y; } });
           ctx.restore(); ctx.fillStyle = text; ctx.font = `${13 * scale}px ${fontFamily}`;
           if (plotOnly) { ctx.fillText(props.symbol, 10 * scale, 16 * scale); return canvas; }

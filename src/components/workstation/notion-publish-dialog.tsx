@@ -57,7 +57,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
         {section.html && <div className="ws-notion-preview-text" dangerouslySetInnerHTML={{ __html: section.html }} />}
         {section.imageIds?.map(id => { const asset = job.assets?.find(asset => asset.id === id); return asset ? <figure key={id}>
           {/* Saved, size-validated embedded evidence; never a remote image URL. */}
-          <EvidenceThumbnail evidence={{ id: asset.id, image: asset.image, asset: asset.asset, name: asset.caption, time: 0, revision: job.revision, timeframe: "" }} /><figcaption>{asset.caption}</figcaption>
+          <EvidenceThumbnail evidence={{ id: asset.id, image: asset.image, asset: asset.asset, name: asset.name || asset.caption || "Evidence image", time: 0, revision: job.revision, timeframe: "" }} />{asset.caption && <figcaption>{asset.caption}</figcaption>}
         </figure> : null; })}
       </details>)}
       {job.omitted.length > 0 && <><h3>Kept in the app, not published</h3><ul>{job.omitted.map(item => <li key={item}>{item}</li>)}</ul></>}

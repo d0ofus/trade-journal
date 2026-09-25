@@ -19,7 +19,7 @@ test("authenticated fullscreen replay edits, deliberate default clearing and PNG
   await expect(page.locator(".ws-chart")).toHaveAttribute("data-visible-bars", /[1-9]/);
   await page.getByRole("button", { name: "Replay trade", exact: true }).click();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
-  await page.getByRole("button", { name: "Show fullscreen journal" }).click();
+  await expect(page.getByRole("complementary", { name: "Fullscreen trade journal" })).toBeVisible();
   const sidebar = page.getByRole("complementary", { name: "Fullscreen trade journal" });
   await sidebar.locator("summary").filter({ hasText: /^Trade properties$/ }).click();
   const reviewType = sidebar.getByLabel("Type of Review", { exact: true });

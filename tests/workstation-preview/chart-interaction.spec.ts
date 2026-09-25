@@ -32,7 +32,7 @@ const baseDrawing = () => ({ ...initialDemoDocument(demoTrades[0]).drawings[0], 
 
 test("execution details start compact and expose diagnostics on demand", async ({ page }) => {
   const errors = await open(page, [], { labels: "labels" });
-  const marker = () => page.evaluate(() => window.interactionText.find(t => /^1  Buy/.test(t.text)));
+  const marker = () => page.evaluate(() => window.interactionText.find(t => /^1\s+Buy/.test(t.text)));
   await expect.poll(marker).toBeTruthy();
   const pos = (await marker())!; await page.mouse.click(pos.x + 25, pos.y - 5);
   const dialog = page.getByRole("dialog", { name: "Execution details", exact: true });
@@ -110,7 +110,7 @@ test("focus journal is resizable and temporary; panel shortcuts open without ste
   const normalWidth = (await page.locator(".ws-journal-content").boundingBox())!.width;
   const chart = page.locator(".ws-chart"); await chart.focus();
   const normal = (await prefs(page)).dock;
-  await page.keyboard.press("Shift+F"); await page.getByRole("button", { name: "Show focus journal" }).click();
+  await page.keyboard.press("Shift+F"); await expect(page.getByRole("button", { name: "Hide focus journal" })).toBeVisible();
   await expect(page.locator(".ws-journal-content")).toBeVisible();
   const journalBox = (await page.locator(".ws-journal-content").boundingBox())!;
   await page.mouse.move(journalBox.x - 2, journalBox.y + journalBox.height / 2);
@@ -159,9 +159,9 @@ test("replay allows journal edits, workspace captures, image viewing and peer ev
   await expect(viewer.getByRole("button", { name: "Close image preview" })).toBeFocused();
   await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: "Fit", exact: true })).toBeFocused();
   await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: "100%", exact: true })).toBeFocused();
-  await page.keyboard.press("Tab"); await expect(viewer.getByRole("link", { name: `Download ${evidence.name}` })).toBeFocused();
+  await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: `Download ${evidence.name}` })).toBeFocused();
   await page.keyboard.press("Tab"); await expect(viewer.getByRole("button", { name: "Close image preview" })).toBeFocused();
-  const download = page.waitForEvent("download"); await viewer.getByRole("link", { name: `Download ${evidence.name}` }).click(); await download;
+  const download = page.waitForEvent("download"); await viewer.getByRole("button", { name: `Download ${evidence.name}` }).click(); await download;
   await page.keyboard.press("Escape"); await expect(viewer).toHaveCount(0);
   await expect(page.locator(".ws-section-preview").getByRole("button", { name: `View ${evidence.name}`, exact: true })).toBeFocused();
   await page.locator("summary").filter({ hasText: /^Peers$/ }).click();

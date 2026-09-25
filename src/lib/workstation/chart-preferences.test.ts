@@ -5,6 +5,15 @@ import { tradeViewSchema, viewPreferences } from "./trade-view";
 import { defaultPreferences, type Candle } from "./types";
 
 describe("chart session and display preferences", () => {
+  it("restores index transparency and independent pane settings without changing legacy layouts", () => {
+    expect(restoreChartPanels([{ id: "chart-1", interval: "1d" }])[0]).toMatchObject({ benchmarkMode: "overlay", benchmarkPaneRatio: .25 });
+    expect(restoreChartPanels([{ id: "chart-1", interval: "1d", benchmarkMode: "pane", benchmarkPaneRatio: .4 }])[0]).toMatchObject({ benchmarkMode: "pane", benchmarkPaneRatio: .4 });
+    expect(restoreChartDisplay({ benchmarkTransparency: 150 }).benchmarkTransparency).toBe(100);
+    expect(restoreChartDisplay({ benchmarkTransparency: NaN }).benchmarkTransparency).toBe(0);
+    const input = { version: 1, arrangement: "left", panels: [{ id: "chart-1", interval: "1d", session: "regular", range: null, benchmark: "SPY", benchmarkMode: "pane", benchmarkPaneRatio: .3 }] };
+    expect(viewPreferences(tradeViewSchema.parse(input)).panels?.[0]).toMatchObject({ benchmarkMode: "pane", benchmarkPaneRatio: .3 });
+    expect(() => tradeViewSchema.parse({ ...input, panels: [{ ...input.panels[0], benchmarkPaneRatio: .9 }] })).toThrow();
+  });
   it("accepts four unique SMA periods, blank slots and safe legacy restoration", () => {
     expect(parseMovingAveragePeriods(["10", "20", "50", "200"])).toEqual({ periods: [10, 20, 50, 200] });
     expect(parseMovingAveragePeriods(["1", "", "500", " "])).toEqual({ periods: [1, 500] });
@@ -32,8 +41,8 @@ describe("chart session and display preferences", () => {
     expect(viewPreferences(view)).not.toHaveProperty("chartSession");
   });
   it("defaults old display settings and validates average periods", () => {
-    expect(restoreChartDisplay({})).toEqual({ volumeStyle: {}, capturePinNotes: false, volumeAverage: { enabled: true, period: 20 }, gridlines: { horizontal: true, vertical: true } });
-    expect(restoreChartDisplay({ volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } })).toEqual({ volumeStyle: {}, capturePinNotes: false, volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } });
+    expect(restoreChartDisplay({})).toEqual({ benchmarkTransparency: 0, volumeStyle: {}, capturePinNotes: false, volumeAverage: { enabled: true, period: 20 }, gridlines: { horizontal: true, vertical: true } });
+    expect(restoreChartDisplay({ volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } })).toEqual({ benchmarkTransparency: 0, volumeStyle: {}, capturePinNotes: false, volumeAverage: { enabled: false, period: 500 }, gridlines: { horizontal: false, vertical: true } });
     for (const period of [0, -1, 501, 1.5, NaN, Infinity]) expect(restoreChartDisplay({ volumeAverage: { enabled: true, period } }).volumeAverage.period).toBe(20);
   });
 });

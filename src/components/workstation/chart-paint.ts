@@ -4,8 +4,9 @@ import type { CandleRange } from "@/lib/workstation/candle-ranges";
 import { measureText, riskReward } from "@/lib/workstation/math";
 import { defaultNoteEnd, noteLayout, type PixelPoint } from "@/lib/workstation/note-layout";
 import { ellipsizeDrawingText, wrapDrawingText } from "@/lib/workstation/drawing-label-text";
+import { defaultNoteWidth, positivePercentColor, negativePercentColor } from "@/lib/workstation/drawing-style";
 
-export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; point?: number; anchor?: PixelPoint; segment?: [PixelPoint, PixelPoint]; x: number; y: number; w: number; h: number };
+export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; resizeNote?: { width: number; direction: 1 | -1 }; point?: number; anchor?: PixelPoint; segment?: [PixelPoint, PixelPoint]; x: number; y: number; w: number; h: number };
 export type PaintOptions = { pinPreview?: string | null; capturePinNotes?: boolean; beforeEntry?: boolean; executionColors?: { buy: string; sell: string }; covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
 export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
@@ -15,25 +16,35 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
   const lastX = last ? x(last.time) : null, priorX = prior ? x(prior.time) : null;
   const w = o.beforeEntry ? Math.max(0, Math.min(o.plotWidth, lastX === null ? 0 : lastX + (priorX === null ? 4 : (lastX - priorX) / 2))) : o.plotWidth;
   // Reserve the in-chart OHLC strip so labels never disappear beneath it.
-  const topInset = o.export ? 3 : 24;
+  const topInset = 24;
   if (w < 24 || h < topInset + 24) return hits;
-  const label = (text: string, px: number, py: number, color: string, fill = o.light ? "#ffffff" : "#171d2a", maxWidth = 320, note = "") => {
+  const label = (text: string, px: number, py: number, color: string, fill = o.light ? "#ffffff" : "#171d2a", maxWidth = 320, note = "", percentColor?: string, fixedWidth = false) => {
     ctx.font = "11px system-ui, sans-serif";
     const measure = (value: string) => ctx.measureText(value).width;
-    const width = Math.min(Math.max(measure(text), ...note.split(/\r?\n/).map(measure)) + 18, maxWidth, w - 6);
+    const width = Math.max(18, Math.min(fixedWidth ? maxWidth : Math.max(...text.split(/\r?\n/).map(measure), ...note.split(/\r?\n/).map(measure)) + 18, maxWidth, w - 6));
+    let values = text ? wrapDrawingText(text, width - 16, measure) : [];
     let notes = note ? wrapDrawingText(note, width - 16, measure) : [];
     // Keep the calculated values visible even when a note exceeds the plot height.
-    const maxNotes = Math.max(0, Math.floor((h - topInset - 1 - 24) / 16));
+    const maxRows = Math.max(1, Math.floor((h - topInset - 9) / 16));
+    if (values.length > maxRows) { values = values.slice(0, maxRows); values[maxRows - 1] = ellipsizeDrawingText(values[maxRows - 1], width - 16, measure); }
+    const maxNotes = Math.max(0, maxRows - values.length);
     if (notes.length > maxNotes) {
       notes = notes.slice(0, maxNotes);
       if (notes.length) notes[notes.length - 1] = ellipsizeDrawingText(notes[notes.length - 1], width - 16, measure);
     }
-    const height = (text ? 24 : 8) + notes.length * 16;
+    const height = 8 + (values.length + notes.length) * 16;
     const left = Math.max(3, Math.min(w - width - 3, px)), top = Math.max(topInset, Math.min(h - height - 1, py - notes.length * 16));
     ctx.fillStyle = fill; ctx.strokeStyle = color; ctx.lineWidth = .65; ctx.setLineDash([]);
     ctx.beginPath(); ctx.roundRect(left, top, width, height, 4); ctx.fill(); ctx.stroke();
     ctx.fillStyle = color;
-    [...notes, ...(text ? [text] : [])].forEach((value, index) => ctx.fillText(value, left + 8, top + 16 + index * 16, width - 16));
+    [...notes, ...values].forEach((value, index) => {
+      const percent = index >= notes.length && percentColor ? /[+-]?\d+(?:\.\d+)?%/.exec(value) : null;
+      if (!percent) { ctx.fillStyle = color; ctx.fillText(value, left + 8, top + 16 + index * 16); return; }
+      const before = value.slice(0, percent.index), after = value.slice(percent.index + percent[0].length), baseline = top + 16 + index * 16;
+      ctx.fillStyle = color; ctx.fillText(before, left + 8, baseline);
+      ctx.fillStyle = percentColor!; ctx.fillText(percent[0], left + 8 + measure(before), baseline);
+      ctx.fillStyle = color; ctx.fillText(after, left + 8 + measure(before + percent[0]), baseline);
+    });
     const rect = { x: left, y: top, w: width, h: height };
     occupied.push(rect);
     return rect;
@@ -81,17 +92,27 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       if (d.tool === "ray") lineHit(d.id, { x: start, y: a.y }, { x: w, y: a.y });
     } else if (d.tool === "text" || d.tool === "price-note") {
       if (a.x < 0 || a.x > w || a.y < 0 || a.y > h) continue;
-      const text = d.tool === "price-note" ? `${d.points[0].price.toFixed(2)} ${d.text}` : d.text || "Double-click to edit note";
+      if (o.export && d.tool === "text" && !d.text.trim()) continue;
+      const text = d.tool === "price-note" ? `${d.points[0].price.toFixed(2)} ${d.text}` : d.text || "Add a note…";
       ctx.font = "11px system-ui, sans-serif";
-      const layout = noteLayout(a, points[1] ? b : defaultNoteEnd(a), ctx.measureText(text).width, w, h, topInset);
+      const desiredWidth = d.noteWidth ?? Math.min(defaultNoteWidth, Math.max(...text.split(/\r?\n/).map(t => ctx.measureText(t).width)) + 18);
+      const width = Math.max(18, Math.min(desiredWidth, w - 6));
+      const lines = wrapDrawingText(text, width - 16, value => ctx.measureText(value).width);
+      const layout = noteLayout(a, points[1] ? b : defaultNoteEnd(a), width - 18, w, h, topInset, 8 + lines.length * 16, width);
       line(a.x, a.y, layout.join.x, layout.join.y);
       const angle = Math.atan2(layout.join.y - a.y, layout.join.x - a.x);
       line(a.x, a.y, a.x + 8 * Math.cos(angle - .4), a.y + 8 * Math.sin(angle - .4));
       line(a.x, a.y, a.x + 8 * Math.cos(angle + .4), a.y + 8 * Math.sin(angle + .4));
-      bounds = label(text, layout.box.x, layout.box.y, d.color, undefined, layout.box.w);
+      bounds = label(text, layout.box.x, layout.box.y, d.color, undefined, layout.box.w, "", undefined, true);
       hits.push({ ...bounds, id: d.id, kind: "drawing", point: 1, anchor: layout.end });
       hits.push({ id: d.id, kind: "drawing", point: 0, anchor: a, x: a.x - 9, y: a.y - 9, w: 18, h: 18 });
       points[1] = layout.end;
+      if (d.id === o.selected && !d.locked && !o.export) {
+        const edge = layout.right ? bounds.x + bounds.w : bounds.x, middle = bounds.y + bounds.h / 2;
+        ctx.fillStyle = o.light ? "#fff" : "#121722"; ctx.strokeStyle = d.color; ctx.setLineDash([]);
+        ctx.fillRect(edge - 3, middle - 5, 6, 10); ctx.strokeRect(edge - 3, middle - 5, 6, 10);
+        hits.push({ id: d.id, kind: "handle", resizeNote: { width: bounds.w, direction: layout.right ? 1 : -1 }, x: edge - 8, y: middle - 9, w: 16, h: 18 });
+      }
     } else if (d.tool === "zone") {
       ctx.globalAlpha = .12; ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.globalAlpha = 1; ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
       if (d.text) label(d.text, Math.min(a.x, b.x) + 5, Math.min(a.y, b.y) + 5, d.color);
@@ -124,7 +145,9 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
         const bars = o.candles.filter(c => c.time >= Math.min(d.points[0].time, d.points[1].time) && c.time <= Math.max(d.points[0].time, d.points[1].time)).length;
         const metrics = measureText(d.points[0], d.points[1], bars, d);
         if (metrics || d.text.trim()) {
-          const box = label(metrics, (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color, undefined, 320, d.text.trim());
+          const change = d.points[1].price - d.points[0].price;
+          const percentColor = change > 0 ? d.positivePercentColor ?? positivePercentColor : change < 0 ? d.negativePercentColor ?? negativePercentColor : undefined;
+          const box = label(metrics, (a.x + b.x) / 2 - 110, Math.min(a.y, b.y) - 30, d.color, undefined, 320, d.text.trim(), percentColor);
           hits.push({ ...box, id: d.id, kind: "drawing" });
         }
       }

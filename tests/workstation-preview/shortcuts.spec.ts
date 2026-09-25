@@ -24,10 +24,11 @@ test("Shift+J toggles Journal without leaving normal, Focus or fullscreen mode",
   await page.keyboard.press("Shift+J"); await expect(journal).toBeVisible();
   await showTakeaways(page); const editor = page.getByRole("textbox", { name: "Takeaways", exact: true });
   await editor.fill("Retained while toggling"); await editor.press("Shift+J"); await expect(journal).toBeVisible();
-  await chart.focus(); await page.keyboard.press("Shift+F"); await expect(journal).not.toBeVisible();
+  await chart.focus(); await page.keyboard.press("Shift+F"); await expect(journal).toBeVisible();
+  await page.keyboard.press("Shift+J"); await expect(journal).not.toBeVisible();
   await page.keyboard.press("Shift+J"); await expect(journal).toBeVisible(); await expect(page.locator(".workstation")).toHaveClass(/ws-focus/);
   await chart.focus(); await page.keyboard.press("f"); await expect(chart).toHaveClass(/ws-chart-fullscreen/);
-  await page.keyboard.press("Shift+J"); await expect(page.locator(".ws-fullscreen-journal")).toBeVisible();
+  await expect(page.locator(".ws-fullscreen-journal")).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveCount(1);
   await chart.focus(); await page.keyboard.press("Shift+J"); await expect(page.locator(".ws-fullscreen-journal")).toHaveCount(0);
   await expect(chart).toBeFocused(); await expect(chart).toHaveClass(/ws-chart-fullscreen/);
@@ -74,7 +75,9 @@ test("chart shortcuts respect focus, typing and Escape priority; fullscreen and 
   await page.keyboard.press("Escape");
   await chart.focus(); await page.keyboard.press("f");
   await expect(chart).toHaveClass(/ws-chart-fullscreen/);
-  await expect.poll(async () => (await chart.boundingBox())!.width).toBeGreaterThan(1800);
+  const journal = page.getByRole("complementary", { name: "Fullscreen trade journal" });
+  await expect(journal).toBeVisible();
+  await expect.poll(async () => (await chart.boundingBox())!.width + (await journal.boundingBox())!.width).toBeGreaterThan(1800);
   await page.keyboard.press("n");
   await chart.locator(".ws-plot").click({ position: { x: 180, y: 130 } });
   const annotation = page.getByLabel("Annotation text", { exact: true });
@@ -94,6 +97,9 @@ test("chart shortcuts respect focus, typing and Escape priority; fullscreen and 
   await expect(chart).toHaveClass(/ws-chart-fullscreen/);
   await page.screenshot({ path: info.outputPath("workstation-shortcut-fullscreen.png"), fullPage: true });
   await page.keyboard.press("Escape");
+  await expect(journal).toHaveCount(0);
+  await expect(chart).toHaveClass(/ws-chart-fullscreen/);
+  await chart.focus(); await page.keyboard.press("Escape");
   await expect(chart).not.toHaveClass(/ws-chart-fullscreen/);
   await showTakeaways(page);
   const note = page.getByRole("textbox", { name: "Takeaways", exact: true });

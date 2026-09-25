@@ -136,15 +136,17 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     const preview = await createNotionPreview(f.groupKey, doc.revision, "https://journal.invalid");
     const fresh = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: preview.id } });
     expect(JSON.stringify(fresh.snapshot)).not.toContain("data:image");
-    expect((fresh.snapshot as unknown as PublishSnapshot).assets[0]).toMatchObject({ image: "", asset: ref, hash: verified.notionHash });
+    expect((fresh.snapshot as unknown as PublishSnapshot).assets[0]).toMatchObject({ image: "", asset: ref, hash: verified.notionHash, caption: "", name: "Exact original" });
+    expect(preview.assets?.[0]).toMatchObject({ caption: "", name: "Exact original" });
     // Use the existing isolated publication fixture's complete property plan, not a live database.
-    const snapshot: PublishSnapshot = { doc: { ...doc, evidence: [], drawings: [], legacy: null }, digest: jsonHash(doc), symbol: "NTST", assets: [{ id: "image", image: "", asset: ref, hash: verified.notionHash, caption: "Exact original context" }] };
+    const snapshot: PublishSnapshot = { doc: { ...doc, evidence: [], drawings: [], legacy: null }, digest: jsonHash(doc), symbol: "NTST", assets: [{ id: "image", image: "", asset: ref, hash: verified.notionHash, caption: "" }] };
     await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { revision: doc.revision, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
     await startNotionPublication(f.job.id, f.groupKey); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
     const sent = remote.call.mock.calls.filter(([path]) => String(path).endsWith("/send"));
     expect(sent).toHaveLength(1);
     expect(Buffer.from(await ((sent[0][2] as FormData).get("file") as Blob).arrayBuffer())).toEqual(bytes);
     expect([...nodes.values()].filter(node => node.type === "image" && !node.archived)).toHaveLength(2);
+    expect([...nodes.values()].filter(node => node.type === "image" && !node.archived).every(node => JSON.stringify((node.image as JsonObject).caption) === "[]")).toBe(true);
     expect(await prisma.evidenceAssetReference.count({ where: { assetId: row.id, kind: "publication" } })).toBeGreaterThan(0);
   });
   it("blocks new inline snapshots and reports an unverified or insufficient Notion allowance", async () => {
@@ -201,10 +203,12 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     expect([...nodes.values()].filter(n => n.type === "callout")).toHaveLength(0);
   });
   it("returns an active frozen job when newer saved edits request a preview", async () => {
-    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);
+    const f = await fixture(true); await startNotionPublication(f.job.id, f.groupKey);
     await prisma.closedTradeNote.update({ where: { groupKey: f.groupKey }, data: { workstationVersion: 3, content: "New saved edit" } });
     const preview = await createNotionPreview(f.groupKey, 3, "https://journal.invalid");
     expect(preview.id).toBe(f.job.id); expect(preview.revision).toBe(f.doc.revision);
+    const frozen = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: preview.id } });
+    expect((frozen.snapshot as unknown as PublishSnapshot).assets[0].caption).toBe("Original screenshot context");
     expect(await publicationContext(f.groupKey)).toMatchObject({ savedRevision: 3, activeJobId: f.job.id, lastPublishedRevision: null });
     expect(await prisma.notionPublishJob.count({ where: { groupKey: f.groupKey } })).toBe(1);
   });
@@ -274,7 +278,11 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect([...nodes.values()].filter(n => n.type === "callout")).toHaveLength(2);
   });
   it("reconciles a lost content response without duplicate paragraphs or images", async () => {
-    const f = await fixture(true); await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
+    const f = await fixture(true);
+    const snapshot = f.job.snapshot as unknown as PublishSnapshot;
+    snapshot.assets.forEach(asset => { asset.caption = ""; });
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { snapshot: snapshot as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
     failAfter = (_path, method, body) => method === "PATCH" && (body.children as JsonObject[] | undefined)?.[0]?.type === "paragraph";
     expect((await resumeNotionPublication(f.job.id, f.groupKey)).state).toBe("failed");
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect([...nodes.values()].filter(n => n.type === "image")).toHaveLength(2);

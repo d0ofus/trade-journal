@@ -1,11 +1,31 @@
 import { expect, it, vi } from "vitest";
 import type { IChartApi } from "lightweight-charts";
-import { createBenchmarkLayer } from "./benchmark-layer";
+import { benchmarkStyle, createBenchmarkLayer } from "./benchmark-layer";
+
+it("validates transparency and moves the index to a separately scaled resizable pane", () => {
+  expect(benchmarkStyle(false, "#123456", 0)).toMatchObject({ borderUpColor: "#123456", downColor: "#12345640" });
+  expect(benchmarkStyle(false, "#123456", 50)).toMatchObject({ borderUpColor: "#12345680", downColor: "#12345620" });
+  expect(benchmarkStyle(false, "#123456", 100)).toMatchObject({ borderUpColor: "#12345600", downColor: "#12345600" });
+  expect(benchmarkStyle(false, "#123456", NaN).borderUpColor).toBe("#123456");
+  const scale = { applyOptions: vi.fn(), getVisibleRange: () => ({ from: 400, to: 500 }) };
+  const series = { setData: vi.fn(), priceScale: () => scale, applyOptions: vi.fn() };
+  const panes = [{ setStretchFactor: vi.fn() }, { setStretchFactor: vi.fn() }];
+  const api = { addSeries: vi.fn(() => series), removeSeries: vi.fn(), panes: () => panes, timeScale: () => ({ getVisibleRange: () => null }) };
+  const layer = createBenchmarkLayer(api as unknown as IChartApi, { textContent: "" } as HTMLElement);
+  const input = { primary: [], benchmark: [], symbol: "SPY", light: false };
+  layer.update(input); layer.update({ ...input, mode: "pane", paneRatio: .3, transparency: 50 });
+  expect(api.removeSeries).toHaveBeenCalledOnce();
+  expect(api.addSeries.mock.lastCall).toEqual([expect.anything(), expect.objectContaining({ priceScaleId: "right" }), 1]);
+  expect(scale.applyOptions).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
+  expect(panes[0].setStretchFactor).toHaveBeenLastCalledWith(.7); expect(panes[1].setStretchFactor).toHaveBeenLastCalledWith(.3);
+  expect(layer.snapshot()).toMatchObject({ mode: "pane", priceRange: { from: 400, to: 500 } });
+  layer.update({ ...input, mode: "overlay" }); expect(api.removeSeries).toHaveBeenCalledTimes(2);
+});
 
 it("isolates actual benchmark prices and autoscaling from the trade scale through range and theme changes", () => {
   const scaleOptions = vi.fn(), setData = vi.fn(), seriesOptions = vi.fn();
   let range = { from: 1, to: 2 };
-  const api = { addSeries: vi.fn((...args: unknown[]) => { expect(args).toHaveLength(2); return { setData, priceScale: () => ({ applyOptions: scaleOptions }), applyOptions: seriesOptions }; }), timeScale: () => ({ getVisibleRange: () => range }), removeSeries: vi.fn() };
+  const api = { addSeries: vi.fn((...args: unknown[]) => { expect(args).toHaveLength(3); return { setData, priceScale: () => ({ applyOptions: scaleOptions }), applyOptions: seriesOptions }; }), timeScale: () => ({ getVisibleRange: () => range }), removeSeries: vi.fn() };
   const legend = { textContent: "" };
   const layer = createBenchmarkLayer(api as unknown as IChartApi, legend as HTMLElement);
   const bar = (time: number, price: number) => ({ time, open: price, high: price + 1, low: price - 1, close: price, volume: 1 });

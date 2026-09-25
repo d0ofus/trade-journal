@@ -1,6 +1,8 @@
 import type { Candle, ChartPanel } from "./types";
 
 export const benchmarkColor = (light: boolean, value?: string) => /^#[a-f\d]{6}$/i.test(value ?? "") ? value! : light ? "#2563eb" : "#60a5fa";
+export const benchmarkTransparency = (value?: number) => typeof value === "number" && Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+export const benchmarkPaneRatio = (value?: number) => typeof value === "number" && Number.isFinite(value) ? Math.min(.5, Math.max(.15, value)) : .25;
 
 export function selectBenchmark(panel: ChartPanel, benchmark: NonNullable<ChartPanel["benchmark"]>): Partial<ChartPanel> {
   return { benchmark, lastBenchmark: benchmark !== "off" ? benchmark : panel.benchmark && panel.benchmark !== "off" ? panel.benchmark : panel.lastBenchmark ?? "SPY" };

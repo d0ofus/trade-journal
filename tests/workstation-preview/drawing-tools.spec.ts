@@ -305,7 +305,7 @@ test("whole measurements respect locks, snapping and Before entry in fullscreen"
 test("migrated defaults and saved styles stay independent across tool creation, settings and reload", async ({ page }) => {
   const legacy = { color: "#123456", width: 3, dashed: true };
   const errors = await open(page, undefined, legacy);
-  await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
+  await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, positivePercentColor: "#22c55e", negativePercentColor: "#ef4444", extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
   await selectRay(page);
   await page.getByLabel("Annotation color", { exact: true }).fill("#ff3344");
   await page.getByLabel("Annotation width", { exact: true }).selectOption("2");
@@ -313,7 +313,7 @@ test("migrated defaults and saved styles stay independent across tool creation, 
   await page.getByTitle("Save drawing style as default for Horizontal ray", { exact: true }).click();
   const rayStyle = { color: "#ff3344", width: 2, dashed: true, showDefaultLabel: false };
   await expect.poll(async () => (await preferences(page)).drawingStyles.ray).toEqual(rayStyle);
-  expect((await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
+  expect((await preferences(page)).drawingStyles.measure).toEqual({ ...legacy, positivePercentColor: "#22c55e", negativePercentColor: "#ef4444", extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
   await place(page, "r");
   await expect.poll(async () => (await saved(page)).drawings.length).toBe(2);
   expect((await saved(page)).drawings.at(-1)).toMatchObject(rayStyle);
@@ -323,14 +323,18 @@ test("migrated defaults and saved styles stay independent across tool creation, 
   expect((await saved(page)).drawings.at(-1)).toMatchObject({ ...legacy, tool: "measure" });
   expect((await saved(page)).drawings.at(-1)).not.toHaveProperty("showDefaultLabel");
   await page.getByLabel("Annotation color", { exact: true }).fill("#22aa88");
+  await page.getByLabel("Positive percentage colour", { exact: true }).fill("#00ff00");
+  await page.getByLabel("Negative percentage colour", { exact: true }).fill("#ff0000");
   await page.getByTitle("Toggle dashed line", { exact: true }).click();
   await page.getByTitle("Save drawing style as default for Price & time measurement", { exact: true }).click();
-  const measureStyle = { ...legacy, color: "#22aa88", dashed: false, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true };
+  const measureStyle = { ...legacy, color: "#22aa88", positivePercentColor: "#00ff00", negativePercentColor: "#ff0000", dashed: false, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true };
   await expect.poll(async () => (await preferences(page)).drawingStyles.measure).toEqual(measureStyle);
   expect((await preferences(page)).drawingStyles.ray).toEqual(rayStyle);
   await page.getByRole("button", { name: "Chart settings", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Chart settings", exact: true });
   await expect(dialog.getByLabel("Drawing tool defaults", { exact: true })).toHaveValue("measure");
+  await expect(dialog.getByLabel("Default Positive percentage colour", { exact: true })).toHaveValue("#00ff00");
+  await expect(dialog.getByLabel("Default Negative percentage colour", { exact: true })).toHaveValue("#ff0000");
   await dialog.getByLabel("Drawing tool defaults", { exact: true }).selectOption("ray");
   await dialog.getByLabel("Default drawing color", { exact: true }).fill("#8844cc");
   await dialog.getByRole("button", { name: "Close dialog" }).click();
@@ -380,7 +384,7 @@ test("measurement notes render above values, remain selectable, and appear in PN
     await (await download).saveAs(info.outputPath(`measurement-${light ? "light" : "dark"}.png`));
     const exported = await page.evaluate(() => window.drawingExportText);
     expect(exported).toContain("Measured retest");
-    expect(exported).toContainEqual(expect.stringMatching(/^\+2\.00 .*30m.*bars$/));
+    expect(exported.join("")).toMatch(/\+2\.00 .*30m.*bars/);
     await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
   }
   await page.evaluate(() => { window.drawingExportText = []; });

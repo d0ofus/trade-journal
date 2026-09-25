@@ -37,7 +37,9 @@ export function EvidenceThumbnail({ evidence }: { evidence: Evidence }) {
 }
 export function EvidenceDownload({ evidence }: { evidence: Evidence }) {
   const trade = useContext(EvidenceTradeContext), [error, setError] = useState(""), [loading, setLoading] = useState(false);
-  return <><button type="button" className="ws-evidence-download" disabled={loading} onClick={() => { setLoading(true); setError(""); void evidenceBlob(trade, evidence).then(blob => downloadBlob(blob, evidenceFilename(evidence.name))).catch(e => setError(e instanceof Error ? e.message : "Download failed")).finally(() => setLoading(false)); }} aria-label={`Download ${evidence.name}`} title="Download original image"><Download size={14} /></button>{error && <span role="alert">{error}</span>}</>;
+  // Keep keyboard focus in the viewer during retrieval; disabling the focused
+  // button sends focus to the document and prevents Escape from closing it.
+  return <><button type="button" className="ws-evidence-download" aria-disabled={loading} aria-busy={loading} onClick={() => { if (loading) return; setLoading(true); setError(""); void evidenceBlob(trade, evidence).then(blob => downloadBlob(blob, evidenceFilename(evidence.name))).catch(e => setError(e instanceof Error ? e.message : "Download failed")).finally(() => setLoading(false)); }} aria-label={`Download ${evidence.name}`} title="Download original image"><Download size={14} /></button>{error && <span role="alert">{error}</span>}</>;
 }
 
 export function EvidenceViewer({ evidence, onClose }: { evidence: Evidence; onClose: () => void }) {

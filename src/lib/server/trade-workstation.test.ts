@@ -110,7 +110,7 @@ describe("workstation persistence against isolated PostgreSQL", () => {
     const key = await fixture();
     const doc = await readWorkstationDocument(key);
     const ray = { ...doc.drawings[0], id: "ray-label", tool: "ray" as const, showDefaultLabel: false, text: "Keep this note" };
-    const measurement = { ...ray, id: "measurement-note", tool: "measure" as const, hidden: true, extendLeft: true, extendRight: false, showValues: false, showPercent: true, showInterval: false, showBars: true, text: "Measured breakout", points: [ray.points[0], { time: ray.points[0].time + 900, price: ray.points[0].price + 2 }] };
+    const measurement = { ...ray, id: "measurement-note", tool: "measure" as const, hidden: true, extendLeft: true, extendRight: false, showValues: false, showPercent: true, showInterval: false, showBars: true, positivePercentColor: "#00aa22", negativePercentColor: "#ff2233", text: "Measured breakout", points: [ray.points[0], { time: ray.points[0].time + 900, price: ray.points[0].price + 2 }] };
     const entry = { ...ray, id: "planned-entry", tool: "entry" as const, showPrice: false, color: "#22c55e" };
     const exit = { ...ray, id: "planned-exit", tool: "exit" as const, showPrice: true, color: "#ef4444" };
     let withImages = attachEvidence(doc, { id: "uploaded", origin: "upload", name: "My image.png", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: doc.revision, timeframe: "" }, "takeaways");
@@ -125,7 +125,7 @@ describe("workstation persistence against isolated PostgreSQL", () => {
   it("persists both note anchors without rewriting other review fields", async () => {
     const key = await fixture();
     const doc = await readWorkstationDocument(key);
-    const note = { id: "two-anchor-note", tool: "text" as const, points: [{ time: 1725980400, price: 102 }, { time: 1725976800.5, price: 104 }], text: "Left of the tip", color: "#abcdef", width: 1, dashed: false, locked: false, hidden: false, panel: "chart-1", createdAt: 1725980400 };
+    const note = { id: "two-anchor-note", tool: "text" as const, points: [{ time: 1725980400, price: 102 }, { time: 1725976800.5, price: 104 }], text: "Left of the tip\nWrapped note", noteWidth: 180, color: "#abcdef", width: 1, dashed: false, locked: false, hidden: false, panel: "chart-1", createdAt: 1725980400 };
     await saveWorkstationDocument(key, { ...doc, drawings: [...doc.drawings, note] }, doc.revision);
     const loaded = await readWorkstationDocument(key);
     expect(loaded.drawings.find(d => d.id === note.id)).toEqual(note);

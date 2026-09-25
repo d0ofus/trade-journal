@@ -155,7 +155,8 @@ test("peer annotations, arrangements and complete visible capture remain isolate
   expect(await peer.boundingBox()).toEqual(before);
   await dialog.getByRole("button", { name: "pin", exact: true }).click();
   await peer.click({ position: { x: 140, y: 75 } });
-  await expect(dialog.getByLabel("Annotation", { exact: true })).toHaveValue("New note");
+  await expect(dialog.getByLabel("Annotation", { exact: true })).toHaveValue("");
+  await expect(dialog.getByLabel("Annotation", { exact: true })).toBeFocused();
   await dialog.getByLabel("Annotation", { exact: true }).fill("Peer-specific setup");
   await dialog.getByRole("button", { name: "Hide all drawings", exact: true }).click();
   await dialog.getByRole("button", { name: "pin", exact: true }).click();

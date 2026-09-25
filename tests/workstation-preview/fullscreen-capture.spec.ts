@@ -28,7 +28,10 @@ test("fullscreen journal edits one live editor, resizes, captures and restores n
   await editor.evaluate(node => node.setAttribute("data-preserved-editor", "yes"));
   const original = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).dock, prefKey);
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
-  const chart = page.locator(".ws-chart-fullscreen"), fullWidth = (await chart.boundingBox())!.width;
+  const chart = page.locator(".ws-chart-fullscreen");
+  await expect(page.getByRole("complementary", { name: "Fullscreen trade journal" })).toBeVisible();
+  await page.getByRole("button", { name: "Close fullscreen journal" }).click();
+  const fullWidth = (await chart.boundingBox())!.width;
   await page.getByRole("button", { name: "Show fullscreen journal" }).click();
   const sidebar = page.getByRole("complementary", { name: "Fullscreen trade journal" });
   await expect(sidebar).toBeVisible(); await expect(editor).toHaveAttribute("data-preserved-editor", "yes");
@@ -53,9 +56,9 @@ test("fullscreen journal edits one live editor, resizes, captures and restores n
   const restored = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).dock, prefKey);
   expect({ ...restored, activeGroup: original.activeGroup }).toEqual(original);
   await page.locator(".ws-chart").focus(); await page.keyboard.press("Shift+F");
-  await page.getByRole("button", { name: "Show focus journal" }).click();
+  await expect(page.getByRole("button", { name: "Hide focus journal" })).toBeVisible();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
-  await page.getByRole("button", { name: "Show fullscreen journal" }).click();
+  await expect(page.getByRole("complementary", { name: "Fullscreen trade journal" })).toBeVisible();
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
   await expect(page.getByRole("button", { name: "Hide focus journal" })).toBeVisible();
   await expect(editor).toHaveAttribute("data-preserved-editor", "yes");

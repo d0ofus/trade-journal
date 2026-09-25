@@ -26,7 +26,7 @@ export function createPeerDrawingLayer(node: HTMLElement, chart: IChartApi, pric
   pins.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:4";
   node.append(canvas, pins);
   let hits: Hit[] = [], draft: Drawing | null = null, pending: Point | null = null, pinPreview: string | null = null, frame = 0, context = "", tool: Tool = "cursor";
-  let drag: { drawing: Drawing; point?: number; start: { x: number; y: number }; offset?: { x: number; y: number }; candles: Candle[] } | null = null;
+  let drag: { drawing: Drawing; point?: number; resizeNote?: { width: number; direction: 1 | -1 }; start: { x: number; y: number }; offset?: { x: number; y: number }; candles: Candle[] } | null = null;
   const stop = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation(); };
   const position = (event: PointerEvent | MouseEvent) => { const bounds = node.getBoundingClientRect(); return { x: event.clientX - bounds.left, y: event.clientY - bounds.top }; };
   const adjusted = () => { const p = get(); return p.controls.drawings.map(d => splitAdjustedDrawing(d, p.view.adjustment === "split" ? p.controls.adjustment : undefined)); };
@@ -91,16 +91,17 @@ export function createPeerDrawingLayer(node: HTMLElement, chart: IChartApi, pric
       if (drawing?.tool === "pin") { pinPreview = pinPreview === drawing.id ? null : drawing.id; schedule(); }
       if (!drawing || drawing.locked || p.controls.readOnly || !p.controls.adjustmentReady) return;
       if (hit.point === 1 && !drawing.points[1] && hit.anchor) { const point = pointAt(hit.anchor, true); if (point) drawing = { ...drawing, points: [...drawing.points, point] }; }
-      drag = { drawing, point: hit.point, start: pos, candles: [...p.candles], offset: hit.anchor ? { x: pos.x - hit.anchor.x, y: pos.y - hit.anchor.y } : undefined };
+      drag = { drawing, point: hit.point, resizeNote: hit.resizeNote, start: pos, candles: [...p.candles], offset: hit.anchor ? { x: pos.x - hit.anchor.x, y: pos.y - hit.anchor.y } : undefined };
       node.setPointerCapture(event.pointerId); return;
     }
     if (p.controls.readOnly || !p.controls.adjustmentReady) return;
     stop(event); const point = pointAt(pos); if (!point) return;
     const two = ["trend", "arrow", "zone", "measure", "long", "short"].includes(tool);
-    const drawing: Drawing = { id: crypto.randomUUID(), tool, points: pending ? [pending, point] : two ? [point, point] : [point], text: ["text", "pin"].includes(tool) ? "New note" : "", ...drawingStyleFor(tool, p.preferences.drawingStyles), panel: null, locked: false, hidden: false, createdAt: p.view.replayAt ?? Date.now() / 1000 };
+    const drawing: Drawing = { id: crypto.randomUUID(), tool, points: pending ? [pending, point] : two ? [point, point] : [point], text: "", ...drawingStyleFor(tool, p.preferences.drawingStyles), panel: null, locked: false, hidden: false, createdAt: p.view.replayAt ?? Date.now() / 1000 };
     if (two && !pending) { pending = point; draft = drawing; schedule(); return; }
     if (["long", "short"].includes(tool)) drawing.points.push({ time: point.time, price: drawing.points[0].price - (tool === "long" ? 1 : -1) * Math.abs(point.price - drawing.points[0].price) / 2 });
     commit(drawing); p.controls.select(drawing.id); cancel(); if (!p.preferences.keepTool) p.controls.done();
+    if (["text", "pin", "price-note"].includes(tool)) p.controls.edit(drawing.id);
   };
   const move = (event: PointerEvent) => {
     const p = get(), pos = position(event);
@@ -108,7 +109,9 @@ export function createPeerDrawingLayer(node: HTMLElement, chart: IChartApi, pric
     stop(event);
     if (drag) {
       if (Math.hypot(pos.x - drag.start.x, pos.y - drag.start.y) < 3 && !draft) return;
-      if (drag.point !== undefined) {
+      if (drag.resizeNote) {
+        draft = { ...drag.drawing, noteWidth: Math.max(80, Math.min(800, Math.round(drag.resizeNote.width + (pos.x - drag.start.x) * drag.resizeNote.direction))) };
+      } else if (drag.point !== undefined) {
         const point = pointAt(drag.offset ? { x: pos.x - drag.offset.x, y: pos.y - drag.offset.y } : pos, !!drag.offset);
         if (point) draft = { ...drag.drawing, points: drag.drawing.points.map((old, i) => i === drag!.point ? point : old) };
       } else {

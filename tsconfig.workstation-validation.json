@@ -4,6 +4,7 @@
     "incremental": false
   },
   "include": [
+    "tests/workstation-preview/note-index-refinements.spec.ts",
     "src/lib/storage-format.test.ts",
     "src/lib/server/storage-usage.test.ts",
     "src/lib/server/storage-counts.test.ts",

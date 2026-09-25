@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { listWorkstationTrades, readWorkstationDocument, WorkstationError } from "./trade-workstation";
 import { readTemplateLayout } from "./notion-template-sync";
 import { NOTION_DATA_SOURCE_ID, sectionText, type SectionDefinition, type TemplateLayout } from "@/lib/workstation/template-layout";
-import { allSectionKeys, evidenceCaption, sectionEvidenceIds } from "@/lib/workstation/evidence";
+import { allSectionKeys, sectionEvidenceIds } from "@/lib/workstation/evidence";
 import { richHtml, richPlain } from "@/lib/workstation/rich-text";
 import { jsonHash, NotionError, notionRequest, type JsonObject } from "./notion-client";
 import { htmlToNotionBlocks } from "./notion-format";
@@ -14,7 +14,9 @@ import type { ImageAssetReference } from "@/lib/workstation/image-assets";
 
 export type PublishSection = SectionDefinition & { blocks: JsonObject[]; images: string[] };
 export type PublishPlan = { layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
-export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; caption: string; image: string; asset?: ImageAssetReference }[] };
+export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; name?: string; caption: string; image: string; asset?: ImageAssetReference }[] };
+// A new explicit preview must not reuse a completed job with the old generated captions.
+export const NOTION_PRESENTATION_VERSION = 2;
 
 export async function createNotionPreview(groupKey: string, revision: number, sourceOrigin: string) {
   const existing = await prisma.notionPublication.findUnique({ where: { groupKey } });
@@ -55,8 +57,7 @@ export async function createNotionPreview(groupKey: string, revision: number, so
     const stored = image.asset ? storedAssets.find(a => a.id === image.asset!.id) : undefined;
     if (image.asset && (!stored || stored.sha256 !== image.asset.sha256)) errors.push(`The original image “${image.name}” is unavailable or does not match its checksum.`);
     const hash = stored?.notionHash ?? jsonHash(bytes.toString("base64"));
-    const context = image.origin ? `Imported ${image.origin}` : [image.timeframe, image.peerCapture ? JSON.stringify(image.peerCapture) : "Workspace", new Date(image.time * 1000).toISOString()].join(" · ");
-    return { id: image.id, hash, image: image.asset ? "" : image.image, asset: image.asset, caption: `${evidenceCaption(image)} · ${context} · image ${hash.slice(0, 12)}`.slice(0, 1900) };
+    return { id: image.id, hash, name: image.name, image: image.asset ? "" : image.image, asset: image.asset, caption: "" };
   });
   if (assets.length) {
     const bot = await notionRequest<{ bot?: { workspace_limits?: { max_file_upload_size_in_bytes?: number } } }>("/users/me");
@@ -70,7 +71,7 @@ export async function createNotionPreview(groupKey: string, revision: number, so
   const digest = jsonHash(doc), snapshot: PublishSnapshot = { doc: { ...doc, drawings: [], evidence: [], legacy: null }, symbol: trade.symbol, digest, assets };
   // Re-read after upstream I/O; never preview a silently superseded revision.
   if (jsonHash(await readWorkstationDocument(groupKey)) !== digest) throw new WorkstationError("The review changed while preparing the preview. Open it again.");
-  const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors });
+  const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors, presentation: NOTION_PRESENTATION_VERSION });
   await prisma.notionPublication.upsert({ where: { groupKey }, create: { groupKey, dataSourceId: NOTION_DATA_SOURCE_ID }, update: {} });
   const job = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
@@ -115,6 +116,6 @@ export function publicationStatus(job: { id: string; groupKey: string; revision:
     templateVersion: plan.layout.id, properties: plan.propertyDisplay, omitted: plan.omitted, errors: plan.errors,
     sections: plan.sections.map(section => ({ key: section.key, label: [...section.groups, section.label].join(" · "), images: section.images.length, blocks: section.blocks.length, done: progress.sections?.[section.key]?.done ?? false,
       html: includeDetails ? richHtml(sectionText(snapshot.doc.review, section.key)) : undefined, imageIds: includeDetails ? section.images : undefined })),
-    assets: includeDetails ? snapshot.assets.map(asset => ({ id: asset.id, image: asset.image, asset: asset.asset, caption: asset.caption })) : undefined,
+    assets: includeDetails ? snapshot.assets.map(asset => ({ id: asset.id, image: asset.image, asset: asset.asset, name: asset.name, caption: asset.caption })) : undefined,
   };
 }

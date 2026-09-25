@@ -42,7 +42,7 @@ test("tool defaults migrate once, validate saved entries, and copy only appearan
   const ray = { ...initialDemoDocument(demoTrades[0]).drawings[0], color: "#abcdef", showDefaultLabel: false };
   migrated.ray = drawingStyle("ray", ray);
   assert.deepEqual(Object.keys(migrated.ray).sort(), ["color", "dashed", "showDefaultLabel", "width"]);
-  assert.deepEqual(migrated.measure, { ...legacy, extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
+  assert.deepEqual(migrated.measure, { ...legacy, positivePercentColor: "#22c55e", negativePercentColor: "#ef4444", extendLeft: false, extendRight: false, showValues: true, showPercent: true, showInterval: true, showBars: true });
   assert.deepEqual(drawingStyleFor("ray", JSON.parse(JSON.stringify(migrated))), migrated.ray);
   assert.equal(drawingStyle("measure", ray).showDefaultLabel, undefined);
   assert.equal(drawingStyleFor("ray", defaultPreferences().drawingStyles).showDefaultLabel, true);
@@ -58,18 +58,19 @@ test("tool defaults migrate once, validate saved entries, and copy only appearan
 });
 
 function drawingPaint(drawing: Drawing, overrides: Partial<PaintOptions> = {}) {
-  const texts: { text: string; x: number; y: number; width: number }[] = [];
+  const texts: { text: string; x: number; y: number; width: number | undefined; color: string }[] = [];
   const boxes: { x: number; y: number; w: number; h: number }[] = [];
   const paths: { x: number; y: number }[][] = [];
   let path: { x: number; y: number }[] = [];
+  let fill = "";
   const context = new Proxy({
     beginPath: () => { path = []; paths.push(path); },
     moveTo: (x: number, y: number) => { path.push({ x, y }); },
     lineTo: (x: number, y: number) => { path.push({ x, y }); },
     measureText: (text: string) => ({ width: Array.from(text).length * 6 }),
-    fillText: (text: string, x: number, y: number, width: number) => { texts.push({ text, x, y, width }); },
+    fillText: (text: string, x: number, y: number, width?: number) => { texts.push({ text, x, y, width, color: fill }); },
     roundRect: (x: number, y: number, w: number, h: number) => { boxes.push({ x, y, w, h }); },
-  }, { get: (target, property) => property in target ? target[property as keyof typeof target] : () => {}, set: () => true }) as unknown as CanvasRenderingContext2D;
+  }, { get: (target, property) => property in target ? target[property as keyof typeof target] : () => {}, set: (_target, property, value) => { if (property === "fillStyle") fill = value; return true; } }) as unknown as CanvasRenderingContext2D;
   const trade = demoTrades[0];
   const hits = paintChart(context, { width: 500, height: 400, plotWidth: 450, plotHeight: 375,
     x: t => (t - trade.openTime) / 12 + 100, y: p => 250 - (p - trade.entry) * 20,
@@ -90,10 +91,10 @@ test("measurement metrics support all combinations, legacy defaults and note-onl
     assert.ok(!text.startsWith(" · ") && !text.endsWith(" · "));
     for (const light of [false, true]) for (const exporting of [false, true]) {
       const painted = drawingPaint({ ...drawing, ...flags }, { light, export: exporting });
-      assert.equal(painted.texts.length, mask ? 1 : 0);
+      assert.equal(new Set(painted.texts.map(t => t.y)).size, mask ? 1 : 0);
       const noted = drawingPaint({ ...drawing, ...flags, text: "Keep annotation" }, { light, export: exporting });
       assert.equal(noted.texts[0].text, "Keep annotation");
-      assert.equal(noted.texts.length, mask ? 2 : 1);
+      assert.equal(new Set(noted.texts.map(t => t.y)).size, mask ? 2 : 1);
     }
     assert.deepEqual(drawingStyle("measure", { ...drawing, ...flags }), { ...drawingStyle("measure", drawing), ...flags });
     assert.deepEqual(workstationDocumentSchema.parse({ ...emptyDocument(), drawings: [{ ...drawing, ...flags }] }).drawings[0], { ...drawing, ...flags });
@@ -101,6 +102,39 @@ test("measurement metrics support all combinations, legacy defaults and note-onl
   assert.equal(measureText(drawing.points[0], drawing.points[1], 7), "+2.00 (+2.00%) · 30m · 7 bars");
   assert.equal(measureText({ time: 0, price: 0 }, { time: 0, price: 2 }, 1, { showValues: false, showInterval: false, showBars: false }), "N/A");
   assert.equal(drawingStyle("measure", { ...drawing, showBars: "false" }).showBars, true);
+});
+
+test("percentage colours apply only to the numeric percentage, including captures", () => {
+  const trade = demoTrades[0], base = initialDemoDocument(trade).drawings[0];
+  for (const exporting of [false, true]) for (const delta of [-2, 0, 2]) {
+    const drawing: Drawing = { ...base, tool: "measure", text: "Annotation 50% unchanged", positivePercentColor: "#00ff00", negativePercentColor: "#ff0000", points: [{ time: trade.openTime, price: 100 }, { time: trade.openTime + 900, price: 100 + delta }] };
+    const { texts } = drawingPaint(drawing, { export: exporting });
+    const percentage = texts.find(t => delta ? /^[+-]?\d+\.\d+%$/.test(t.text) : t.text.includes("0.00%"));
+    assert.equal(percentage?.color, delta > 0 ? "#00ff00" : delta < 0 ? "#ff0000" : drawing.color);
+    assert.ok(texts.filter(t => t !== percentage).every(t => t.color === drawing.color));
+    assert.ok(texts.every(t => t.width === undefined), "never squeeze glyphs with fillText maxWidth");
+  }
+});
+
+test("notes wrap without moving anchors, resize locally, and share live/export geometry", () => {
+  const trade = demoTrades[0], base = initialDemoDocument(trade).drawings[0];
+  const drawing: Drawing = { ...base, tool: "text", text: "A long note wraps over several readable lines\nExplicit next line", noteWidth: 160, points: [{ time: trade.openTime, price: trade.entry }, { time: trade.openTime + 1200, price: trade.entry + 2 }] };
+  const original = structuredClone(drawing);
+  const live = drawingPaint(drawing), capture = drawingPaint(drawing, { export: true });
+  assert.deepEqual(live.boxes, capture.boxes); assert.deepEqual(live.texts, capture.texts);
+  assert.ok(live.texts.length > 2); assert.equal(live.boxes[0].w, 160);
+  assert.equal(live.hits.filter(h => h.resizeNote).length, 1);
+  assert.equal(capture.hits.filter(h => h.resizeNote).length, 0);
+  assert.equal(drawingPaint({ ...drawing, locked: true }).hits.filter(h => h.resizeNote).length, 0);
+  assert.ok(drawingPaint({ ...drawing, noteWidth: 300 }).boxes[0].h < live.boxes[0].h);
+  assert.deepEqual(drawing, original);
+  assert.equal(drawingPaint({ ...drawing, text: "" }, { export: true }).texts.length, 0);
+  assert.equal(drawingPaint({ ...drawing, text: "" }).texts[0].text, "Add a note…");
+  const parsed = workstationDocumentSchema.parse({ ...emptyDocument(), drawings: [drawing] });
+  assert.equal(parsed.drawings[0].noteWidth, 160);
+  for (const invalid of [{ noteWidth: 79 }, { noteWidth: 801 }, { positivePercentColor: "red" }, { negativePercentColor: "#12345" }]) assert.throws(() => workstationDocumentSchema.parse({ ...emptyDocument(), drawings: [{ ...drawing, ...invalid }] }));
+  assert.equal(drawingStyle("text", { ...drawing, noteWidth: NaN }).noteWidth, 240);
+  assert.equal(drawingStyle("measure", { ...drawing, positivePercentColor: "bad" }).positivePercentColor, "#22c55e");
 });
 
 test("whole measurements preserve logical spacing across gaps, reversed anchors, limits and splits", () => {
@@ -185,7 +219,7 @@ test("new drawing defaults validate flags without copying unrelated tool setting
   assert.equal(drawingStyle("exit").color, "#ef4444");
   const style = { color: "#123456", width: 2, dashed: false, showPrice: false, extendLeft: true, extendRight: true };
   assert.deepEqual(drawingStyle("entry", style), { color: style.color, width: 2, dashed: false, showPrice: false });
-  assert.deepEqual(drawingStyle("measure", style), { color: style.color, width: 2, dashed: false, extendLeft: true, extendRight: true, showValues: true, showPercent: true, showInterval: true, showBars: true });
+  assert.deepEqual(drawingStyle("measure", style), { color: style.color, width: 2, dashed: false, positivePercentColor: "#22c55e", negativePercentColor: "#ef4444", extendLeft: true, extendRight: true, showValues: true, showPercent: true, showInterval: true, showBars: true });
   assert.equal(drawingStyle("entry", { ...style, showPrice: "false" }).showPrice, true);
   assert.equal(drawingStyle("measure", { ...style, extendLeft: "true" }).extendLeft, false);
 });
@@ -227,7 +261,7 @@ test("measurement notes wrap above metrics and stay inside the plot in live char
   for (const light of [false, true]) for (const exporting of [false, true]) {
     const { texts, boxes, hits } = drawingPaint(drawing, { light, export: exporting });
     assert.equal(texts[0].text, drawing.text);
-    assert.match(texts[1].text, /^\+2\.00 .*15m.*bars$/);
+    assert.match(texts.slice(1).map(t => t.text).join(""), /^\+2\.00 .*15m.*bars$/);
     assert.ok(texts[0].y < texts[1].y);
     const box = boxes[0];
     assert.equal(box.h, 40);
@@ -239,11 +273,11 @@ test("measurement notes wrap above metrics and stay inside the plot in live char
       });
       const bounds = long.boxes[0];
       assert.ok(bounds.x >= 3 && bounds.x + bounds.w <= 177);
-      assert.ok(bounds.y >= (exporting ? 3 : 24) && bounds.y + bounds.h <= 170);
+      assert.ok(bounds.y >= 24 && bounds.y + bounds.h <= 170);
       assert.ok(long.texts.length > 2);
-      assert.ok(long.texts.at(-2)!.text.endsWith("…"));
+      assert.ok(long.texts.some(t => t.text.endsWith("…")));
       assert.match(long.texts.at(-1)!.text, /bars$/);
-      for (const row of long.texts.slice(0, -1)) assert.ok(Array.from(row.text).length * 6 <= row.width);
+      for (const row of long.texts) { assert.equal(row.width, undefined); assert.ok(row.x + Array.from(row.text).length * 6 <= bounds.x + bounds.w); }
     }
   }
   assert.deepEqual(wrapDrawingText("one two\n雪雪雪雪雪", 18, s => Array.from(s).length * 6), ["one", "two", "雪雪雪", "雪雪"]);

@@ -1,5 +1,5 @@
 "use client";
-import { executionColors, benchmarkColor } from "@/lib/workstation/comparison";
+import { executionColors, benchmarkColor, benchmarkTransparency, benchmarkPaneRatio } from "@/lib/workstation/comparison";
 import { assignSectionEvidence, attachEvidence, earlierTimestampBasis, evidenceSource, removeEvidence, sectionEvidenceIds } from "@/lib/workstation/evidence";
 import { ImageAttachment } from "./image-attachment";
 import { EvidenceViewer, EvidenceViewerContext, EvidenceTradeContext, EvidenceThumbnail, EvidenceDownload } from "./evidence-preview";
@@ -28,6 +28,7 @@ import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { restoreChartDisplay, restoreChartPanels, restoreMovingAveragePeriods } from "@/lib/workstation/chart-preferences";
 import { MovingAverageSettings } from "./moving-average-settings";
 import { drawingStyle, drawingStyleFor, restoreDrawingStyles } from "@/lib/workstation/drawing-style";
+import { DrawingTextControls } from "./drawing-text-controls";
 import { hideExistingDrawings, hiddenDrawingIdsFor, type TemporaryDrawingVisibility } from "@/lib/workstation/drawing-visibility";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
 import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
@@ -196,6 +197,7 @@ function DrawingStyleSettings({ initialTool, styles, onChange }: {
     {selectedTool === "measure" && measurementLabels.map(([flag, label]) => <label key={flag}>
       <span>{label}</span><input type="checkbox" checked={style[flag] !== false} onChange={event => onChange(selectedTool, { ...style, [flag]: event.target.checked })} />
     </label>)}
+    <DrawingTextControls tool={selectedTool} value={style} defaults onChange={patch => onChange(selectedTool, { ...style, ...patch })} />
     {(selectedTool === "entry" || selectedTool === "exit") && <label>
       <span>Show price</span>
       <input type="checkbox" checked={style.showPrice !== false} onChange={event => onChange(selectedTool, { ...style, showPrice: event.target.checked })} />
@@ -486,7 +488,7 @@ export function TradesWorkstation({
   useEffect(() => {
     if (viewingEvidence && !documentState?.evidence.some(e => e.id === viewingEvidence.id)) setViewingEvidence(null);
   }, [viewingEvidence, documentState?.evidence]);
-  useEffect(() => { setFocusJournal(false); }, [preferences.focusMode]);
+  useEffect(() => { if (!preferences.focusMode) setFocusJournal(false); }, [preferences.focusMode]);
   useEffect(() => {
     const list = drawingList;
     if (!list || !selectedDrawing || fullscreenChart) return;
@@ -760,16 +762,23 @@ export function TradesWorkstation({
     return `${label}${binding ? ` (${shortcutLabel(binding)})` : ""}`;
   };
   const runCommand = (id: string, chartId = activeChart) => {
+    const journalPanel = dock.current?.getPanel("journal");
+    const journalVisible = fullscreenChart ? fullscreenJournal : isSmall ? mobileTab === "Journal" : preferences.focusMode ? focusJournal : !!journalPanel?.api.isVisible && !!journalPanel.group.api.isVisible;
     const command = commands.find(c => c.id === id);
     if (command?.tool) {
       handles.current.forEach(handle => handle.cancel());
       setTool(command.tool);
       handles.current.get(chartId)?.focus();
     } else if (id === "chart.fullscreen") {
+      if (fullscreenChart !== chartId) {
+        setFullscreenJournal(journalVisible);
+        if (!fullscreenChart && journalVisible) setFullscreenWidth(fullscreenJournalWidth(journalSlot?.getBoundingClientRect().width || 322, window.innerWidth));
+      }
       setActiveChart(chartId);
       setFullscreenChart(current => current === chartId ? null : chartId);
       handles.current.get(chartId)?.focus();
     } else if (id === "workspace.focus") {
+      if (!preferences.focusMode) setFocusJournal(journalVisible);
       setFullscreenChart(null);
       changePreferences({ focusMode: !preferences.focusMode });
       handles.current.get(chartId)?.focus();
@@ -1488,7 +1497,7 @@ export function TradesWorkstation({
               }
               onDrawing={saveDrawing}
               onSelect={selectChartDrawing}
-              onEditDrawing={id => { setSelectedDrawing(id); requestAnimationFrame(() => root.current?.querySelector<HTMLInputElement>('[aria-label="Annotation text"]')?.focus()); }}
+              onEditDrawing={id => { setSelectedDrawing(id); requestAnimationFrame(() => root.current?.querySelector<HTMLTextAreaElement>('[aria-label="Annotation text"]')?.focus()); }}
               onExecution={focusExecution}
               onToolDone={() => setTool("cursor")}
               register={register}
@@ -1505,10 +1514,11 @@ export function TradesWorkstation({
         <div className="ws-drawing-properties">
           <span>{tools.find((t) => t.id === chosenDrawing.tool)?.label}</span>
           <DrawingCoordinates drawing={splitAdjustedDrawing(chosenDrawing, chartAdjustments[activeChart])} onChange={drawing => saveDrawing(splitAdjustedDrawing(drawing, chartAdjustments[activeChart], true))} />
-          <input
+          <textarea
             key={chosenDrawing.id}
             autoFocus={chosenDrawing.tool === "text"}
             aria-label="Annotation text"
+            rows={1}
             value={chosenDrawing.text}
             placeholder="Add a note or label…"
             maxLength={500}
@@ -1544,6 +1554,7 @@ export function TradesWorkstation({
             <input type="checkbox" checked={chosenDrawing[flag] !== false} disabled={chosenDrawing.locked || trade.stale}
               onChange={event => saveDrawing({ ...chosenDrawing, [flag]: event.target.checked })} />{label}
           </label>)}
+          <DrawingTextControls tool={chosenDrawing.tool} value={chosenDrawing} disabled={chosenDrawing.locked || trade.stale} onChange={patch => saveDrawing({ ...chosenDrawing, ...patch })} />
           {(chosenDrawing.tool === "entry" || chosenDrawing.tool === "exit") && (
             <label className="ws-drawing-label-toggle">
               <input type="checkbox" checked={chosenDrawing.showPrice !== false} disabled={chosenDrawing.locked}
@@ -2672,6 +2683,9 @@ export function TradesWorkstation({
             <div className="ws-marker-colors">
               <label><span>Index comparison colour</span><input type="color" aria-label="Index comparison colour" value={benchmarkColor(preferences.theme === "light", preferences.benchmarkColor)} onChange={e => changePreferences({ benchmarkColor: e.target.value })} /></label>
               <button onClick={() => changePreferences({ benchmarkColor: undefined })}>Reset comparison colour</button>
+              <label><span>Index transparency · {benchmarkTransparency(preferences.benchmarkTransparency)}%</span><input type="range" aria-label="Index transparency" min={0} max={100} step={1} value={benchmarkTransparency(preferences.benchmarkTransparency)} onChange={e => changePreferences({ benchmarkTransparency: Number(e.target.value) })} /></label>
+              <label><span>Index display · {activeChart}</span><select aria-label="Index display mode" value={currentPanel.benchmarkMode ?? "overlay"} onChange={e => changePreferences({ panels: preferences.panels.map(p => p.id === activeChart ? { ...p, benchmarkMode: e.target.value as "overlay" | "pane" } : p) })}><option value="overlay">Overlay</option><option value="pane">Separate lower pane</option></select></label>
+              {currentPanel.benchmarkMode === "pane" && <label><span>Index pane height · {Math.round(benchmarkPaneRatio(currentPanel.benchmarkPaneRatio) * 100)}%</span><input type="range" aria-label="Index pane height" min={15} max={50} step={1} value={benchmarkPaneRatio(currentPanel.benchmarkPaneRatio) * 100} onChange={e => changePreferences({ panels: preferences.panels.map(p => p.id === activeChart ? { ...p, benchmarkPaneRatio: Number(e.target.value) / 100 } : p) })} /></label>}
             </div>
             <label>
               <span>Volume</span>

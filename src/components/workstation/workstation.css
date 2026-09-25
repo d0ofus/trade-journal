@@ -995,7 +995,7 @@
   color: var(--ws-muted);
   padding: 0 5px;
 }
-.ws-drawing-properties input {
+.ws-drawing-properties input, .ws-drawing-properties textarea {
   padding: 4px;
   font-size: 10px;
   flex: 1;

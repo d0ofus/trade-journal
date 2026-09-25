@@ -91,12 +91,16 @@ export type Drawing = {
   showPercent?: boolean;
   showInterval?: boolean;
   showBars?: boolean;
+  /** Logical CSS-pixel note width; height grows with wrapped text. */
+  noteWidth?: number;
+  positivePercentColor?: string;
+  negativePercentColor?: string;
   locked: boolean;
   hidden: boolean;
   panel: string | null;
   createdAt: number;
 };
-export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel" | "extendLeft" | "extendRight" | "showPrice" | "showValues" | "showPercent" | "showInterval" | "showBars">;
+export type DrawingStyle = Pick<Drawing, "color" | "width" | "dashed" | "showDefaultLabel" | "extendLeft" | "extendRight" | "showPrice" | "showValues" | "showPercent" | "showInterval" | "showBars" | "noteWidth" | "positivePercentColor" | "negativePercentColor">;
 export type DrawingStyles = Partial<Record<Drawing["tool"], DrawingStyle>>;
 export type Review = {
   notion?: import("./notion-template").NotionReview;
@@ -142,11 +146,12 @@ export type TradeDocument = {
   legacy?: unknown;
 };
 export type ChartSessionPreference = "auto" | "regular" | "extended";
-export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; lastBenchmark?: "SPY" | "QQQ"; beforeEntry?: boolean };
+export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; lastBenchmark?: "SPY" | "QQQ"; benchmarkMode?: "overlay" | "pane"; benchmarkPaneRatio?: number; beforeEntry?: boolean };
 export type WorkspacePreferences = {
   volumeStyle?: import("./volume-style").VolumeAppearance;
   capturePinNotes?: boolean;
   benchmarkColor?: string;
+  benchmarkTransparency?: number;
   executionColors?: { buy: string; sell: string };
   /** Legacy workspace setting, read only when migrating panels without a session. */
   chartSession?: ChartSessionPreference;
