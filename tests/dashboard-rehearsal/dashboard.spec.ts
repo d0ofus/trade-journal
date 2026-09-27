@@ -28,6 +28,7 @@ test("YTD cards, zero chart baselines, account scope, heatmap and drilldowns rec
   await page.waitForTimeout(1500); // Let Recharts finish its initial line animation before visual capture.
   await page.screenshot({ path: "test-results/dashboard-rehearsal/dashboard-desktop.png" });
   await gross.screenshot({ path: "test-results/dashboard-rehearsal/gross-ytd.png" });
+  await page.getByRole("tab", { name: "Entry timing" }).click();
   await page.getByRole("combobox", { name: "Entry heatmap metric" }).selectOption("count");
   const cell = page.locator('a[href*="entryWeekday="]').first();
   const count = Number((await cell.getAttribute("title"))!.match(/^\d+/)![0]);
@@ -59,6 +60,7 @@ test("empty cohorts and mobile dashboard remain usable", async ({ page }) => {
   await page.goto("/dashboard?preset=custom&from=2030-01-01&to=2030-01-02");
   await expect(page.getByTestId("dashboard-card-total-trades")).toContainText("0");
   await expect(page.getByTestId("dashboard-card-expectancy")).toContainText("Unavailable");
+  await page.getByRole("tab", { name: "Entry timing" }).click();
   await expect(page.getByText("No known entry times in range.")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/dashboard-rehearsal/dashboard-mobile.png" });

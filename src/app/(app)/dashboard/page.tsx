@@ -1,16 +1,13 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { DashboardDetails } from "@/components/dashboard-details";
+import { DashboardDefinitions, DashboardBreakdowns } from "@/components/dashboard-details";
 import { DashboardCharts } from "@/components/dashboard-charts";
-import { PageHeader } from "@/components/ui/page-header";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { DashboardEntryHeatmap } from "@/components/dashboard-entry-heatmap";
+import { DashboardWorkspace, DashboardTabs, DashboardPanel, DashboardActiveCharts, DashboardPresetLink, DashboardTabInput } from "@/components/dashboard-workspace";
 import { formatCurrency, formatPercent } from "@/lib/utils";
 import { resolveDashboardRange } from "@/lib/server/dashboard-date-range";
 import { REPORTING_ACCOUNT, loadReportingAccounts, DashboardAccountingPending } from "@/lib/server/dashboard-report";
 import { getDashboardData } from "@/lib/server/queries";
-
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 function formatDuration(ms: number | null) {
@@ -56,70 +53,28 @@ export default async function DashboardPage(props: { searchParams: SearchParams 
   const accounts = await loadReportingAccounts();
   const range = resolveDashboardRange(searchParams);
   const rangeKey = `${range.preset}:${range.from ?? "none"}:${range.to ?? "none"}`;
-
-  return (
-    <div className="space-y-6">
-      <PageHeader
-        eyebrow="Performance Overview"
-        title="Completed-trade performance"
-        description={`${REPORTING_ACCOUNT} · ${range.label} · closing dates in America/New_York`}
-        actions={
-          <div className="rounded-2xl border border-white/12 bg-white/10 px-4 py-3 text-right shadow-inner shadow-white/10 backdrop-blur">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/65">Range</p>
-            <p className="mt-1 text-lg font-semibold text-white">{range.label}</p>
-          </div>
-        }
-      />
-
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b border-slate-200/80 pb-4">
-          <CardTitle className="text-base">Date Range</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4 pt-6">
-          <div className="flex flex-wrap gap-2">
-            <Link href="/dashboard?preset=all" className={buttonVariants({ size: "sm", variant: range.preset === "all" ? "default" : "outline" })}>
-              All Time
-            </Link>
-            <Link href="/dashboard?preset=ytd" className={buttonVariants({ size: "sm", variant: range.preset === "ytd" ? "default" : "outline" })}>
-              YTD
-            </Link>
-            <Link href="/dashboard?preset=3m" className={buttonVariants({ size: "sm", variant: range.preset === "3m" ? "default" : "outline" })}>
-              Past 3 Months
-            </Link>
-            <Link href="/dashboard?preset=6m" className={buttonVariants({ size: "sm", variant: range.preset === "6m" ? "default" : "outline" })}>
-              Past 6 Months
-            </Link>
-          </div>
-          <form key={rangeKey} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]" method="get">
-            <input name="preset" type="hidden" value="custom" />
-            <label className="space-y-1.5 text-sm">Account<select name="account" aria-label="Reporting account" className="block w-full rounded border p-2" defaultValue={REPORTING_ACCOUNT}>{accounts.map(account => <option key={account.code} value={account.code} disabled={!account.inScope}>{account.code}{account.inScope ? "" : " (outside reporting scope)"}</option>)}</select></label>
-            <label className="space-y-1.5">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">From</p>
-              <Input name="from" type="date" defaultValue={range.from ?? ""} />
-            </label>
-            <label className="space-y-1.5">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">To</p>
-              <Input name="to" type="date" defaultValue={range.to ?? ""} />
-            </label>
-            <Button size="sm" type="submit" className="md:self-end">
-              Apply
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      <Suspense key={rangeKey} fallback={<DashboardContentFallback />}>
-        <DashboardContent from={range.from} to={range.to} />
-      </Suspense>
+  const tab = searchParams.tab === "timing" || searchParams.tab === "breakdowns" ? searchParams.tab : "performance";
+  return <DashboardWorkspace initialTab={tab}>
+    <header className="dashboard-heading"><div><span className="dashboard-eyebrow">Performance overview</span><h1>Completed-trade performance</h1><p>{REPORTING_ACCOUNT} · Closing dates in America/New_York</p></div><span className="dashboard-period">{range.label}</span></header>
+    <div className="dashboard-toolbar">
+      <nav className="dashboard-presets" aria-label="Reporting date presets">{[["all", "All Time"], ["ytd", "YTD"], ["3m", "Past 3 Months"], ["6m", "Past 6 Months"]].map(([preset, label]) => <DashboardPresetLink key={preset} preset={preset} active={range.preset === preset}>{label}</DashboardPresetLink>)}</nav>
+      <form key={rangeKey} className="dashboard-filters" method="get">
+        <input name="preset" type="hidden" value="custom" /><DashboardTabInput />
+        <label>Account<select name="account" aria-label="Reporting account" defaultValue={REPORTING_ACCOUNT}>{accounts.map(account => <option key={account.code} value={account.code} disabled={!account.inScope}>{account.code}{account.inScope ? "" : " (outside reporting scope)"}</option>)}</select></label>
+        <label>From<input name="from" type="date" defaultValue={range.from ?? ""} /></label>
+        <label>To<input name="to" type="date" defaultValue={range.to ?? ""} /></label>
+        <button className="dashboard-apply" type="submit">Apply</button>
+      </form>
     </div>
-  );
+    <Suspense key={rangeKey} fallback={<DashboardContentFallback />}><DashboardContent from={range.from} to={range.to} /></Suspense>
+  </DashboardWorkspace>;
 }
 
 async function DashboardContent({ from, to }: { from?: string; to?: string }) {
   let data;
   try { data = await getDashboardData({ from, to }); }
   catch (error) {
-    if (error instanceof DashboardAccountingPending) return <p role="status" className="rounded-xl border bg-white p-5 text-slate-700">{error.message}</p>;
+    if (error instanceof DashboardAccountingPending) return <p role="status" className="dashboard-empty">{error.message}</p>;
     throw error;
   }
   const money = (n: number | null) => n == null ? "Unavailable" : formatCurrency(n);
@@ -163,44 +118,35 @@ async function DashboardContent({ from, to }: { from?: string; to?: string }) {
     { id: "best-day", label: "Best closing day", value: data.cards.bestDay ? `${data.cards.bestDay.label} · ${money(data.cards.bestDay.pnl)}` : "Unavailable" },
     { id: "worst-day", label: "Worst closing day", value: data.cards.worstDay ? `${data.cards.worstDay.label} · ${money(data.cards.worstDay.pnl)}` : "Unavailable" },
   ];
-
-  return (
-    <>
-      <div className="rounded-xl border bg-white p-4 text-sm text-slate-600">
-        <p>{data.account} · {data.cohort.from ?? "No closing dates"} through {data.cohort.to} · America/New_York · {data.cohort.count} completed trades · {data.cards.winCount} wins / {data.cards.lossCount} losses / {data.cards.flatCount} breakeven. <Link className="underline" href={drilldown}>Review matching trades</Link></p>
-        <p>Last successful account import: {data.freshness.lastSuccess ?? "Unavailable"}. Latest import attempt: {data.freshness.lastAttempt ?? "Unavailable"} ({data.freshness.lastStatus ?? "unknown"}). Latest completed close: {data.freshness.latestClose ?? "Unavailable"}.</p>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {cards.map((card) => (
-          <Card key={card.label} className="overflow-hidden" data-testid={`dashboard-card-${card.id}`}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{card.label}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tracking-tight text-slate-950">{card.value}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <DashboardCharts {...data.charts} drilldown={drilldown} />
-      <DashboardDetails data={data} />
-    </>
-  );
+  const overview = ["net-range", "gross-range", "total-trades", "win-rate", "profit-factor", "max-drawdown"];
+  const groups = {
+    outcomes: ["largest-gain-loss", "avg-win-loss", "expectancy", "payoff"],
+    costs: ["commissions", "cost-drag", "concentration"],
+    consistency: ["realized-day", "realized-week", "realized-month", "streaks", "consistency", "recovery", "best-day", "worst-day"],
+    activity: ["avg-winning-hold", "avg-losing-hold", "avg-daily-volume"],
+  };
+  const metrics = (ids: string[], primary = false) => <div className={`dashboard-metrics${primary ? " dashboard-overview" : ""}`}>{ids.map(id => {
+    const card = cards.find(card => card.id === id)!;
+    const value = id === "net-range" ? data.cards.realized : id === "gross-range" ? data.cards.gross : null;
+    return <article key={id} className="dashboard-metric" data-testid={`dashboard-card-${id}`}><h3>{card.label}</h3><p data-sign={value == null || value === 0 ? undefined : value > 0 ? "positive" : "negative"}>{card.value}</p></article>;
+  })}</div>;
+  return <>
+    <div className="dashboard-cohort">
+      <p>{data.account} · {data.cohort.from ?? "No closing dates"} through {data.cohort.to} · America/New_York · {data.cohort.count} completed trades · {data.cards.winCount} wins / {data.cards.lossCount} losses / {data.cards.flatCount} breakeven.</p>
+      <Link href={drilldown}>Review matching trades ↗</Link>
+      <p className="dashboard-freshness">Last successful account import: {data.freshness.lastSuccess ?? "Unavailable"}. Latest import attempt: {data.freshness.lastAttempt ?? "Unavailable"} ({data.freshness.lastStatus ?? "unknown"}). Latest completed close: {data.freshness.latestClose ?? "Unavailable"}.</p>
+    </div>
+    {metrics(overview, true)}
+    <DashboardTabs />
+    <DashboardPanel tab="performance">
+      <DashboardActiveCharts><DashboardCharts {...data.charts} /></DashboardActiveCharts>
+      {(["outcomes", "costs", "consistency"] as const).map(group => <section key={group}><h2 className="dashboard-section-title">{group}</h2>{metrics(groups[group])}</section>)}
+    </DashboardPanel>
+    <DashboardPanel tab="timing"><DashboardEntryHeatmap rows={data.charts.entryHeatmap} drilldown={drilldown} /></DashboardPanel>
+    <DashboardPanel tab="breakdowns">{metrics(groups.activity)}<DashboardBreakdowns data={data} /></DashboardPanel>
+    <DashboardDefinitions data={data} />
+  </>;
 }
-
 function DashboardContentFallback() {
-  return (
-    <>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 6 }, (_, index) => (
-          <div key={index} className="h-32 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
-        ))}
-      </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="h-72 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
-        <div className="h-72 animate-pulse rounded-[24px] border border-slate-200/80 bg-white/85" />
-      </div>
-    </>
-  );
+  return <div className="dashboard-loading" role="status" aria-label="Loading dashboard"><div className="dashboard-metrics dashboard-overview">{Array.from({ length: 6 }, (_, i) => <div key={i} className="dashboard-metric" />)}</div><div className="dashboard-empty">Loading completed-trade performance…</div></div>;
 }

@@ -1,10 +1,10 @@
 import type { DashboardAggregation } from "@/lib/stats/dashboard-aggregation";
 import { formatCurrency } from "@/lib/utils";
 
-export function DashboardDetails({ data }: { data: DashboardAggregation }) {
-  return <div className="space-y-4">
-    <details className="rounded-2xl border bg-white p-5"><summary className="cursor-pointer font-semibold">Metric definitions and data coverage</summary>
-      <div className="mt-3 space-y-2 text-sm text-slate-600">
+export function DashboardDefinitions({ data }: { data: DashboardAggregation }) {
+  return <>
+    <details className="dashboard-panel dashboard-definitions"><summary className="cursor-pointer font-semibold">Metric definitions and data coverage</summary>
+      <div className="dashboard-definition-content">
         <p>All performance figures use the same completed cycles, selected by their final closing date in America/New_York. The complete entry and exit economics are included even when an entry predates the range. Open cycles, partial exits in unfinished cycles and their charges are excluded.</p>
         <p>Gross P&L is price profit multiplied by contract size. Net P&L subtracts allocated commissions, fees and transaction taxes. Archived broker multipliers take precedence; identified legacy options use the approved 100× assumption. Historical taxes are recovered only where archived source evidence can be matched unambiguously.</p>
         <p>Win rate = profitable trades ÷ all completed trades (breakeven included). Profit factor = positive net P&L ÷ absolute negative net P&L; unavailable without losses. Expectancy = total net P&L ÷ trade count. Payoff = average win ÷ absolute average loss; unavailable without both outcomes.</p>
@@ -15,10 +15,13 @@ export function DashboardDetails({ data }: { data: DashboardAggregation }) {
         <p>Sharpe, Sortino and Calmar: unavailable. Real-account equity and cash-flow-adjusted return history are absent. Dollar-P&L statistics cannot substitute for portfolio return ratios. <a className="underline" href="https://web.stanford.edu/~wfsharpe/art/sr/sr.htm">Sharpe</a> · <a className="underline" href="https://www.ibkrguides.com/reportingreference/reportguide/riskmeasures.htm">IBKR risk measures</a> · <a className="underline" href="https://app.tradervue.com/help/reports_dt">Entry-time analysis</a>.</p>
       </div>
     </details>
-    <div className="grid gap-4 lg:grid-cols-2">{Object.entries(data.breakdowns).map(([name, rows]) => <section key={name} className="overflow-auto rounded-2xl border bg-white p-5">
+  </>;
+}
+
+export function DashboardBreakdowns({ data }: { data: DashboardAggregation }) {
+  return <div className="dashboard-breakdowns">{Object.entries(data.breakdowns).map(([name, rows]) => <section key={name} className="dashboard-panel">
       <h2 className="mb-3 font-semibold capitalize">{name === "holding" ? "Holding duration" : name} breakdown</h2>
-      <table className="w-full text-right text-sm"><thead><tr><th className="text-left">Group</th><th>Trades</th><th>Net P&L</th><th>Expectancy</th><th>Win rate</th></tr></thead><tbody>{rows.map(row => <tr key={row.label} className="border-t"><th className="py-2 text-left font-normal">{row.label}</th><td>{row.count}</td><td>{formatCurrency(row.pnl)}</td><td>{row.expectancy == null ? "—" : formatCurrency(row.expectancy)}</td><td>{row.winRate?.toFixed(1)}%</td></tr>)}</tbody></table>
-      {!rows.length && <p className="py-3 text-sm text-slate-500">No completed trades in range.</p>}
-    </section>)}</div>
-  </div>;
+      <div className="dashboard-table-scroll"><table><thead><tr><th className="text-left">Group</th><th>Trades</th><th>Net P&L</th><th>Expectancy</th><th>Win rate</th></tr></thead><tbody>{rows.map(row => <tr key={row.label} className="border-t"><th className="py-2 text-left font-normal">{row.label}</th><td>{row.count}</td><td>{formatCurrency(row.pnl)}</td><td>{row.expectancy == null ? "—" : formatCurrency(row.expectancy)}</td><td>{row.winRate?.toFixed(1)}%</td></tr>)}</tbody></table></div>
+      {!rows.length && <p className="dashboard-muted">No completed trades in range.</p>}
+    </section>)}</div>;
 }
