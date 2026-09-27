@@ -1,6 +1,8 @@
 "use client";
 
 import type { ReactNode } from "react";
+import type { DashboardAggregation } from "@/lib/stats/dashboard-aggregation";
+import { DashboardEntryHeatmap } from "@/components/dashboard-entry-heatmap";
 import {
   Bar,
   BarChart,
@@ -8,8 +10,6 @@ import {
   Line,
   LineChart,
   ResponsiveContainer,
-  Scatter,
-  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -17,15 +17,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDashboardAxisDate } from "@/lib/stats/dashboard-chart-format";
 
-type DashboardChartsProps = {
-  dailyPnl: { date: string; pnl: number }[];
-  grossDailyPnl: { date: string; pnl: number }[];
-  grossCumulativePnl: { date: string; pnl: number }[];
-  dailyTradeCounts: { date: string; trades: number }[];
-  equityCurve: { at: string; equity: number }[];
-  histogram: { range: string; count: number }[];
-  scatter: { time: string; symbol: string; price: number; side: string }[];
-};
+type DashboardChartsProps = DashboardAggregation["charts"] & { drilldown: string };
 
 type ChartSummary = {
   firstValue?: number;
@@ -110,13 +102,15 @@ export function DashboardCharts({
   dailyTradeCounts,
   equityCurve,
   histogram,
-  scatter,
+  entryHeatmap, drawdown, rolling, drilldown,
 }: DashboardChartsProps) {
   const grossCumulativeSummary = summarizeChart(grossCumulativePnl, (row) => row.pnl);
   const netCumulativeSummary = summarizeChart(equityCurve, (row) => row.equity);
 
   return (
     <div className="space-y-4">
+      <DashboardEntryHeatmap rows={entryHeatmap} drilldown={drilldown} />
+      <div className="grid gap-4 lg:grid-cols-2">{[{ title: "Dollar drawdown", rows: drawdown, value: "drawdown" }, { title: "Rolling 20-trade net P&L", rows: rolling, value: "pnl" }].map(chart => <ChartFrame key={chart.title} title={chart.title} empty={!chart.rows.length}><ChartContainer><LineChart data={chart.rows}><CartesianGrid {...chartGrid} /><XAxis dataKey="at" tickFormatter={formatDashboardAxisDate} tick={axisStyle} /><YAxis tick={axisStyle} /><Tooltip formatter={formatTwoDecimals} /><Line type="linear" dataKey={chart.value} stroke="#475569" dot={false} /></LineChart></ChartContainer></ChartFrame>)}</div>
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartFrame title="Gross Daily P&L" empty={grossDailyPnl.length === 0}>
               <ChartContainer>
@@ -142,7 +136,7 @@ export function DashboardCharts({
                   <XAxis dataKey="date" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip formatter={formatTwoDecimals} />
-                  <Line type="monotone" dataKey="pnl" stroke="#0891b2" strokeWidth={3} dot={false} />
+                  <Line type="linear" dataKey="pnl" stroke="#0891b2" strokeWidth={3} dot={false} />
                 </LineChart>
               </ChartContainer>
         </ChartFrame>
@@ -175,7 +169,7 @@ export function DashboardCharts({
                   <XAxis dataKey="at" tickFormatter={formatDashboardAxisDate} tick={axisStyle} axisLine={false} tickLine={false} />
                   <YAxis tick={axisStyle} axisLine={false} tickLine={false} />
                   <Tooltip formatter={formatTwoDecimals} />
-                  <Line type="monotone" dataKey="equity" stroke="#0f172a" strokeWidth={3} dot={false} />
+                  <Line type="linear" dataKey="equity" stroke="#0f172a" strokeWidth={3} dot={false} />
                 </LineChart>
               </ChartContainer>
         </ChartFrame>
@@ -192,19 +186,7 @@ export function DashboardCharts({
               </ChartContainer>
         </ChartFrame>
 
-        <ChartFrame title="Execution Prices" empty={scatter.length === 0}>
-              <ChartContainer>
-                <ScatterChart>
-                  <CartesianGrid stroke={chartGrid.stroke} />
-                  <XAxis dataKey="time" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <YAxis dataKey="price" tick={axisStyle} axisLine={false} tickLine={false} />
-                  <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={formatTwoDecimals} />
-                  <Scatter data={scatter} fill="#16a34a" />
-                </ScatterChart>
-              </ChartContainer>
-        </ChartFrame>
-
-        <ChartFrame title="Return Distribution" empty={histogram.length === 0}>
+        <ChartFrame title="Net P&L per trade distribution" empty={histogram.length === 0}>
               <ChartContainer>
                 <BarChart data={histogram}>
                   <CartesianGrid stroke={chartGrid.stroke} vertical={chartGrid.vertical} />

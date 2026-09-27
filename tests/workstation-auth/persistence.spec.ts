@@ -1,6 +1,10 @@
 import { expect, test, BrowserContext, Page } from "@playwright/test";
 import { prisma } from "../../src/lib/prisma";
 import { candleFixture } from "./candle-fixture";
+import { resetSyntheticLayouts } from "./reset-layout";
+test.beforeEach(resetSyntheticLayouts);
+import { mockEvidenceTransport } from "./mock-evidence";
+test.beforeEach(async ({ context }) => mockEvidenceTransport(context));
 
 // Dedicated test-server login. Never load the application's .env.local in this suite.
 const username = "phase2-reviewer", password = "phase2-local-test-only";
@@ -72,7 +76,7 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   await expect(page.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveText(value);
   const chart = page.getByRole("region", { name: /chart$/, exact: false }).first();
   await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/, { timeout: 30000 });
-  await page.getByRole("button", { name: /Attach current chart/ }).click();
+  await page.getByRole("button", { name: /^Attach current chart \d+ saved$/ }).click();
   await page.getByRole("dialog", { name: "Attach current chart", exact: true }).getByRole("button", { name: "Exit Screen", exact: true }).click();
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).evidence.length).toBeGreaterThan(doc.evidence.length);
   const saved = await (await context.request.get(endpoint())).json();
@@ -80,7 +84,7 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   expect(saved.drawings).toContainEqual(entry);
   expect(saved.drawings).toContainEqual(exit);
   expect(saved.review.notion.sections.exit.evidenceIds).toContain(saved.evidence.at(-1).id);
-  expect(saved.evidence.at(-1).image).toMatch(/^data:image\/png;base64,/);
+  expect(saved.evidence.at(-1)).toMatchObject({ image: "", asset: { storage: "r2", mime: "image/png" } });
   await page.goto(`/journal?entryId=${saved.journalEntryId}`);
   await revealTakeaways(page);
   await expect(page.getByRole("textbox", { name: "Takeaways", exact: true })).toHaveText(value);

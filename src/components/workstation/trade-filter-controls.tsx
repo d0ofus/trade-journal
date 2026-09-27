@@ -12,6 +12,7 @@ export function WorkstationFilterControls({ applied, draft, onDraft, expanded, o
   const id = useId();
   const active = tradeFilterCount(applied);
   return <>
+    {applied.reportingTimezone === "America/New_York" && <p className="ws-applied-filters">Closing dates: America/New_York{applied.entrySlot != null ? ` · entry bucket ${Math.floor(Number(applied.entrySlot) / 2)}:${Number(applied.entrySlot) % 2 ? "30" : "00"}` : ""}{applied.entryWeekday != null ? ` · ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][Number(applied.entryWeekday)]}` : ""}</p>}
     <div className="ws-list-filter">
       <button type="button" className={`ws-filter-toggle ${active ? "active" : ""}`} title={expanded ? "Collapse filters" : "Expand filters"} aria-label={expanded ? "Collapse filters" : "Expand filters"} aria-expanded={expanded} aria-controls={id} onClick={() => onExpanded(!expanded)}><ListFilter size={16} />{active > 0 && <b aria-label={`${active} active filters`}>{active}</b>}</button>
       <select aria-label="Review view" value={view} onChange={event => onView(event.target.value)}><option>All trades</option><option>Unexported</option></select><span aria-label="Matching trade count">{count}</span>
@@ -21,7 +22,7 @@ export function WorkstationFilterControls({ applied, draft, onDraft, expanded, o
       <form data-testid="trade-filters" noValidate onSubmit={event => { event.preventDefault(); onApply(draft); }}>
         <fieldset disabled={pending}>
           <div className="ws-filter-fields">
-            <div className="ws-filter-section-title">Trade dates <span>UTC</span></div>
+            <div className="ws-filter-section-title">Trade dates <span>{applied.reportingTimezone === "America/New_York" ? "New York" : "UTC"}</span></div>
             {(["from", "to"] as const).map(key => <label key={key}><span>{key === "from" ? "From" : "To"}</span><input type="date" name={key} value={draft[key] ?? ""} onChange={event => onDraft({ ...draft, [key]: event.target.value })} /></label>)}
             <div className="ws-filter-ranges"><button type="button" aria-pressed={!applied.from && !applied.to} onClick={() => { const next = { ...draft, from: "", to: "" }; onDraft(next); onApply(next); }}>All time</button>{quickTradeRanges.map(range => { const dates = quickTradeRange(range); return <button type="button" key={range} aria-pressed={applied.from === dates.from && applied.to === dates.to} onClick={() => { const next = { ...draft, ...dates }; onDraft(next); onApply(next); }}>{range}</button>; })}</div>
             <div className="ws-filter-section-title">Refine trades</div>

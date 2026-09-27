@@ -9,7 +9,9 @@ type OpenPosition = {
   id: string;
   accountId: string;
   quantity: number;
-  avgCost: number;
+  avgCost: number | null;
+  asOf?: string | null;
+  evidence?: string;
   unrealizedPnl: number | null;
   account: {
     ibkrAccount: string;
@@ -94,6 +96,7 @@ export function OpenPositionsTable({
 
   return (
     <>
+      <p className="text-sm text-slate-600">Holdings are reconciled by broker contract and dated evidence. Missing symbols in a partial report are not assumed closed. Older holdings remain visible with their confirmation date; none contribute to dashboard performance.</p>
       <div className="flex flex-wrap gap-2" aria-label="Open position account filters">
         <Button
           type="button"
@@ -129,6 +132,7 @@ export function OpenPositionsTable({
             <TableHead>Avg Cost</TableHead>
             <TableHead>Unrealized PnL</TableHead>
             <TableHead>Note</TableHead>
+            <TableHead>As of / evidence</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -148,11 +152,12 @@ export function OpenPositionsTable({
                   <TableCell>{position.account.ibkrAccount}</TableCell>
                   <TableCell>{position.instrument.symbol}</TableCell>
                   <TableCell>{position.quantity}</TableCell>
-                  <TableCell>{position.avgCost.toFixed(2)}</TableCell>
+                  <TableCell>{position.avgCost?.toFixed(2) ?? "Unavailable"}</TableCell>
                   <TableCell className={(position.unrealizedPnl ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}>
-                    {formatCurrency(position.unrealizedPnl ?? 0)}
+                    {position.unrealizedPnl == null ? "Unavailable" : formatCurrency(position.unrealizedPnl)}
                   </TableCell>
                   <TableCell>{note?.thesis ?? "-"}</TableCell>
+                  <TableCell className="max-w-64 text-xs">{position.asOf ?? "Unknown date"}<br />{position.evidence}</TableCell>
                 </TableRow>
               );
             })

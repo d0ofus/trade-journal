@@ -14,6 +14,9 @@ export const executionImportSchema = z.object({
   price: z.number().nonnegative(),
   commission: z.number().nonnegative().optional(),
   fees: z.number().nonnegative().optional(),
+  transactionTax: z.number().nonnegative().optional(),
+  contractMultiplier: z.number().positive().optional(),
+  brokerContractId: z.string().optional(),
   currency: z.string().default("USD"),
   orderId: z.string().optional(),
   sourceExecutionId: z.string().optional(),
@@ -26,6 +29,7 @@ export const executionImportSchema = z.object({
 });
 
 export const positionImportSchema = z.object({
+  brokerContractId: z.string().optional(),
   account: z.string().min(1),
   symbol: z.string().min(1),
   exchange: z.string().optional(),

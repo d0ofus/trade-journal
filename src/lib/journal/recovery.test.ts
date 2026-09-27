@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { RecoveryStore } from "./recovery";
+import { RecoveryStore, clearSyntheticRecovery } from "./recovery";
 type Value = { text: string; images: string[] };
 const sample = (text = "draft"): Value => ({ text, images: ["data:image/png;base64,one", "data:image/png;base64,two"] });
 beforeEach(() => {
@@ -9,6 +9,18 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const scope = () => `test:${crypto.randomUUID()}`;
+
+it("synthetic cleanup preserves genuine recovery content and is repeatable", async () => {
+  const genuine = new RecoveryStore<Value>(`workstation:application:genuine-${crypto.randomUUID()}`, "one");
+  const demo = new RecoveryStore<Value>(`workstation:demo:${crypto.randomUUID()}`, "one");
+  const seeded = new RecoveryStore<Value>(`workstation:application:demo-account-workstation:${crypto.randomUUID()}`, "one");
+  await genuine.write(sample("genuine unsaved review"), 1);
+  await demo.write(sample("demo"), 1); await seeded.write(sample("seeded"), 1);
+  await clearSyntheticRecovery(); await clearSyntheticRecovery();
+  expect(await new RecoveryStore<Value>(genuine.scope, "one").load()).toEqual(sample("genuine unsaved review"));
+  expect(await new RecoveryStore<Value>(demo.scope, "one").load()).toBeNull();
+  expect(await new RecoveryStore<Value>(seeded.scope, "one").load()).toBeNull();
+});
 
 it("checkpoints text separately and rewrites images only when they change", async () => {
   const owner = new RecoveryStore<Value>(scope(), "one");

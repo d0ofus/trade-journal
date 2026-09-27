@@ -23,7 +23,7 @@ export function ReviewEditor(p: Props) {
   const legacyText = useMemo(() => typeof p.document.legacy === "string" ? plainText(p.document.legacy) : JSON.stringify(p.document.legacy, null, 2), [p.document.legacy]);
   const complete = [r.notion?.analysis.technicalPositive || r.setup, r.notion?.analysis.idealExecution || r.execution, r.takeaway].filter(v => richPlain(v ?? "")).length;
   const addTag = () => { if (!p.trade.stale && tag.trim() && !r.tags.includes(tag.trim())) change({ tags: [...r.tags, tag.trim()].slice(0, 30) }); setTag(""); };
-  const archived = [...new Map([...layout.archived, ...r.notion?.layout?.sections ?? [], ...r.notion?.layout?.archived ?? []]
+  const archived = [...new Map([...r.notion?.layout?.sections ?? [], ...r.notion?.layout?.archived ?? [], ...layout.archived]
     .filter(section => !layout.sections.some(active => active.key === section.key)).map(section => [section.key, section])).values()];
   return <div className="ws-journal-content">
     {p.replay !== null && <p className="ws-replay-notice" role="note">Replay: you are editing the saved review. Existing notes and evidence may contain hindsight.</p>}

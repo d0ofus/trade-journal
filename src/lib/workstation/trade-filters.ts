@@ -3,13 +3,14 @@ import { format, subDays, subMonths, subWeeks, subYears } from "date-fns";
 export type WorkstationTradeFilters = {
   from?: string; to?: string; symbol?: string; direction?: string; account?: string;
   tag?: string; strategy?: string; includeStale?: boolean;
+  reportingTimezone?: string; entryWeekday?: string; entrySlot?: string;
 };
 export type TradeFilterControls = {
   applied: WorkstationTradeFilters;
   apply(filters: WorkstationTradeFilters, selectedId: string): void;
   pending?: boolean;
 };
-export const tradeFilterKeys = ["from", "to", "symbol", "direction", "account", "tag", "strategy"] as const;
+export const tradeFilterKeys = ["from", "to", "symbol", "direction", "account", "tag", "strategy", "reportingTimezone", "entryWeekday", "entrySlot"] as const;
 export function normalizeWorkstationFilters(input: Record<string, unknown>): WorkstationTradeFilters {
   const result: WorkstationTradeFilters = {};
   for (const key of tradeFilterKeys) {
@@ -26,6 +27,9 @@ export function normalizeWorkstationFilters(input: Record<string, unknown>): Wor
   return result;
 }
 export function tradeFilterError(filters: WorkstationTradeFilters): string {
+  if (filters.reportingTimezone && filters.reportingTimezone !== "America/New_York") return "Unsupported reporting timezone.";
+  if (filters.entryWeekday && !/^[0-6]$/.test(filters.entryWeekday)) return "Invalid entry weekday.";
+  if (filters.entrySlot && (!/^\d{1,2}$/.test(filters.entrySlot) || Number(filters.entrySlot) > 47)) return "Invalid entry time bucket.";
   for (const [label, value] of [["From", filters.from], ["To", filters.to]]) {
     if (!value) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(`${value}T00:00:00Z`)) || new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) !== value) return `${label} must be a valid date.`;

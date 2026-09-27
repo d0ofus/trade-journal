@@ -75,6 +75,8 @@ test("four explicit SMA fields validate, persist, render all colours and keep at
   await page.getByRole("button", { name: "Focus chart-1", exact: true }).click();
   await expect(page.locator(".ws-fullscreen-credit")).toHaveCount(0);
   await page.keyboard.press("Escape");
+  // Fullscreen can retain the journal; Escape closes that nested surface first.
+  if (await page.locator(".ws-fullscreen-journal").count() === 0) await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Help & shortcuts", exact: true }).click();
   await expect(page.getByRole("dialog").getByRole("link", { name: "TradingView Lightweight Charts", exact: true })).toHaveAttribute("href", "https://www.tradingview.com/");
   await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();

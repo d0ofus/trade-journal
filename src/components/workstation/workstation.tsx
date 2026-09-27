@@ -1252,7 +1252,7 @@ export function TradesWorkstation({
     if (error) { changePreferences({ filtersExpanded: true }); return; }
     setFilterBusy(true);
     try {
-      if (!(await persistence.flush())) { setFilterError("Resolve the review save issue before applying filters. Your draft is preserved."); return; }
+      if (trade && !(await persistence.flush())) { setFilterError("Resolve the review save issue before applying filters. Your draft is preserved."); return; }
       await viewState.flush();
       if (clear) { setQuery(""); setFilter("All trades"); }
       setFilterDraft(next);

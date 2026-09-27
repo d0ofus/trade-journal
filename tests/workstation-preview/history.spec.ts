@@ -10,7 +10,7 @@ async function openPreview(page: Page) {
     apiRequests.push(route.request().url());
     return route.abort();
   });
-  await page.goto("/preview/trades");
+  await page.goto("/preview/trades?groupKey=demo-nvda");
   const chart = page.getByRole("region", {
     name: "NVDA 5m chart",
     exact: true,

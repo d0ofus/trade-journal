@@ -33,7 +33,7 @@ function execution(overrides: Partial<DashboardExecutionRow>): DashboardExecutio
 }
 
 describe("aggregateDashboardData", () => {
-  it("aggregates dashboard cards from sorted closed trades and carries the prior baseline", () => {
+  it("aggregates dashboard cards from sorted closed trades and starts the selected cohort at zero", () => {
     const result = aggregateDashboardData({
       rangeStart: at(2026, 0, 2, 0, 0),
       rangeEnd: at(2026, 0, 3, 23, 59),
@@ -101,7 +101,7 @@ describe("aggregateDashboardData", () => {
       avgLoss: -50,
       maxDrawdown: 50,
       commissions: 9,
-      avgDailyVolume: 7.5,
+      avgDailyVolume: 1.5,
     });
     expect(result.cards.winRate).toBeCloseTo(33.3333, 4);
     expect(result.cards.expectancy).toBeCloseTo(50, 8);
@@ -115,20 +115,21 @@ describe("aggregateDashboardData", () => {
       { date: "2026-01-03", pnl: 205 },
     ]);
     expect(result.charts.grossCumulativePnl).toEqual([
-      { date: "2026-01-02", pnl: 65 },
-      { date: "2026-01-03", pnl: 270 },
+      { date: "2026-01-02 opening", pnl: 0, opening: true },
+      { date: "2026-01-02", pnl: -45, opening: false },
+      { date: "2026-01-03", pnl: 160, opening: false },
     ]);
     expect(result.charts.dailyTradeCounts).toEqual([
       { date: "2026-01-02", trades: 1 },
       { date: "2026-01-03", trades: 2 },
     ]);
-    expect(result.charts.equityCurve.map((point) => point.equity)).toEqual([50, 250, 250]);
-    expect(result.charts.scatter.map((point) => `${point.symbol}:${point.side}`)).toEqual(["ALPHA:BUY", "BETA:SELL"]);
+    expect(result.charts.equityCurve.map((point) => point.equity)).toEqual([0, -50, 150, 150]);
+    expect(result.cohort.knownEntryCount).toBe(3);
     expect(result.charts.histogram.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(3);
   });
 
   it.each(["UTC", "Australia/Sydney", "America/New_York"])(
-    "keeps UTC period cards and chart buckets stable when the process timezone is %s",
+    "keeps New York period cards and chart buckets stable when the process timezone is %s",
     (timezone) => {
       const originalTimezone = process.env.TZ;
       process.env.TZ = timezone;
@@ -185,19 +186,16 @@ describe("aggregateDashboardData", () => {
         });
 
         expect(result.cards).toMatchObject({
-          realizedDay: 70,
-          realizedWeek: 70,
-          realizedMonth: 10_071,
+          realizedDay: 60,
+          realizedWeek: 60,
+          realizedMonth: 71,
         });
         expect(result.charts.dailyPnl).toEqual([
-          { date: "2026-05-31", pnl: 1_000 },
-          { date: "2026-06-01", pnl: 10_000 },
-          { date: "2026-06-21", pnl: 1 },
-          { date: "2026-06-22", pnl: 70 },
+          { date: "2026-05-31", pnl: 11_000 },
+          { date: "2026-06-21", pnl: 11 },
+          { date: "2026-06-22", pnl: 60 },
         ]);
-        expect(result.charts.scatter).toEqual([
-          { time: "00:30", symbol: "UTC", price: 100, side: "BUY" },
-        ]);
+        expect(result.cohort.knownEntryCount).toBe(6);
         expect(result.charts.equityCurve.at(-1)?.at).toBe("2026-06-22T15:00:00.000Z");
       } finally {
         if (originalTimezone === undefined) delete process.env.TZ;

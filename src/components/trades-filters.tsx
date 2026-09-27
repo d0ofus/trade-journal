@@ -13,6 +13,9 @@ import { cn } from "@/lib/utils";
 import { requestWorkstationNavigation } from "@/lib/workstation-navigation-guard";
 
 type TradeFilters = {
+  reportingTimezone?: string;
+  entryWeekday?: string;
+  entrySlot?: string;
   from?: string;
   to?: string;
   symbol?: string;
@@ -90,6 +93,7 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
 
     const formData = new FormData(formRef.current);
     const params = new URLSearchParams();
+    for (const key of ["reportingTimezone", "entryWeekday", "entrySlot"] as const) if (filters[key]) params.set(key, filters[key]!);
 
     for (const [key, rawValue] of formData.entries()) {
       const value = String(rawValue).trim();
@@ -146,6 +150,7 @@ export function TradesFilters({ filters }: { filters: TradeFilters }) {
 
       const formData = new FormData(formRef.current);
       const params = new URLSearchParams();
+    for (const key of ["reportingTimezone", "entryWeekday", "entrySlot"] as const) if (filters[key]) params.set(key, filters[key]!);
 
       for (const [key, rawValue] of formData.entries()) {
         const value = String(rawValue).trim();

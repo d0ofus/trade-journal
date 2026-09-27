@@ -66,10 +66,11 @@ test("stacked charts retain stable vertical scrolling without horizontal overflo
   expect(new Set(frames.map(frame => JSON.stringify(frame))).size).toBe(1);
   expect(frames.every(frame => frame.scrollWidth <= frame.width && frame.scrollHeight > frame.height)).toBe(true);
   const last = page.getByRole("separator", { name: "Chart 3 height" });
+  const initialHeight = Number(await last.getAttribute("aria-valuenow"));
   await last.scrollIntoViewIfNeeded();
   await last.focus();
   await page.keyboard.press("ArrowDown");
-  await expect(last).toHaveAttribute("aria-valuenow", "310");
+  await expect(last).toHaveAttribute("aria-valuenow", String(initialHeight + 20));
   const resized = await samples(page);
   expect(new Set(resized.map(frame => JSON.stringify(frame))).size).toBe(1);
   expect(resized.every(frame => frame.scrollWidth <= frame.width)).toBe(true);

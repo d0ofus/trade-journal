@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ACCOUNTING_VERSION } from "@/lib/stats/accounting";
 
 import {
   buildInstrumentSourceSignature,
@@ -33,6 +34,7 @@ describe("buildMaterializationSourceSignature", () => {
       }),
     ).toEqual(
       JSON.stringify({
+        accountingVersion: ACCOUNTING_VERSION,
         executionCount: 4,
         executionMaxUpdatedAt: "2026-06-25T01:00:00.000Z",
         positionSnapshotCount: 0,

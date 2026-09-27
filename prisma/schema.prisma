@@ -241,6 +241,7 @@ model Instrument {
   exchange          String?
   assetType         AssetType          @default(STOCK)
   currency          String             @default("USD")
+  brokerContractId  String?
   executions        Execution[]
   positions         Position[]
   positionSnapshots PositionSnapshot[]
@@ -374,6 +375,11 @@ model Execution {
   price                 Float
   commission            Float                  @default(0)
   fees                  Float                  @default(0)
+  transactionTax        Float                  @default(0)
+  contractMultiplier    Float?
+  multiplierSource      String?
+  effectiveAssetType    String?
+  brokerContractId      String?
   currency              String                 @default("USD")
   orderId               String?
   strategy              String?

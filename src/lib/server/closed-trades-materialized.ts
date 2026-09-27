@@ -152,7 +152,7 @@ async function buildOpeningByAccountInstrument(
   return buildOpeningPositionMap(executions, snapshots);
 }
 
-export async function refreshMaterializedClosedTrades(options: { accountIds?: string[] } = {}) {
+export async function refreshMaterializedClosedTrades(options: { accountIds?: string[]; preserveIdentities?: boolean } = {}) {
   const accountIds = [...new Set(options.accountIds?.filter(Boolean) ?? [])];
   const scoped = accountIds.length > 0;
   let groupCount = 0;
@@ -174,6 +174,8 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
           price: true,
           commission: true,
           fees: true,
+          contractMultiplier: true,
+          transactionTax: true,
           currency: true,
           instrument: {
             select: {
@@ -209,6 +211,8 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
           price: exec.price,
           commission: exec.commission,
           fees: exec.fees,
+          contractMultiplier: exec.contractMultiplier,
+          transactionTax: exec.transactionTax,
         })),
         openingByAccountInstrument,
       );
@@ -222,6 +226,11 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
         existingGroups.map((group) => group.groupKey),
         groups.map((group) => group.groupKey),
       );
+
+      if (options.preserveIdentities) {
+        const links = await tx.closedTradeExecution.findMany({ where: { closedTradeGroupKey: { in: existingGroups.map(g => g.groupKey) } } });
+        assertPreservedTradeAllocations(existingGroups, links, groups);
+      }
 
       if (refreshPlan.staleGroupKeys.length > 0) {
         for (const chunk of chunked(refreshPlan.staleGroupKeys, 500)) {
@@ -252,6 +261,12 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
         })),
       );
 
+      if (options.preserveIdentities) {
+        for (const row of executionRows) await tx.closedTradeExecution.update({
+          where: { closedTradeGroupKey_executionId: { closedTradeGroupKey: row.closedTradeGroupKey, executionId: row.executionId } },
+          data: { commission: row.commission, fees: row.fees },
+        });
+      } else {
       for (const chunk of chunked(refreshPlan.executionGroupKeysToReplace, 500)) {
         await tx.closedTradeExecution.deleteMany({
           where: { closedTradeGroupKey: { in: chunk } },
@@ -260,6 +275,7 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
 
       for (const chunk of chunked(executionRows, 500)) {
         await tx.closedTradeExecution.createMany({ data: chunk, skipDuplicates: true });
+      }
       }
 
       if (sourceSnapshot) {
@@ -270,6 +286,27 @@ export async function refreshMaterializedClosedTrades(options: { accountIds?: st
   );
 
   return { groups: groupCount };
+}
+
+/** Repair gate: fail before any writes if even one fill moves or trade identity changes. */
+export function assertPreservedTradeAllocations(
+  existing: Array<{ groupKey: string }>,
+  links: Array<{ closedTradeGroupKey: string; executionId: string; sortOrder: number; executedAt: Date; side: string; quantity: number; price: number }>,
+  generated: ClosedTradeGroup[],
+) {
+  const keys = (rows: Array<{ groupKey: string }>) => rows.map(r => r.groupKey).sort().join("\n");
+  if (keys(existing) !== keys(generated)) throw new Error("Accounting repair rejected: genuine trade identities changed");
+  const canonical = (rows: unknown[][]) => JSON.stringify(rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+  const before = canonical(links.map(e => [e.closedTradeGroupKey, e.executionId, e.sortOrder, e.executedAt.toISOString(), e.side, e.quantity, e.price]));
+  const originals = new Map(links.map(e => [`${e.closedTradeGroupKey}|${e.executionId}`, e]));
+  const after = canonical(generated.flatMap(g => g.executions.map((e, index) => {
+    const original = originals.get(`${g.groupKey}|${e.id}`);
+    // PostgreSQL's float text round-trip can differ by a few ULPs. Keep the stored allocation
+    // byte-for-byte; only ignore machine rounding when validating a regenerated quantity.
+    const qty = original && Math.abs(original.quantity - e.quantity) <= 4 * Number.EPSILON * Math.max(1, Math.abs(e.quantity)) ? original.quantity : e.quantity;
+    return [g.groupKey, e.id, index, e.executedAt, e.side, qty, e.price];
+  })));
+  if (before !== after) throw new Error("Accounting repair rejected: genuine execution allocations changed");
 }
 
 export async function ensureMaterializedClosedTrades() {

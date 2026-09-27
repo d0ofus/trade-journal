@@ -40,7 +40,7 @@ export default async function TradeDetailPage(props: { params: Promise<{ id: str
         <CardContent className="space-y-3 pt-6 text-sm">
           <p>Date: {execution.executedAt.toISOString().replace("T", " ").slice(0, 16)}</p>
           <p>Account: {accountCode}</p>
-          <p>Commission + Fees: {formatCurrency(execution.commission + execution.fees)}</p>
+          <p>Commission + Fees + Taxes: {formatCurrency(execution.commission + execution.fees + execution.transactionTax)}</p>
           <p>Realized PnL: {formatCurrency(pnl?.realizedPnl ?? 0)}</p>
           <div className="space-x-1">
             {tags.map((tag) => (

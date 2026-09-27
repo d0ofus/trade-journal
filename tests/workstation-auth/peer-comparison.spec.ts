@@ -4,6 +4,10 @@ import { candleFixture } from "./candle-fixture";
 import { defaultPreferences } from "../../src/lib/workstation/types";
 import { readFileSync } from "node:fs";
 import { strFromU8, unzipSync } from "fflate";
+import { resetSyntheticLayouts } from "./reset-layout";
+test.beforeEach(resetSyntheticLayouts);
+import { mockEvidenceTransport } from "./mock-evidence";
+test.beforeEach(async ({ context }) => mockEvidenceTransport(context));
 
 let groupKey: string, symbol: string;
 const endpoint = () => `/api/closed-trades/${encodeURIComponent(groupKey)}/workstation`;

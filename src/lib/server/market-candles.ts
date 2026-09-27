@@ -51,7 +51,7 @@ const ALPACA_TIMEFRAME: Record<CandleTimeframe, string> = {
 
 const ALPACA_SOURCE = "alpaca";
 const DEMO_SOURCE = "demo";
-const READABLE_CACHE_SOURCES = [ALPACA_SOURCE, DEMO_SOURCE];
+const READABLE_CACHE_SOURCES = process.env.VERCEL_ENV === "production" ? [ALPACA_SOURCE] : [ALPACA_SOURCE, DEMO_SOURCE];
 const MAX_ALPACA_BARS_PER_PAGE = 10_000;
 const MAX_ALPACA_PAGES = 20;
 const MAX_AGGREGATE_READ_ATTEMPTS = 6;

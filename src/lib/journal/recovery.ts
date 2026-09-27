@@ -27,6 +27,17 @@ function database() {
   });
 }
 let volatileTab: string | undefined;
+export async function clearSyntheticRecovery() {
+  const db = await database(), tx = db.transaction(["drafts", "assets"], "readwrite"), done = complete(tx);
+  const drafts = await result<Draft[]>(tx.objectStore("drafts").getAll());
+  const synthetic = (draft: Draft) => draft.scope.startsWith("workstation:demo:") || draft.scope.startsWith("workstation:application:demo-account-workstation:");
+  const retainedAssets = new Set(drafts.filter(d => !synthetic(d)).flatMap(d => d.assets));
+  for (const draft of drafts.filter(synthetic)) {
+    tx.objectStore("drafts").delete(draft.key);
+    for (const asset of draft.assets) if (!retainedAssets.has(asset)) tx.objectStore("assets").delete(asset);
+  }
+  await done;
+}
 let claimedTab: Promise<string> | undefined;
 export function recoveryTab() {
   try {

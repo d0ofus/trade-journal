@@ -66,13 +66,17 @@ const executionAliases: Record<string, string[]> = {
   commission: ["commission", "comm", "ibcommission"],
   // Flex trade rows often carry commission under IBCommission.
   // Commission details section provides TotalCommission, merged separately.
-  fees: ["fees", "fee", "taxes"],
+  fees: ["fees", "fee"],
+  transactionTax: ["taxes", "tax", "transactiontax"],
+  contractMultiplier: ["multiplier", "contractmultiplier"],
+  brokerContractId: ["conid", "contractid"],
   currency: ["currency", "curr"],
   orderId: ["iborderid", "brokerageorderid", "orderid", "order id", "orderreference"],
   strategy: ["strategy", "setup", "system"],
 };
 
 const positionAliases: Record<string, string[]> = {
+  brokerContractId: ["conid", "contractid"],
   account: ["account", "accountid", "ibkraccount", "acct", "clientaccountid"],
   symbol: ["symbol", "underlyingsymbol", "ticker"],
   exchange: ["exchange", "listingexchange"],
@@ -319,6 +323,7 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
             : undefined;
     const rawCommission = parseNumber(readField(row, mapping, "commission"));
     const rawFees = parseNumber(readField(row, mapping, "fees"));
+    const rawTax = parseNumber(readField(row, mapping, "transactionTax"));
 
     const candidate = {
       account: readField(row, mapping, "account") ?? "DEFAULT",
@@ -331,6 +336,9 @@ function parseExecutionRows(rows: PreviewRow[], mapping: HeaderMap): {
       price: parseNumber(readField(row, mapping, "price")),
       commission: rawCommission == null ? undefined : Math.abs(rawCommission),
       fees: rawFees == null ? undefined : Math.abs(rawFees),
+      transactionTax: rawTax == null ? undefined : Math.abs(rawTax),
+      contractMultiplier: parseNumber(readField(row, mapping, "contractMultiplier")),
+      brokerContractId: readField(row, mapping, "brokerContractId") || undefined,
       currency: (readField(row, mapping, "currency") ?? "USD").trim() || "USD",
       orderId: (readField(row, mapping, "orderId") ?? "").trim() || undefined,
       sourceExecutionId,
@@ -386,6 +394,7 @@ function parsePositionRows(rows: PreviewRow[], mapping: HeaderMap): {
       exchange: (readField(row, mapping, "exchange") ?? "").trim() || undefined,
       assetType: parseAssetType(readField(row, mapping, "assetType")),
       reportDate,
+      brokerContractId: readField(row, mapping, "brokerContractId") || undefined,
       quantity: parseNumber(readField(row, mapping, "quantity")),
       avgCost: parseNumber(readField(row, mapping, "avgCost")),
       unrealizedPnl: parseNumber(readField(row, mapping, "unrealizedPnl")),

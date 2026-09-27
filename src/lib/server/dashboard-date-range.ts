@@ -5,6 +5,7 @@ import {
   utcStartOfDay,
   utcStartOfYear,
 } from "@/lib/server/utc-date-range";
+import { reportingDate } from "@/lib/stats/reporting-time";
 
 export type DashboardPreset = "all" | "ytd" | "3m" | "6m" | "custom";
 
@@ -22,7 +23,7 @@ export function resolveDashboardRange(
   searchParams: Record<string, string | string[] | undefined>,
   now = new Date(),
 ) {
-  const today = utcStartOfDay(now);
+  const today = utcStartOfDay(new Date(`${reportingDate(now)}T12:00:00Z`));
   const todayIso = utcDateKey(today);
   const fromInput = parseDateParam(typeof searchParams.from === "string" ? searchParams.from : undefined);
   const toInput = parseDateParam(typeof searchParams.to === "string" ? searchParams.to : undefined);

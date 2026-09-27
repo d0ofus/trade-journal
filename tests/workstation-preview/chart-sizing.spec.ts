@@ -131,7 +131,8 @@ test("multichart PNG follows the actual asymmetric geometry", async ({ page }, i
   const left = page.getByRole("separator", { name: "Left charts division" }); await left.focus(); await page.keyboard.press("Shift+ArrowDown");
   const right = page.getByRole("separator", { name: "Right charts division" }); await right.focus(); await page.keyboard.press("Shift+ArrowUp");
   await expect(page.locator(".ws-chart-state")).toHaveCount(0);
-  const bounds = await page.locator(".ws-chart").evaluateAll(nodes => nodes.map(n => ({ x: parseFloat((n as HTMLElement).style.left), y: parseFloat((n as HTMLElement).style.top), w: n.clientWidth, h: n.clientHeight })));
+  // PNGs use the candle canvas plus the 30px capture heading, without interactive controls.
+  const bounds = await page.locator(".ws-chart").evaluateAll(nodes => nodes.map(n => { const canvas = n.querySelector(".ws-chart-canvas")!.getBoundingClientRect(); return { x: parseFloat((n as HTMLElement).style.left), y: parseFloat((n as HTMLElement).style.top), w: Math.floor(canvas.width), h: Math.floor(canvas.height) + 30 }; }));
   await page.getByRole("button", { name: "Export chart-1", exact: true }).click();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "All charts PNG", exact: true }).click();
   const path = info.outputPath("resized-layout.png"); await (await download).saveAs(path); const png = await readFile(path);

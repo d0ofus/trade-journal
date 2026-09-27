@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { accountingMetadata } from "@/lib/stats/accounting";
 import { AssetType, Prisma, Side } from "@prisma/client";
 import {
   IMPORT_FAILURE_DIRECT_MARKER,
@@ -24,7 +25,7 @@ import {
 } from "@/lib/server/position-import-lock";
 
 const EXECUTION_CHUNK_SIZE = 500;
-const PARSER_VERSION = "2026-06-25-workstation-uplift";
+const PARSER_VERSION = "2026-09-27-accounting-v2";
 
 type ImportDb = Prisma.TransactionClient;
 type ImportArtifactDb = Pick<Prisma.TransactionClient, "importArtifact">;
@@ -288,12 +289,17 @@ function chunked<T>(rows: T[], size: number) {
 }
 
 function chargeFieldsChanged(
-  existing: { commission: number; fees: number },
+  existing: { commission: number; fees: number; transactionTax: number; contractMultiplier: number | null; brokerContractId: string | null; multiplierSource: string | null; effectiveAssetType: string | null },
   incoming: ExecutionImportRow,
 ) {
   return (
     (incoming.commissionProvided && existing.commission !== incoming.data.commission) ||
-    (incoming.feesProvided && existing.fees !== incoming.data.fees)
+    (incoming.feesProvided && existing.fees !== incoming.data.fees) ||
+    (incoming.data.transactionTax != null && existing.transactionTax !== incoming.data.transactionTax) ||
+    (incoming.data.brokerContractId != null && existing.brokerContractId !== incoming.data.brokerContractId) ||
+    existing.contractMultiplier !== incoming.data.contractMultiplier ||
+    existing.multiplierSource !== incoming.data.multiplierSource ||
+    existing.effectiveAssetType !== incoming.data.effectiveAssetType
   );
 }
 
@@ -375,7 +381,7 @@ async function applyExecutionRows(
         price: true,
         currency: true,
         commission: true,
-        fees: true,
+        fees: true, transactionTax: true, contractMultiplier: true, multiplierSource: true, effectiveAssetType: true, brokerContractId: true,
       },
     });
     const existingByDedupeKey = new Map(existingRows.map((row) => [row.dedupeKey, row]));
@@ -398,7 +404,7 @@ async function applyExecutionRows(
             price: true,
             currency: true,
             commission: true,
-            fees: true,
+            fees: true, transactionTax: true, contractMultiplier: true, multiplierSource: true, effectiveAssetType: true, brokerContractId: true,
           },
         });
         existingByDedupeKey.delete(row.legacyDedupeKey);
@@ -419,7 +425,7 @@ async function applyExecutionRows(
             price: true,
             currency: true,
             commission: true,
-            fees: true,
+            fees: true, transactionTax: true, contractMultiplier: true, multiplierSource: true, effectiveAssetType: true, brokerContractId: true,
           },
         });
         existingByDedupeKey.set(row.data.dedupeKey, createdRow);
@@ -433,12 +439,26 @@ async function applyExecutionRows(
         );
       }
 
+      // A later export without multiplier metadata must not replace archived contract evidence.
+      if (existing.contractMultiplier != null && existing.multiplierSource?.startsWith("broker-archive") &&
+        (row.data.multiplierSource !== "broker-archive" || row.data.contractMultiplier === existing.contractMultiplier)) {
+        row.data.contractMultiplier = existing.contractMultiplier;
+        row.data.multiplierSource = existing.multiplierSource;
+        row.data.effectiveAssetType = existing.effectiveAssetType;
+      }
+
       if (options.preserveExistingCharges || !chargeFieldsChanged(existing, row)) {
         unchangedDuplicates += 1;
         continue;
       }
 
-      const chargeUpdate: Prisma.ExecutionUpdateInput = {};
+      const chargeUpdate: Prisma.ExecutionUpdateInput = {
+        transactionTax: row.data.transactionTax,
+        contractMultiplier: row.data.contractMultiplier,
+        multiplierSource: row.data.multiplierSource,
+        effectiveAssetType: row.data.effectiveAssetType,
+        brokerContractId: row.data.brokerContractId,
+      };
       if (row.commissionProvided) chargeUpdate.commission = row.data.commission;
       if (row.feesProvided) chargeUpdate.fees = row.data.fees;
       await db.execution.update({ where: { id: existing.id }, data: chargeUpdate });
@@ -480,6 +500,7 @@ async function resolveExecutionRows(db: ImportDb, rows: ExecutionImport[], impor
       exchange: row.exchange,
       assetType: row.assetType as AssetType,
       currency: row.currency,
+      brokerContractId: row.brokerContractId,
     })),
   );
   const resolved = rows.flatMap((row): ExecutionImportRow[] => {
@@ -499,6 +520,9 @@ async function resolveExecutionRows(db: ImportDb, rows: ExecutionImport[], impor
       price: row.price,
       ...(row.commission != null ? { commission: row.commission } : {}),
       ...(row.fees != null ? { fees: row.fees } : {}),
+      ...(row.transactionTax != null ? { transactionTax: row.transactionTax } : {}),
+      ...accountingMetadata(row),
+      brokerContractId: row.brokerContractId,
       currency: row.currency,
       orderId: row.orderId,
       strategy: row.strategy,
@@ -546,6 +570,9 @@ function finalizeImportAccounting(accounting: ImportAccounting, rowsSeen: number
 }
 
 async function ensureAccounts(db: ImportDb, rows: Array<{ account: string; currency?: string }>) {
+  if (process.env.VERCEL_ENV === "production" && rows.some(r => /^(?:DEMO(?:-|$)|TEST(?:-|$)|ROUTE-ATOMIC-)/i.test(r.account))) {
+    throw new ImportRejectedError("Synthetic account imports are disabled in production.");
+  }
   const byCode = new Map<string, string>();
   for (const row of rows) {
     if (!row.account) continue;
@@ -582,6 +609,7 @@ type InstrumentSeed = {
   exchange?: string;
   assetType: AssetType;
   currency?: string;
+  brokerContractId?: string;
 };
 
 function instrumentKey(input: InstrumentSeed) {
@@ -607,6 +635,7 @@ async function ensureInstruments(db: ImportDb, rows: InstrumentSeed[]) {
       exchange: row.exchange ?? "",
       assetType: row.assetType,
       currency: row.currency ?? "USD",
+      brokerContractId: row.brokerContractId,
     })),
     skipDuplicates: true,
   });
@@ -634,6 +663,10 @@ async function ensureInstruments(db: ImportDb, rows: InstrumentSeed[]) {
     );
   }
 
+  for (const row of uniqueRows) {
+    const instrument = map.get(instrumentKey(row));
+    if (instrument && row.brokerContractId) await db.instrument.updateMany({ where: { id: instrument.id, brokerContractId: null }, data: { brokerContractId: row.brokerContractId } });
+  }
   return map;
 }
 
@@ -651,6 +684,7 @@ async function applyPositionImportRows(
       exchange: row.exchange,
       assetType: row.assetType as AssetType,
       currency: row.currency,
+      brokerContractId: row.brokerContractId,
     })),
   );
 

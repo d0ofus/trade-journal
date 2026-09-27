@@ -1,4 +1,5 @@
 import { readNotionReview, notionJournalPatch, saveNotionRelations } from "./notion-review-storage";
+import { matchesReportingCohort } from "@/lib/stats/reporting-time";
 import { executedTradeReviewDefaults } from "@/lib/workstation/notion-template";
 import { escapeHtml } from "@/lib/workstation/rich-text";
 import { createHash } from "node:crypto";
@@ -33,7 +34,7 @@ export async function listWorkstationTrades(filters: TradeFilters = {}, selected
     const executions = g.executions.map(e => applyAccountTimePolicy({ id: e.executionId, time: e.executedAt.getTime() / 1000, side: e.side === "BUY" ? "BUY" : "SELL", quantity: e.quantity, price: e.price, commission: e.commission, fees: e.fees, provenance: { timezoneStatus: "unverified", timezone: null, source: e.execution.importBatch?.sourceSection === "trades" ? "Imported broker execution" : "Stored execution", parserVersion: e.execution.importBatch?.parserVersion ?? null } }, e.execution.executedAt.getTime() === e.executedAt.getTime() && e.execution.importBatch ? { ...e.execution.importBatch, timeInterpretation: byBatch.get(e.execution.importBatch.id) ?? null } : null, policyByAccount.get(g.accountId), applicationByBatch.get(`${policyByAccount.get(g.accountId)?.id}:${e.execution.importBatch?.id}`)));
     const boundary = (time: Date) => { const index = g.executions.findIndex(e => e.executedAt.getTime() === time.getTime()); return index >= 0 ? executions[index].time : time.getTime() / 1000; };
     return { id: g.groupKey, assetType: g.instrument.assetType, symbol: g.symbol, name: g.symbol, account: g.account.ibkrAccount, currency: g.instrument.currency ?? "", direction: g.direction === "SHORT" ? "SHORT" as const : "LONG" as const, openTime: boundary(g.openTime), closeTime: boundary(g.closeTime), brokerTradeDate: g.tradeDate.toISOString().slice(0, 10), timeInterpretationVersion: createHash("sha256").update(executions.map(e => `${e.id}:${e.time}:${e.provenance?.interpretationStatus ?? "original"}:${e.provenance?.interpretationVersion ?? "0"}`).join("|")).digest("hex"), entry: g.avgEntryPrice, exit: g.avgExitPrice, pnl: g.realizedPnl, fees: g.totalCommission, quantity: g.totalQuantity, openQuantity: 0, stale: g.isStale, executions };
-  }));
+  }).filter(trade => matchesReportingCohort(trade, filters)));
 }
 export async function readWorkstationDocument(groupKey: string, db: Reader = prisma): Promise<TradeDocument> {
   const [trade, note, link] = await Promise.all([db.closedTrade.findUnique({ where: { groupKey }, include: { tags: { include: { tag: true } }, annotations: true } }), db.closedTradeNote.findUnique({ where: { groupKey } }), db.journalLink.findFirst({ where: { linkType: "REVIEW_SOURCE", targetType: "CLOSED_TRADE", targetId: groupKey }, include: { journalEntry: { include: { notionRelations: { include: { relationTag: true } } } } }, orderBy: { createdAt: "asc" } })]);

@@ -10,6 +10,9 @@ export type TradeFilters = {
   tag?: string;
   strategy?: string;
   includeStale?: boolean;
+  reportingTimezone?: string;
+  entryWeekday?: string;
+  entrySlot?: string;
 };
 
 type WhereClause = Record<string, unknown>;
@@ -55,7 +58,7 @@ export function buildClosedTradeWhere(filters: TradeFilters) {
     where.isStale = false;
   }
 
-  if (filters.from || filters.to) {
+  if ((filters.from || filters.to) && filters.reportingTimezone !== "America/New_York") {
     where.tradeDate = {
       gte: filters.from ? utcDateBoundary(filters.from, "start") : undefined,
       lte: filters.to ? utcDateBoundary(filters.to, "end") : undefined,

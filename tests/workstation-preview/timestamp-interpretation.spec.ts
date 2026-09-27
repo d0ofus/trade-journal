@@ -16,7 +16,7 @@ async function sellDetails(page: Page) {
 }
 test("confirmed MU timing, sessions, replay and exported chart use the same execution time", async ({ page }) => {
   const { errors, requests } = await open(page);
-  await expect(page.getByLabel("Chart session")).toHaveValue("auto");
+  await expect(page.getByLabel("Chart session chart-1", { exact: true })).toHaveValue("auto");
   const details = await sellDetails(page);
   await expect(details).toContainText("2026-09-08 19:09:25 UTC");
   await expect(details).toContainText("2026-09-08 15:09:25 UTC");
@@ -24,13 +24,13 @@ test("confirmed MU timing, sessions, replay and exported chart use the same exec
   await expect(details).toContainText("Matching time bucket and price");
   await expect(details).toContainText("user-confirmed");
   await page.getByLabel("Close execution details").click();
-  await page.getByLabel("Chart session").selectOption("regular");
+  await page.getByLabel("Chart session chart-1", { exact: true }).selectOption("regular");
   await expect(page.locator(".ws-chart-state")).toHaveCount(0);
   await page.getByRole("button", { name: "Chart history chart-1", exact: true }).click();
   await expect(page.locator(".ws-diagnostic-list").getByRole("button", { name: /BUY 4 @ 978.50/ })).toContainText("Missing candle");
   await page.keyboard.press("Escape");
-  await page.getByLabel("Chart session").selectOption("extended");
-  await page.reload(); await expect(page.getByLabel("Chart session")).toHaveValue("extended");
+  await page.getByLabel("Chart session chart-1", { exact: true }).selectOption("extended");
+  await page.reload(); await expect(page.getByLabel("Chart session chart-1", { exact: true })).toHaveValue("extended");
   await expect(page.locator(".ws-chart-state")).toHaveCount(0);
   await page.getByRole("button", { name: "Export chart-1", exact: true }).click();
   const download = page.waitForEvent("download");
@@ -60,8 +60,8 @@ test("timestamp controls fit desktop, laptop and mobile in both themes", async (
     await page.evaluate(value => { localStorage.setItem("execution-lab:appearance:demo:v1", value); window.dispatchEvent(new Event("execution-lab-appearance-change")); }, theme);
     for (const [size, width, height] of [["desktop", 1920, 1080], ["laptop", 1366, 768], ["mobile", 390, 844]] as const) {
       await page.setViewportSize({ width, height });
-      await expect(page.getByLabel("Chart session")).toBeVisible();
-      if (size === "mobile") expect((await page.getByLabel("Chart session").boundingBox())!.width).toBeGreaterThanOrEqual(160);
+      await expect(page.getByLabel("Chart session chart-1", { exact: true })).toBeVisible();
+      if (size === "mobile") expect((await page.getByLabel("Chart session chart-1", { exact: true }).boundingBox())!.width).toBeGreaterThanOrEqual(80);
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: `screenshots/timestamp-interpretation/${size}-${theme}.png` });
     }

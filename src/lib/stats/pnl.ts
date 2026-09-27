@@ -14,6 +14,8 @@ export interface ExecutionForCalc {
   price: number;
   commission: number;
   fees: number;
+  transactionTax?: number;
+  contractMultiplier?: number | null;
 }
 
 export interface ExecutionPnl {
@@ -76,9 +78,9 @@ export function computeExecutionPnl(
       const holdMs = Math.max(0, exec.executedAt.getTime() - lot.openedAtMs);
 
       if (lot.qty > 0 && signedQty < 0) {
-        realized += matchQty * (exec.price - lot.price);
+        realized += matchQty * (exec.price - lot.price) * (exec.contractMultiplier ?? 1);
       } else if (lot.qty < 0 && signedQty > 0) {
-        realized += matchQty * (lot.price - exec.price);
+        realized += matchQty * (lot.price - exec.price) * (exec.contractMultiplier ?? 1);
       }
 
       grossRealized = realized;
@@ -96,7 +98,7 @@ export function computeExecutionPnl(
       lots.push({ qty: signedQty, price: exec.price, openedAtMs: exec.executedAt.getTime() });
     }
 
-    realized -= exec.commission + exec.fees;
+    realized -= exec.commission + exec.fees + (exec.transactionTax ?? 0);
     cumulative += realized;
 
     result.push({

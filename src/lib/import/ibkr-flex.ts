@@ -174,7 +174,9 @@ function mergeCommissions(executions: ExecutionImport[], commissionsCsv: string 
 
     const index = matches[0];
     const commission = parseOptionalNumber(readByAliases(detail, ["totalcommission", "commission", "ibcommission"]));
-    const fees = parseOptionalNumber(readByAliases(detail, ["fees", "fee", "taxes", "tax", "other"]));
+    // UNBC TotalCommission already includes its component charges (including Other).
+    // Taxes belong to TRNT and must never be overwritten by UNBC Other=0.
+    const fees = parseOptionalNumber(readByAliases(detail, ["fees", "fee"]));
     const current = chargesByExecution.get(index) ?? {};
     if (commission != null) current.commission = (current.commission ?? 0) + Math.abs(commission);
     if (fees != null) current.fees = (current.fees ?? 0) + Math.abs(fees);

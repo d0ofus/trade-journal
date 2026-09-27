@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { getPositions } from "@/lib/server/queries";
 
-const DEFAULT_ACCOUNT_CODE = "DEMO-WORKSTATION";
+const DEFAULT_ACCOUNT_CODE = process.env.REPORTING_ACCOUNT_CODE ?? "";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function PositionsPage(props: { searchParams: SearchParams }) {
@@ -14,9 +14,9 @@ export default async function PositionsPage(props: { searchParams: SearchParams 
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Live Exposure"
-        title="Monitor open positions with cleaner risk visibility."
-        description="The position table is unchanged in behavior, but now reads like a portfolio product instead of a raw admin screen."
+        eyebrow="Open Holdings"
+        title="Positions reconciled against broker evidence"
+        description="Review quantities, confirmation dates and unresolved holdings across your accounts."
       />
       <Card className="overflow-hidden">
         <CardHeader className="border-b border-slate-200/80">

@@ -62,7 +62,8 @@ export function buildOpeningPositionMap(
     });
     const firstExecutionAt = firstExecutionAtByKey.get(key);
     const snapshotDate = snapshot.date.getTime();
-    if (firstExecutionAt === undefined || snapshotDate >= firstExecutionAt) continue;
+    // A dated broker snapshot describes end-of-day inventory, not midnight inventory.
+    if (firstExecutionAt === undefined || snapshot.date.toISOString().slice(0, 10) >= new Date(firstExecutionAt).toISOString().slice(0, 10)) continue;
 
     const existing = aggregatedSnapshots.get(key);
     if (existing && existing.date > snapshotDate) continue;

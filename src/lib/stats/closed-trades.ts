@@ -15,6 +15,8 @@ export interface ExecutionForClosed {
   price: number;
   commission: number;
   fees: number;
+  transactionTax?: number;
+  contractMultiplier?: number | null;
 }
 
 export interface OpeningPosition {
@@ -174,7 +176,7 @@ export function computeClosedTradeGroups(
 
     for (const exec of sorted) {
       const signedQty = exec.side === "BUY" ? exec.quantity : -exec.quantity;
-      const execCharge = exec.commission + exec.fees;
+      const execCharge = exec.commission + exec.fees + (exec.transactionTax ?? 0);
       const execQty = Math.abs(exec.quantity);
       let remaining = signedQty;
 
@@ -279,7 +281,7 @@ export function computeClosedTradeGroups(
             quantity: openQty,
             price: exec.price,
             commission: exec.commission * (openQty / execQty),
-            fees: exec.fees * (openQty / execQty),
+            fees: (exec.fees + (exec.transactionTax ?? 0)) * (openQty / execQty),
           });
           remaining = 0;
           finalizeTrade();
@@ -303,9 +305,9 @@ export function computeClosedTradeGroups(
           const lot = lots[lotIndex];
           const matchQty = Math.min(qtyToMatch, Math.abs(lot.qty));
           if (lot.qty > 0 && closeSigned < 0) {
-            grossContribution += matchQty * (exec.price - lot.price);
+            grossContribution += matchQty * (exec.price - lot.price) * (exec.contractMultiplier ?? 1);
           } else if (lot.qty < 0 && closeSigned > 0) {
-            grossContribution += matchQty * (lot.price - exec.price);
+            grossContribution += matchQty * (lot.price - exec.price) * (exec.contractMultiplier ?? 1);
           }
           currentTrade.matchedEntryQty += matchQty;
           currentTrade.matchedEntryValue += matchQty * lot.price;
@@ -330,7 +332,7 @@ export function computeClosedTradeGroups(
           quantity: closeQty,
           price: exec.price,
           commission: exec.commission * (closeQty / execQty),
-          fees: exec.fees * (closeQty / execQty),
+          fees: (exec.fees + (exec.transactionTax ?? 0)) * (closeQty / execQty),
         });
 
         finalizeTrade();

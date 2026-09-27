@@ -26,6 +26,12 @@ export async function clearDemoImages() {
   for (const key of keys) if (String(key).startsWith("demo-")) await record("originals", "readwrite", s => s.delete(key));
   clearEvidenceCache();
 }
+export async function clearSyntheticImages() {
+  const pending = await record("pending", "readonly", s => s.getAll()) as PendingImage[];
+  for (const item of pending) if (item.mode === "demo" || item.tradeId.startsWith("demo-account-workstation:")) await record("pending", "readwrite", s => s.delete(item.key));
+  const keys = await record("originals", "readonly", s => s.getAllKeys());
+  for (const key of keys) if (String(key).startsWith("demo-")) await record("originals", "readwrite", s => s.delete(key));
+}
 const sha256 = async (bytes: ArrayBuffer) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(b => b.toString(16).padStart(2, "0")).join("");
 export async function inlinePngBlob(image: string) {
   if (!image.startsWith("data:image/png;base64,")) throw new Error("The image is not a normalized PNG.");

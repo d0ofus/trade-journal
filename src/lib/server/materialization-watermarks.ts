@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { ACCOUNTING_VERSION } from "@/lib/stats/accounting";
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 type DbClient = Prisma.TransactionClient | PrismaClient;
@@ -23,6 +24,7 @@ function isoOrNull(value?: Date | null) {
 
 export function buildMaterializationSourceSignature(snapshot: MaterializationSourceSnapshot) {
   return JSON.stringify({
+    accountingVersion: ACCOUNTING_VERSION,
     executionCount: snapshot.executionCount,
     executionMaxUpdatedAt: isoOrNull(snapshot.executionMaxUpdatedAt),
     positionSnapshotCount: snapshot.positionSnapshotCount ?? 0,

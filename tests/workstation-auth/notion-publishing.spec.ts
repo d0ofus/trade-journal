@@ -3,9 +3,11 @@ import { defaultPreferences, type TradeDocument } from "../../src/lib/workstatio
 import { fallbackLayout } from "../../src/lib/workstation/template-layout";
 import type { PublicationResult } from "../../src/lib/workstation/notion-publication-client";
 import { candleFixture } from "./candle-fixture";
+import { resetSyntheticLayouts, notionFixtureKey } from "./reset-layout";
+test.beforeEach(resetSyntheticLayouts);
 
 test("authenticated saves automatically prepare a fresh preview and explicitly update the same page", async ({ page, context }) => {
-  const groupKey = "DEMO-NOTION-VALIDATION", endpoint = `/api/closed-trades/${groupKey}/workstation`;
+  const groupKey = await notionFixtureKey(), endpoint = `/api/closed-trades/${encodeURIComponent(groupKey)}/workstation`;
   const { csrfToken } = await (await context.request.get("/api/auth/csrf")).json();
   await context.request.post("/api/auth/callback/credentials", { form: { csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true" } });
   expect((await (await context.request.get("/api/auth/session")).json()).user.name).toBe("phase2-reviewer");
@@ -46,7 +48,7 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
     await expect(dialog.getByText("This saved revision has already been published.")).toBeVisible();
     expect(confirms).toBe(index + 1); expect(resumes).toBe(index + 1); expect(publishedText).toContain(text);
     await expect(dialog.getByRole("link", { name: "Open app-owned Notion page" })).toHaveAttribute("href", pageUrl);
-    await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close Publish/update in Notion", exact: true }).click();
   }
   await page.reload(); expect((await read()).review.takeaway).toContain("Edited journal content reaches the same page");
   await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();

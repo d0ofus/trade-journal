@@ -8,7 +8,7 @@ import { getImportHistoryPage } from "@/lib/server/import-history-query";
 import { BACKUP_RELEVANT_TIMESTAMP_SOURCES } from "@/lib/server/backup-freshness";
 import { type BackupTableKey } from "@/lib/server/backup-contract";
 import { aggregateCalendarPerformance } from "@/lib/stats/calendar-performance";
-import { aggregateDashboardData } from "@/lib/stats/dashboard-aggregation";
+import { listWorkstationTrades } from "@/lib/server/trade-workstation";
 import { computeTradeSummaryMetrics, latestPriorEquitySnapshot } from "@/lib/stats/trade-summary-metrics";
 import {
   utcDateBoundary,
@@ -39,79 +39,7 @@ function analyticsOrZero(
   );
 }
 
-export async function getDashboardData(filters?: { from?: string; to?: string }) {
-  return withDiagnostics("getDashboardData", async (step) => {
-    await step("ensure materialized execution analytics", () => ensureMaterializedExecutionAnalytics());
-    await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
-
-    const dashboardTo = filters?.to ? utcDateBoundary(filters.to, "end") : undefined;
-    const rangeStart = filters?.from ? utcDateBoundary(filters.from, "start") : undefined;
-    const rangeEnd = filters?.to ? utcDateBoundary(filters.to, "end") : undefined;
-    const executions = await step("query executions", () =>
-      prisma.execution.findMany({
-        where: {
-          executedAt: dashboardTo ? { lte: dashboardTo } : undefined,
-        },
-        select: {
-          id: true,
-          accountId: true,
-          instrumentId: true,
-          executedAt: true,
-          side: true,
-          quantity: true,
-          price: true,
-          commission: true,
-          fees: true,
-          instrument: {
-            select: {
-              symbol: true,
-            },
-          },
-          analytics: {
-            select: {
-              executionId: true,
-              realizedPnl: true,
-              grossRealizedPnl: true,
-              cumulativePnl: true,
-              matchedQuantity: true,
-              avgHoldTimeMs: true,
-            },
-          },
-        },
-        orderBy: { executedAt: "asc" },
-      }),
-    );
-
-    const closedTrades = await step("query closed trades", () =>
-      prisma.closedTrade.findMany({
-        where: {
-          isStale: false,
-          tradeDate: dashboardTo ? { lte: dashboardTo } : undefined,
-        },
-        select: {
-          groupKey: true,
-          openTime: true,
-          closeTime: true,
-          tradeDate: true,
-          realizedPnl: true,
-          grossRealizedPnl: true,
-          totalCommission: true,
-          totalQuantity: true,
-        },
-        orderBy: [{ closeTime: "asc" }, { groupKey: "asc" }],
-      }),
-    );
-
-    return step("aggregate dashboard", () =>
-      aggregateDashboardData({
-        closedTrades,
-        executions,
-        rangeEnd,
-        rangeStart,
-      }),
-    );
-  });
-}
+export { loadDashboardReport as getDashboardData } from "@/lib/server/dashboard-report";
 
 function latestDate(...values: Array<Date | null | undefined>) {
   const timestamps = values
@@ -220,6 +148,7 @@ export async function getTrades(filters: {
             price: true,
             commission: true,
             fees: true,
+            transactionTax: true,
             account: {
               select: {
                 ibkrAccount: true,
@@ -248,7 +177,8 @@ export async function getTrades(filters: {
     const rows = executions.map((exec) => ({
       ...exec,
       realizedPnl: exec.analytics?.realizedPnl ?? 0,
-      commissionTotal: exec.commission + exec.fees,
+      fees: exec.fees + exec.transactionTax,
+      commissionTotal: exec.commission + exec.fees + exec.transactionTax,
     }));
 
     return {
@@ -266,6 +196,9 @@ export async function getClosedTrades(filters: TradeFilters, selectedGroupKey?: 
     await step("ensure materialized closed trades", () => ensureMaterializedClosedTrades());
 
     const filteredWhere = buildClosedTradeWhere(filters);
+    if (filters.reportingTimezone === "America/New_York") {
+      filteredWhere.groupKey = { in: (await listWorkstationTrades(filters)).map(t => t.id) };
+    }
     const where = selectedGroupKey
       ? { OR: [{ groupKey: selectedGroupKey }, filteredWhere] }
       : filteredWhere;
@@ -496,6 +429,7 @@ export async function getTradeDetail(id: string) {
           price: true,
           commission: true,
           fees: true,
+          transactionTax: true,
           instrument: {
             select: {
               symbol: true,
@@ -563,37 +497,7 @@ export async function getTradeDetail(id: string) {
   });
 }
 
-export async function getPositions() {
-  return prisma.position.findMany({
-    where: {
-      NOT: { quantity: 0 },
-    },
-    select: {
-      id: true,
-      accountId: true,
-      quantity: true,
-      avgCost: true,
-      unrealizedPnl: true,
-      account: {
-        select: {
-          ibkrAccount: true,
-        },
-      },
-      instrument: {
-        select: {
-          symbol: true,
-          symbolNotes: {
-            select: {
-              accountId: true,
-              thesis: true,
-            },
-          },
-        },
-      },
-    },
-    orderBy: { updatedAt: "desc" },
-  });
-}
+export { loadReconciledPositions as getPositions } from "@/lib/server/reconciled-positions";
 
 export async function getCalendarNotes(month?: Date) {
   await ensureMaterializedClosedTrades();

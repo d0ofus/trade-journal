@@ -28,6 +28,9 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
   const searchParams = await props.searchParams;
   const page = Math.max(1, Number(typeof searchParams.page === "string" ? searchParams.page : "1") || 1);
   const filters = {
+    reportingTimezone: typeof searchParams.reportingTimezone === "string" ? searchParams.reportingTimezone : undefined,
+    entryWeekday: typeof searchParams.entryWeekday === "string" ? searchParams.entryWeekday : undefined,
+    entrySlot: typeof searchParams.entrySlot === "string" ? searchParams.entrySlot : undefined,
     from: typeof searchParams.from === "string" ? searchParams.from : undefined,
     to: typeof searchParams.to === "string" ? searchParams.to : undefined,
     symbol: typeof searchParams.symbol === "string" ? searchParams.symbol : undefined,
@@ -55,6 +58,7 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-950">Trades</h1>
           <p className="text-sm text-slate-500">Review closed trades, annotate context, and compare chart layouts.</p>
+          {filters.reportingTimezone === "America/New_York" && <p className="text-sm text-sky-800">Dashboard cohort: completed trades selected by final closing date in America/New_York. Execution history retains its original date filtering.</p>}
         </div>
         <Link
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300"

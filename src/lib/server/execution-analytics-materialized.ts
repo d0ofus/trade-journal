@@ -50,6 +50,8 @@ type ExecutionSourceRow = {
   price: number;
   commission: number;
   fees: number;
+  contractMultiplier: number | null;
+  transactionTax: number;
   currency: string;
   instrumentSymbol: string;
   instrumentAssetType: AssetType;
@@ -184,6 +186,8 @@ async function loadExecutionSource(tx: Prisma.TransactionClient) {
       execution."price",
       execution."commission",
       execution."fees",
+      execution."contractMultiplier",
+      execution."transactionTax",
       execution."currency",
       instrument."symbol" AS "instrumentSymbol",
       instrument."assetType" AS "instrumentAssetType",
@@ -203,6 +207,8 @@ async function loadExecutionSource(tx: Prisma.TransactionClient) {
     price: execution.price,
     commission: execution.commission,
     fees: execution.fees,
+    contractMultiplier: execution.contractMultiplier,
+    transactionTax: execution.transactionTax,
     currency: execution.currency,
     instrument: {
       symbol: execution.instrumentSymbol,
@@ -255,6 +261,8 @@ export async function refreshMaterializedExecutionAnalytics(options: RefreshOpti
               price: exec.price,
               commission: exec.commission,
               fees: exec.fees,
+              contractMultiplier: exec.contractMultiplier,
+              transactionTax: exec.transactionTax,
             })),
             openingByAccountInstrument,
           );

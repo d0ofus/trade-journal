@@ -3,7 +3,7 @@ import { resolveDashboardRange } from "@/lib/server/dashboard-date-range";
 
 describe("resolveDashboardRange", () => {
   it.each(["UTC", "Australia/Sydney", "America/New_York"])(
-    "resolves UTC presets identically when the process timezone is %s",
+    "resolves New York presets identically when the process timezone is %s",
     (timezone) => {
       const originalTimezone = process.env.TZ;
       process.env.TZ = timezone;
@@ -12,8 +12,8 @@ describe("resolveDashboardRange", () => {
         const nearNewYear = new Date("2026-01-01T00:30:00.000Z");
         expect(resolveDashboardRange({ preset: "ytd" }, nearNewYear)).toMatchObject({
           preset: "ytd",
-          from: "2026-01-01",
-          to: "2026-01-01",
+          from: "2025-01-01",
+          to: "2025-12-31",
         });
 
         const monthEnd = new Date("2026-03-31T23:30:00.000Z");

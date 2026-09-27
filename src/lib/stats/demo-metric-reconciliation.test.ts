@@ -61,10 +61,10 @@ describe("demo workstation metric reconciliation", () => {
     expect(dashboard.cards.winRate).toBeCloseTo(66.6667, 4);
     expect(dashboard.cards.profitFactor).toBeCloseTo(713.5 / 122.1, 8);
     expect(dashboard.charts.equityCurve.map((point) => point.equity)).toEqual(
-      [419.6, 297.5, 591.4].map((equity) => expect.closeTo(equity, 8)),
+      [0, 419.6, 297.5, 591.4].map((equity) => expect.closeTo(equity, 8)),
     );
     expect(dashboard.charts.grossCumulativePnl.map((point) => point.pnl)).toEqual(
-      [422.5, 302.5, 599.5].map((pnl) => expect.closeTo(pnl, 8)),
+      [0, 422.5, 302.5, 599.5].map((pnl) => expect.closeTo(pnl, 8)),
     );
 
     expect(calendar.monthlyTotals).toHaveLength(1);

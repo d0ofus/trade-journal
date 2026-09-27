@@ -43,6 +43,7 @@ function assertSharedDemoTarget(env: TestDatabaseEnvironment) {
 }
 
 export function authorizeDemoSeedEnvironment(env: TestDatabaseEnvironment): DemoSeedAuthorization {
+  if (env.VERCEL_ENV === "production") throw new Error("Demo seed refused in production.");
   const testMutationOptIn = env.ALLOW_TEST_DATABASE_MUTATIONS === "1";
   const sharedDemoConfirmed = env.ALLOW_SHARED_DEMO_SEED === SHARED_DEMO_SEED_CONFIRMATION;
 

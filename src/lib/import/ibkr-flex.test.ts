@@ -3,6 +3,14 @@ import path from "node:path";
 import { filterOutIdealFxCommissionRows, parseFlexStatementCsv, splitFlexSections } from "@/lib/import/ibkr-flex";
 
 describe("IBKR flex parser", () => {
+  it("preserves transaction taxes and multiplier while treating commission components as included", () => {
+    const csv = ["Trades", "ClientAccountID,DateTime,Symbol,AssetClass,Buy/Sell,Quantity,TradePrice,IBExecID,IBCommission,Taxes,Multiplier,Conid",
+      "TEST-OPTIONS,2026-09-01 10:00:00,IBIT 260918P00042000,OPT,SELL,3,0.39,FILL-1,-2.4,-0.2,100,12345",
+      "Commissions", "IBExecID,TotalCommission,Other,RegulatoryFee", "FILL-1,-2.4,0,-0.1"].join("\n");
+    const row = parseFlexStatementCsv(csv).trades.executions[0];
+    expect(row).toMatchObject({ commission: 2.4, transactionTax: .2, contractMultiplier: 100, brokerContractId: "12345" });
+    expect(row.fees).toBeUndefined();
+  });
   it("splits sectioned CSV", () => {
     const csv = fs.readFileSync(path.resolve("fixtures/sample-ibkr-flex.csv"), "utf-8");
     const sections = splitFlexSections(csv);
