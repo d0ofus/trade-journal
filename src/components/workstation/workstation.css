@@ -501,15 +501,23 @@
   color: var(--ws-dim);
   margin-top: 7px;
 }
-.ws-trade-card-bottom i {
-  width: 5px;
-  height: 5px;
+.ws-review-dot,.ws-review-legend i {
+  display:inline-block;
+  flex-shrink:0;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: #b1a677;
+  background: var(--ws-muted);
 }
-.ws-trade-card-bottom i.reviewed {
+.ws-review-dot[data-review-state="reviewed"],.ws-review-legend [data-review-state="reviewed"] {
   background: var(--ws-green);
 }
+.ws-review-dot[data-review-state="in-progress"],.ws-review-legend [data-review-state="in-progress"] { background:#e0b35b; }
+.ws-light .ws-review-dot[data-review-state="in-progress"],.ws-light .ws-review-legend [data-review-state="in-progress"] { background:#9a6700; }
+.ws-review-dot[data-review-state="not-reviewed"],.ws-review-legend [data-review-state="not-reviewed"] { background:var(--ws-red); }
+.ws-review-dot[data-unsaved] { outline:1px dashed var(--ws-text); outline-offset:3px; }
+.ws-review-legend { display:flex; flex-wrap:wrap; gap:5px 10px; padding:8px 12px; border-top:1px solid var(--ws-border-soft); font-size:9px; color:var(--ws-muted); }
+.ws-review-legend span { display:flex; align-items:center; gap:4px; }
 .ws-trade-size { display: flex; flex-wrap: wrap; gap: 0 3px; min-width: 0; }
 .ws-peak-cost { white-space: nowrap; }
 .ws-trade-card-bottom > i { flex-shrink: 0; }

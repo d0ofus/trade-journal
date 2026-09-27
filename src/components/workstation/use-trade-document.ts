@@ -4,6 +4,8 @@ import { TradeDocument, WorkstationAdapter } from "@/lib/workstation/types";
 import { Autosave, type SaveState } from "@/lib/journal/autosave";
 import { RecoveryStore } from "@/lib/journal/recovery";
 import { sameEvidenceAssignments } from "@/lib/workstation/evidence";
+import { announceReviewStatus } from "@/lib/workstation/review-status-events";
+import { startReviewOnContentEdit } from "@/lib/workstation/review-status";
 
 export function documentSaveStatus(state: SaveState<TradeDocument>, mode: string) {
   if (state.error) return /conflict|another tab/i.test(state.error) ? "Conflict \u00b7 draft preserved" : "Save paused \u00b7 draft preserved";
@@ -31,6 +33,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
       recovery.current = store;
       const saved = await adapter.load(id);
       if (own !== generation.current) return;
+      announceReviewStatus(adapter.mode, id, saved);
       let draft: TradeDocument | null = null, backupError = "";
       try { draft = await store.load(); }
       catch { backupError = "Local recovery storage could not be read. Existing recovery data has been retained."; }
@@ -51,6 +54,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
         dirty: !!draft,
         error: conflict ? "Recovered draft conflicts with a newer saved review. Export the draft, then reload the saved review." : "",
         save: doc => adapter.save(id, doc, doc.revision),
+        saved: (_snapshot, saved) => announceReviewStatus(adapter.mode, id, saved, true),
         merge: (doc, next) => ({ ...doc, evidenceProtocol: next.evidenceProtocol ?? doc.evidenceProtocol, evidence: doc.evidence.map(e => { const saved = next.evidence.find(s => s.id === e.id); return !e.asset && saved?.asset ? { ...e, image: "", asset: saved.asset } : e; }), revision: next.revision, updatedAt: next.updatedAt, noteUpdatedAt: next.noteUpdatedAt, journalUpdatedAt: next.journalUpdatedAt, journalEntryId: next.journalEntryId }),
         checkpoint: store.write, clearCheckpoint: store.clear,
       });
@@ -80,8 +84,9 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
     return () => { window.removeEventListener("blur", checkpoint); window.removeEventListener("pagehide", checkpoint); window.removeEventListener("beforeunload", warn); window.document.removeEventListener("visibilitychange", hidden); };
   }, []);
   const change = useCallback((update: (doc: TradeDocument) => TradeDocument) => state.current?.change(update), []);
+  const changeContent = useCallback((update: (doc: TradeDocument) => TradeDocument) => state.current?.change(before => startReviewOnContentEdit(before, update(before))), []);
   const flush = useCallback(() => state.current?.flush() ?? Promise.resolve(false), []);
   const retry = useCallback(() => state.current?.retry() ?? Promise.resolve(false), []);
   const getDocument = useCallback(() => state.current?.getSnapshot().value ?? null, []);
-  return { document: loadedFor === id ? document : null, subscribe, getSnapshot, change, flush, error, retry, reload: () => load(true), getDocument };
+  return { document: loadedFor === id ? document : null, subscribe, getSnapshot, change, changeContent, flush, error, retry, reload: () => load(true), getDocument };
 }

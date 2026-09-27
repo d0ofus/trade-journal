@@ -73,6 +73,17 @@ export const DEMO_PREFIX = "execution-lab:workstation:demo:v1:";
 export function createDemoAdapter(trades = demoTrades): WorkstationAdapter {
   return {
     mode: "demo",
+    async reviewStatuses(groupKeys, signal) {
+      const { documentReviewStatus } = await import("./review-status");
+      return groupKeys.map(groupKey => {
+        signal.throwIfAborted();
+        try {
+          const trade = trades.find(t => t.id === groupKey), raw = localStorage.getItem(DEMO_PREFIX + groupKey);
+          if (!trade) throw new Error("Trade unavailable");
+          return documentReviewStatus(groupKey, raw ? JSON.parse(raw) : initialDemoDocument(trade));
+        } catch { return { groupKey, status: null, revision: 0, updatedAt: null }; }
+      });
+    },
     async benchmarkCandles(symbol, trade, interval, signal, range) {
       signal.throwIfAborted();
       const source = trade.id === "demo-mu-timing" ? timingSnapshot.candles : demoCandles(trade);

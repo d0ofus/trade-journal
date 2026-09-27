@@ -130,6 +130,9 @@ import {
 } from "@/lib/workstation/export";
 import { measurementLabels, measureText, riskReward } from "@/lib/workstation/math";
 import { useTradeDocument } from "./use-trade-document";
+import { useReviewStatuses } from "./use-review-statuses";
+import { ReviewStatusDot } from "./review-status-dot";
+import type { ReviewStatusSummary } from "@/lib/workstation/review-status";
 import { useTradeView } from "./use-trade-view";
 import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
 import { ChartHandle, TradeChart } from "./trade-chart";
@@ -335,20 +338,24 @@ function Modal({
   );
 }
 
+const noReviewStatuses: ReviewStatusSummary[] = [];
 export function TradesWorkstation({
   trades: inputTrades,
+  initialReviewStatuses = noReviewStatuses,
   adapter,
   initialId,
   journalView = false,
   filterControls,
 }: {
   trades: Trade[];
+  initialReviewStatuses?: ReviewStatusSummary[];
   adapter: WorkstationAdapter;
   initialId?: string | null;
   journalView?: boolean;
   filterControls?: TradeFilterControls;
 }) {
   const trades = useMemo(() => newestTradesFirst(inputTrades), [inputTrades]);
+  const reviewStatuses = useReviewStatuses(adapter, trades, initialReviewStatuses);
   const [peerComparison, setPeerComparison] = useState<{ tradeId: string; selection: PeerGroupSelection; initial: PeerView } | null>(null);
   const peerCaptureGeneration = useRef(0);
   const appearance = useAppearance(adapter.mode);
@@ -1080,7 +1087,7 @@ export function TradesWorkstation({
           timeInterpretationVersion: trade.timeInterpretationVersion ?? "original",
         }, attachmentAbort.current.signal, destination);
         assertCurrent();
-        persistence.change(d => attachEvidence(d, evidence, destination!, layoutState.layout));
+        persistence.changeContent(d => attachEvidence(d, evidence, destination!, layoutState.layout));
         if (await persistence.flush()) {
           assertCurrent();
           setModal(null);
@@ -1124,7 +1131,7 @@ export function TradesWorkstation({
       assertCurrent();
       const evidence = await storeEvidence(trade.id, adapter.mode, { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.parse(metadata.capturedAt) / 1000, replayAt: metadata.replayAt, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata }, attachmentAbort.current.signal, "peers");
       assertCurrent();
-      persistence.change(d => attachEvidence(d, evidence, "peers", layoutState.layout));
+      persistence.changeContent(d => attachEvidence(d, evidence, "peers", layoutState.layout));
       if (!(await persistence.flush())) throw new Error("The chart remains in your recovery draft. Retry saving the review.");
       assertCurrent(); notify("Comparison chart attached to Peers.");
     } finally { operation.current = false; }
@@ -1147,7 +1154,7 @@ export function TradesWorkstation({
       assertCurrent(); validateImported(image);
       const evidence = await storeEvidence(trade.id, adapter.mode, { ...image, time: Date.now() / 1000, timeframe: "", revision: persistence.getDocument()?.revision ?? 0 }, attachmentAbort.current.signal, destination);
       assertCurrent();
-      persistence.change(d => d.evidence.some(e => e.id === image.id) ? d : attachEvidence(d, evidence, destination, layoutState.layout));
+      persistence.changeContent(d => d.evidence.some(e => e.id === image.id) ? d : attachEvidence(d, evidence, destination, layoutState.layout));
       if (!(await persistence.flush())) throw new Error("The image remains in your recovery draft. Retry saving the review.");
       assertCurrent(); if (!preferences.focusMode && !fullscreenChart) showPanel("evidence"); notify("Image attached to this review.");
     } catch (error) { if (generation === reviewContext.current.generation) notify(error instanceof Error ? error.message : "Image upload failed; recover its original from Evidence."); throw error; }
@@ -1760,7 +1767,7 @@ export function TradesWorkstation({
       trade={trade}
       persistence={persistence}
       onChange={(update) => {
-        if (!trade.stale) persistence.change((d) => { const review = update(d.review); return { ...d, review: { ...review, notion: { ...review.notion ?? emptyNotionReview(), layout: preserveLayoutArchive(layoutState.layout, review.notion?.layout) } } }; });
+        if (!trade.stale) persistence.changeContent((d) => { const review = update(d.review); return { ...d, review: { ...review, notion: { ...review.notion ?? emptyNotionReview(), layout: preserveLayoutArchive(layoutState.layout, review.notion?.layout) } } }; });
       }}
       retry={() => void persistence.retry()}
       reload={() => void persistence.reload()}
@@ -1915,7 +1922,7 @@ export function TradesWorkstation({
                     title="Remove attachment"
                     disabled={trade.stale}
                     onClick={() =>
-                      { if (!trade.stale) persistence.change(d => removeEvidence(d, e.id)); }
+                      { if (!trade.stale) persistence.changeContent(d => removeEvidence(d, e.id)); }
                     }
                   >
                     <Trash2 size={12} />
@@ -1925,7 +1932,7 @@ export function TradesWorkstation({
                 <p className="ws-evidence-assignments">{reviewSections.filter(([key]) => sectionEvidenceIds(documentState.review.notion, key).includes(e.id)).map(([, label]) => label).join(", ") || "Unassigned"}</p>
                 <details className="ws-evidence-sections"><summary>Assign sections</summary>
                   {reviewSections.map(([key, label]) => <label key={key}><input type="checkbox" checked={sectionEvidenceIds(documentState.review.notion, key).includes(e.id)} disabled={trade.stale}
-                    onChange={event => { const checked = event.target.checked; if (!trade.stale) persistence.change(d => ({ ...d, review: { ...d.review, notion: { ...assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked), layout: preserveLayoutArchive(layoutState.layout, d.review.notion?.layout) } } })); }} />{label}</label>)}
+                    onChange={event => { const checked = event.target.checked; if (!trade.stale) persistence.changeContent(d => ({ ...d, review: { ...d.review, notion: { ...assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked), layout: preserveLayoutArchive(layoutState.layout, d.review.notion?.layout) } } })); }} />{label}</label>)}
                 </details>
               </div>
             ))}
@@ -2198,14 +2205,7 @@ export function TradesWorkstation({
                               Max notional {replay !== null ? "—" : peakCosts.get(t.id)?.formatted}
                             </span></span>
                           </span>
-                          <i
-                            className={
-                              t.id === selectedId &&
-                              documentState?.review.status === "Reviewed"
-                                ? "reviewed"
-                                : ""
-                            }
-                          />
+                          <ReviewStatusDot summary={reviewStatuses[t.id]} persistence={t.id === trade?.id ? persistence : undefined} />
                         </div>
                       </button>
                     </div>
@@ -2215,6 +2215,7 @@ export function TradesWorkstation({
                   <div className="ws-empty">No matching trades.</div>
                 )}
               </div>
+              <div className="ws-review-legend" aria-label="Review status legend"><span><i data-review-state="reviewed" />Reviewed</span><span><i data-review-state="in-progress" />In progress</span><span><i data-review-state="not-reviewed" />Not reviewed</span></div>
               <div className="ws-list-bottom">
                 <span>
                   {checked.length

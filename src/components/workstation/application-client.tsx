@@ -3,9 +3,10 @@ import { useEffect, useMemo, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createApplicationAdapter } from "@/lib/workstation/application-adapter";
 import { Trade } from "@/lib/workstation/types";
+import type { ReviewStatusSummary } from "@/lib/workstation/review-status";
 import { TradesWorkstation } from "./workstation";
 import { tradeFilterHref, type WorkstationTradeFilters } from "@/lib/workstation/trade-filters";
-export function ApplicationWorkstation({ trades, initialId, journalView = false, filters = {} }: { trades: Trade[]; initialId?: string | null; journalView?: boolean; filters?: WorkstationTradeFilters }) {
+export function ApplicationWorkstation({ trades, initialReviewStatuses, initialId, journalView = false, filters = {} }: { trades: Trade[]; initialReviewStatuses?: ReviewStatusSummary[]; initialId?: string | null; journalView?: boolean; filters?: WorkstationTradeFilters }) {
   const adapter = useMemo(() => createApplicationAdapter(), []);
   const router = useRouter();
   const lastUpdate = useRef<string | null>(null);
@@ -18,5 +19,5 @@ export function ApplicationWorkstation({ trades, initialId, journalView = false,
     return () => { window.removeEventListener("storage", storage); window.removeEventListener("workstation-time-interpretation", refresh); window.removeEventListener("focus", refresh); };
   }, [router]);
   const [pending, startTransition] = useTransition();
-  return <TradesWorkstation trades={trades} adapter={adapter} initialId={initialId} journalView={journalView} filterControls={{ applied: filters, pending, apply: (next, selected) => startTransition(() => router.replace(tradeFilterHref("/trades", next, selected), { scroll: false })) }} />;
+  return <TradesWorkstation trades={trades} initialReviewStatuses={initialReviewStatuses} adapter={adapter} initialId={initialId} journalView={journalView} filterControls={{ applied: filters, pending, apply: (next, selected) => startTransition(() => router.replace(tradeFilterHref("/trades", next, selected), { scroll: false })) }} />;
 }

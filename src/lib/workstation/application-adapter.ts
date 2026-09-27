@@ -44,6 +44,7 @@ export function createApplicationAdapter(): WorkstationAdapter {
   };
   return {
     mode: "application",
+    reviewStatuses: async (groupKeys, signal) => (await request<{ statuses: import("./review-status").ReviewStatusSummary[] }>("/api/workstation/review-statuses", { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupKeys }), signal })).statuses,
     benchmarkCandles: (symbol, trade, interval, signal, range, mode = "fill") => candles(mode, "benchmark", { ...trade, symbol }, interval, signal, range),
     metrics: (trade, signal) => metricRequests.run(metricIdentity(trade), signal, sharedSignal => request(`/api/closed-trades/${encodeURIComponent(trade.id)}/market-metrics`, { signal: sharedSignal, priority: "low" })),
     loadView: id => request(`/api/closed-trades/${encodeURIComponent(id)}/workstation/view`),

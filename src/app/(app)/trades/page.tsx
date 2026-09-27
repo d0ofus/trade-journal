@@ -10,6 +10,7 @@ import { getClosedTrades, getTrades } from "@/lib/server/queries";
 import { cn, formatCurrency, formatSignedNotional } from "@/lib/utils";
 import { ApplicationWorkstation } from "@/components/workstation/application-client";
 import { listWorkstationTrades } from "@/lib/server/trade-workstation";
+import { loadReviewStatuses } from "@/lib/server/review-statuses";
 import { normalizeWorkstationFilters, tradeFilterError } from "@/lib/workstation/trade-filters";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -49,7 +50,7 @@ export default async function TradesPage(props: { searchParams: SearchParams }) 
   if (process.env.TRADES_WORKSTATION_ENABLED === "1") {
     const normalized = normalizeWorkstationFilters(filters);
     const trades = tradeFilterError(normalized) ? [] : await listWorkstationTrades(normalized, selectedGroupKey);
-    return <ApplicationWorkstation trades={trades} filters={normalized} initialId={selectedGroupKey} />;
+    return <ApplicationWorkstation trades={trades} initialReviewStatuses={await loadReviewStatuses(trades.map(t => t.id))} filters={normalized} initialId={selectedGroupKey} />;
   }
 
   return (

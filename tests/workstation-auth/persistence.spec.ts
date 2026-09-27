@@ -69,7 +69,7 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   const entry = { ...drawing, id: "phase2-entry", tool: "entry", points: [drawing.points[0]], showPrice: false, color: "#22c55e", text: "Planned entry" };
   const exit = { ...entry, id: "phase2-exit", tool: "exit", showPrice: true, color: "#ef4444" };
   const annotations = [drawing, entry, exit];
-  const update = await context.request.patch(endpoint(), { data: { expectedRevision: doc.revision, document: { ...doc, drawings: [...doc.drawings.filter((d: { id: string }) => !annotations.some(a => a.id === d.id)), ...annotations] } } });
+  const update = await context.request.patch(endpoint(), { data: { expectedRevision: doc.revision, document: { ...doc, review: { ...doc.review, status: "Not reviewed" }, drawings: [...doc.drawings.filter((d: { id: string }) => !annotations.some(a => a.id === d.id)), ...annotations] } } });
   expect(update.status()).toBe(200);
   await page.reload();
   await revealTakeaways(page);
@@ -80,6 +80,7 @@ test("autosaves to PostgreSQL, reloads drawings and chart evidence, and shares t
   await page.getByRole("dialog", { name: "Attach current chart", exact: true }).getByRole("button", { name: "Exit Screen", exact: true }).click();
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).evidence.length).toBeGreaterThan(doc.evidence.length);
   const saved = await (await context.request.get(endpoint())).json();
+  expect(saved.review.status).toBe("In progress");
   expect(saved.drawings).toContainEqual(drawing);
   expect(saved.drawings).toContainEqual(entry);
   expect(saved.drawings).toContainEqual(exit);

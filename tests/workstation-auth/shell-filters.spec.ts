@@ -1,5 +1,12 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { prisma } from "../../src/lib/prisma";
+import { candleFixture } from "./candle-fixture";
+import { resetSyntheticLayouts } from "./reset-layout";
+
+test.beforeEach(resetSyntheticLayouts);
+test.beforeEach(async ({ context }) => {
+  await context.route("**/api/workstation/candles?**", route => route.fulfill({ json: candleFixture(route.request().url()) }));
+});
 
 let groupKey: string;
 let symbol: string;
@@ -8,11 +15,16 @@ async function login(context: BrowserContext) {
   const csrf = await (await context.request.get("/api/auth/csrf")).json();
   await context.request.post("/api/auth/callback/credentials", { form: { csrfToken: csrf.csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true", callbackUrl: "http://127.0.0.1:3101/trades" } });
 }
-async function open(page: Page) { await page.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${encodeURIComponent(groupKey)}`); await expect(page.getByPlaceholder("What will you repeat or change?")).toBeVisible(); }
+const takeawayBox = (page: Page) => page.getByRole("textbox", { name: "Takeaways", exact: true });
+async function open(page: Page) {
+  await page.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${encodeURIComponent(groupKey)}`);
+  await page.locator("summary").filter({ hasText: /^Takeaways$/ }).click();
+  await expect(takeawayBox(page)).toBeVisible();
+}
 test.beforeAll(async () => { const trade = await prisma.closedTrade.findFirstOrThrow({ where: { account: { ibkrAccount: "DEMO-WORKSTATION" }, isStale: false }, orderBy: { closeTime: "desc" } }); groupKey = trade.groupKey; symbol = trade.symbol; });
 test.afterAll(() => prisma.$disconnect());
 
-test("all application routes use one functional navigation rail while only workstation content follows its theme", async ({ page, context }) => {
+test("all application routes retain one functional navigation rail and saved appearance", async ({ page, context }) => {
   await login(context); await open(page);
   const nav = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(nav.getByRole("link")).toHaveCount(7);
@@ -30,7 +42,7 @@ test("all application routes use one functional navigation rail while only works
   const geometry = await page.evaluate(() => ({ content: document.querySelector(".application-content")!.getBoundingClientRect(), body: document.body.scrollHeight, viewport: innerHeight, scheme: getComputedStyle(document.querySelector('input[name="from"]')!).colorScheme }));
   expect(geometry.body).toBeLessThanOrEqual(geometry.viewport + 1);
   expect(geometry.scheme).toBe("dark");
-  await page.getByTitle("Appearance", { exact: true }).click();
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await expect(page.locator(".workstation")).toHaveClass(/ws-light/);
   await nav.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(page.locator(".application-shell")).toHaveAttribute("data-theme", "light");
@@ -50,7 +62,7 @@ test("Apply waits for an in-flight review save and empty results retain usable f
   const patchStarted = new Promise<void>(resolve => { started = resolve; });
   await page.route(`**${endpoint()}`, async route => { if (route.request().method() === "PATCH") { started(); await gate; } await route.continue(); });
   const takeaway = "Save completes before changing server filters";
-  await page.getByPlaceholder("What will you repeat or change?").fill(takeaway);
+  await takeawayBox(page).fill(takeaway);
   await patchStarted;
   await page.getByRole("button", { name: "Expand filters", exact: true }).click();
   const form = page.getByTestId("trade-filters");
@@ -60,7 +72,7 @@ test("Apply waits for an in-flight review save and empty results retain usable f
   expect(new URL(page.url()).searchParams.has("symbol")).toBe(false);
   release();
   await expect(page.getByRole("heading", { name: "No trades match these filters" })).toBeVisible();
-  expect((await (await context.request.get(endpoint())).json()).review.takeaway).toBe(takeaway);
+  expect((await (await context.request.get(endpoint())).json()).review.takeaway).toBe(`<p>${takeaway}</p>`);
   await page.screenshot({ path: "screenshots/workstation-shell-filters/authenticated-empty-results.png" });
   await form.getByRole("button", { name: "Clear all", exact: true }).click();
   await expect(page.locator(".ws-trade-title h2")).toContainText(symbol);
@@ -72,8 +84,8 @@ test("conflicting drafts block filters and sign out while preserving the active 
   const saved = await (await context.request.get(endpoint())).json();
   const winner = await context.request.patch(endpoint(), { data: { expectedRevision: saved.revision, document: { ...saved, review: { ...saved.review, takeaway: "Competing tab wins" } } } });
   expect(winner.status()).toBe(200);
-  await page.getByPlaceholder("What will you repeat or change?").fill("Preserve this conflicting draft");
-  await expect(page.locator(".ws-journal-save")).toContainText("Save paused");
+  await takeawayBox(page).fill("Preserve this conflicting draft");
+  await expect(page.locator(".ws-journal-save")).toContainText(/(?:Save paused|Conflict).*draft preserved/);
   await page.getByRole("button", { name: "Expand filters", exact: true }).click();
   const form = page.getByTestId("trade-filters");
   await form.getByRole("textbox", { name: "Symbol", exact: true }).fill("MISSING");
@@ -82,6 +94,6 @@ test("conflicting drafts block filters and sign out while preserving the active 
   expect(new URL(page.url()).searchParams.has("symbol")).toBe(false);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page.locator(".app-navigation-message")).toContainText("draft is preserved");
-  await expect(page.getByPlaceholder("What will you repeat or change?")).toHaveValue("Preserve this conflicting draft");
+  await expect(takeawayBox(page)).toHaveText("Preserve this conflicting draft");
   expect((await (await context.request.get("/api/auth/session")).json()).user.name).toBe("phase2-reviewer");
 });

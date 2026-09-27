@@ -195,6 +195,7 @@ export type CandleResult = {
 };
 export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown"; aggregation?: string };
 export interface WorkstationAdapter {
+  reviewStatuses?(groupKeys: string[], signal: AbortSignal): Promise<import("./review-status").ReviewStatusSummary[]>;
   benchmarkCandles?: (symbol: "SPY" | "QQQ", trade: Trade, interval: Interval, signal: AbortSignal, range: { from: number; to: number }, mode?: "cache" | "fill") => Promise<CandleResult>;
   metrics?: (trade: Trade, signal: AbortSignal) => Promise<import("./market-metrics").MarketMetrics>;
   loadView?(id: string): Promise<import("./trade-view").SavedTradeView>;

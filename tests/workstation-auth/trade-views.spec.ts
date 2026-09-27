@@ -3,8 +3,12 @@ import { prisma } from "../../src/lib/prisma";
 import { listWorkstationTrades } from "../../src/lib/server/trade-workstation";
 import { defaultPreferences } from "../../src/lib/workstation/types";
 import { mkdirSync } from "node:fs";
-let id: string;
-const url = () => `/trades?account=DEMO-WORKSTATION&symbol=MU&groupKey=${encodeURIComponent(id)}`;
+import { candleFixture } from "./candle-fixture";
+test.beforeEach(async ({ context }) => {
+  await context.route("**/api/workstation/candles?**", route => route.fulfill({ json: candleFixture(route.request().url()) }));
+});
+let id: string, symbol: string;
+const url = () => `/trades?account=DEMO-WORKSTATION&symbol=${symbol}&groupKey=${encodeURIComponent(id)}`;
 const endpoint = () => `/api/closed-trades/${encodeURIComponent(id)}/workstation/view`;
 async function login(context: Pick<BrowserContext, "request">) {
   const csrf = await (await context.request.get("/api/auth/csrf")).json();
@@ -19,8 +23,9 @@ async function panChart(page: import("@playwright/test").Page, chart: import("@p
 }
 test.beforeAll(async ({ request }) => {
   await login({ request });
-  await request.get("/trades?account=DEMO-WORKSTATION&symbol=MU");
-  id = (await listWorkstationTrades({ account: "DEMO-WORKSTATION", symbol: "MU" }))[0].id;
+  const fixture = await prisma.closedTrade.findFirstOrThrow({ where: { account: { ibkrAccount: "DEMO-WORKSTATION" }, symbol: { in: ["MU", "NVDA"] }, isStale: false }, orderBy: { closeTime: "desc" } });
+  symbol = fixture.symbol;
+  id = (await listWorkstationTrades({ account: "DEMO-WORKSTATION", symbol }))[0].id;
   mkdirSync("screenshots/neon-personal-retention", { recursive: true });
 });
 test.afterAll(async () => { await prisma.$disconnect(); });
@@ -28,7 +33,7 @@ test("panned views survive reload independently of reviews; replay does not rewr
   await login(context); await prisma.workstationTradeView.deleteMany({ where: { groupKey: id } });
   await page.addInitScript(prefs => { localStorage.setItem("execution-lab:workstation:preferences:application:v1", JSON.stringify(prefs)); localStorage.setItem("execution-lab:backup-reminder:snoozed:v1", String(Date.now())); }, defaultPreferences());
   const before = await prisma.closedTradeNote.findUnique({ where: { groupKey: id } });
-  await page.goto(url()); const chart = page.getByRole("region", { name: "MU 5m chart", exact: true });
+  await page.goto(url()); const chart = page.getByRole("region", { name: `${symbol} 5m chart`, exact: true });
   await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/);
   const original = await chart.getAttribute("data-visible-from");
   await panChart(page, chart);
@@ -41,6 +46,10 @@ test("panned views survive reload independently of reviews; replay does not rewr
   await expect.poll(async () => Number(await chart.getAttribute("data-visible-from"))).toBe(savedRange.from);
   await expect.poll(async () => Number(await chart.getAttribute("data-visible-to"))).toBe(savedRange.to);
   expect(await prisma.closedTradeNote.findUnique({ where: { groupKey: id } })).toEqual(before);
+  // Let all restored panels finish their normal debounced view save before
+  // measuring writes caused specifically by entering replay.
+  await page.waitForTimeout(1600);
+  await expect.poll(() => page.evaluate(key => localStorage.getItem(key), `execution-lab:trade-view:application:${id}:v1`)).toBeNull();
   const replayBefore = await (await context.request.get(endpoint())).json();
   await page.getByRole("button", { name: "Replay trade", exact: true }).click();
   await page.waitForTimeout(1600);
@@ -48,7 +57,7 @@ test("panned views survive reload independently of reviews; replay does not rewr
   await page.screenshot({ path: "screenshots/neon-personal-retention/desktop-replay.png" });
 });
 test("stale tab views are retained locally and never overwrite a newer revision", async ({ page, context }) => {
-  await login(context); await page.goto(url()); const chart = page.getByRole("region", { name: "MU 5m chart", exact: true });
+  await login(context); await page.goto(url()); const chart = page.getByRole("region", { name: `${symbol} 5m chart`, exact: true });
   await expect(chart).toHaveAttribute("data-visible-bars", /[1-9]/); await page.waitForTimeout(1400);
   const old = await (await context.request.get(endpoint())).json();
   const newer = await context.request.patch(endpoint(), { data: { expectedRevision: old.revision, view: { ...old.view, arrangement: "top" } } }); expect(newer.ok()).toBe(true);

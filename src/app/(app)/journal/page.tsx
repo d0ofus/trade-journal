@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { prisma } from "@/lib/prisma";
 import { ApplicationWorkstation } from "@/components/workstation/application-client";
+import { loadReviewStatuses } from "@/lib/server/review-statuses";
 import { listWorkstationTrades } from "@/lib/server/trade-workstation";
 import { JournalWorkspace } from "@/components/journal-workspace";
 import { PageHeader } from "@/components/ui/page-header";
@@ -23,7 +24,7 @@ export default async function JournalPage(props: { searchParams: SearchParams })
     const link = await prisma.journalLink.findFirst({ where: { journalEntryId: entryId, linkType: "REVIEW_SOURCE", targetType: "CLOSED_TRADE" } });
     if (link?.targetId) {
       const trades = await listWorkstationTrades({}, link.targetId, true);
-      return <ApplicationWorkstation trades={trades} initialId={link.targetId} journalView />;
+      return <ApplicationWorkstation trades={trades} initialReviewStatuses={await loadReviewStatuses(trades.map(t => t.id))} initialId={link.targetId} journalView />;
     }
   }
 
