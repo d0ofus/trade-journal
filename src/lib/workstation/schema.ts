@@ -1,4 +1,5 @@
 import { notionReviewSchema } from "./notion-template";
+import { fundamentalsCaptureSchema } from "./fundamentals-schema";
 import { richHtml } from "./rich-text";
 import { z } from "zod";
 import { drawingTools } from "./types";
@@ -15,7 +16,7 @@ export const workstationDocumentSchema = z.object({
   schema: z.literal(1), revision: z.number().int().min(0), updatedAt: z.string().datetime().nullable(), noteUpdatedAt: z.string().datetime().nullable().optional(), journalEntryId: z.string().nullable().optional(),
   review: z.object({ notion: notionReviewSchema.optional(), setup: text, execution: text, takeaway: text.transform(richHtml), notes: z.string().max(20000), thesis: text, exit: text, mistake: text, followUp: text, tags: z.array(z.string().trim().min(1).max(60)).max(30), status: z.enum(["Not reviewed", "In progress", "Reviewed"]), template: z.string().max(100), custom: z.record(z.string().min(1).max(60), text).refine(value => Object.keys(value).length <= 50) }),
   drawings: z.array(drawingSchema).max(500),
-  evidence: z.array(z.object({ asset: imageAssetSchema.optional(), replayAt: z.number().finite().nonnegative().optional(), origin: z.enum(["upload", "clipboard"]).optional(), peerCapture: peerCapture.optional(), timeInterpretationVersion: z.string().max(160).optional(), id: z.string().min(1).max(200), name: z.string().max(240), image: z.union([z.literal(""), z.string().max(27_000_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/)]), time: z.number().finite().nonnegative(), revision: z.number().int().nonnegative(), timeframe: z.string().max(40) }).refine(e => e.asset ? e.image === "" : e.image.startsWith("data:image/png;base64,"), "Supply an immutable asset reference or a legacy inline PNG, never both")).max(30),
+  evidence: z.array(z.object({ fundamentalsCapture: fundamentalsCaptureSchema.optional(), asset: imageAssetSchema.optional(), replayAt: z.number().finite().nonnegative().optional(), origin: z.enum(["upload", "clipboard"]).optional(), peerCapture: peerCapture.optional(), timeInterpretationVersion: z.string().max(160).optional(), id: z.string().min(1).max(200), name: z.string().max(240), image: z.union([z.literal(""), z.string().max(27_000_000).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/)]), time: z.number().finite().nonnegative(), revision: z.number().int().nonnegative(), timeframe: z.string().max(40) }).refine(e => e.asset ? e.image === "" : e.image.startsWith("data:image/png;base64,"), "Supply an immutable asset reference or a legacy inline PNG, never both")).max(30),
   // Historical material is server-owned; never trust a client replacement.
   legacy: z.unknown().optional(),
 });

@@ -1,5 +1,4 @@
-import { claimCacheLease } from "./workstation-cache-store";
-import { waitForHistory } from "@/lib/workstation/shared-requests";
+import { secJson as fetchSecJson } from "./sec-client";
 
 export type ShareFact = { val: number; end: string; filed: string; accn: string; start?: string };
 export function selectShareFact(facts: ShareFact[], asOf: string): ShareFact | null {
@@ -12,11 +11,7 @@ export function selectShareFact(facts: ShareFact[], asOf: string): ShareFact | n
   return first;
 }
 async function secJson(url: string, signal: AbortSignal) {
-  const deadline = Date.now() + 12000;
-  while (!(await claimCacheLease("rate:sec", 500))) { if (Date.now() >= deadline) throw new Error("SEC request queued"); await waitForHistory(525, signal); }
-  const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]), next: { revalidate: 86400 }, headers: { "User-Agent": process.env.SEC_USER_AGENT?.trim() || "TradeJournal/1.0 (https://github.com/d0ofus/trade-journal)", Accept: "application/json" } });
-  if (!response.ok) throw new Error("Historical shares unavailable");
-  return response.json();
+  return fetchSecJson(url, signal, 86400);
 }
 export async function historicalShares(symbol: string, asOf: string, signal: AbortSignal) {
   const tickers = await secJson("https://www.sec.gov/files/company_tickers.json", signal) as Record<string, { ticker: string; cik_str: number }>;

@@ -4,6 +4,11 @@
     "incremental": false
   },
   "include": [
+    "src/lib/server/fundamentals-publication.test.ts",
+    "src/lib/server/sec-*.ts",
+    "src/lib/workstation/fundamentals*.ts",
+    "src/app/api/workstation/fundamentals/*.ts",
+    "tests/workstation-preview/fundamentals.spec.ts",
     "tests/workstation-preview/note-index-refinements.spec.ts",
     "src/lib/storage-format.test.ts",
     "src/lib/server/storage-usage.test.ts",

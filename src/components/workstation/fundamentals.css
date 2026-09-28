@@ -1,0 +1,27 @@
+.ws-fundamentals { display: grid; gap: 12px; margin-top: 16px; container-type: inline-size; }
+.ws-fundamentals-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.ws-fundamentals-toggle input { width: 14px; height: 14px; accent-color: var(--ws-accent, #b69cff); }
+.ws-fundamentals-toggle small { color: var(--ws-muted, #94a3b8); font-size: 10px; }
+.ws-fundamentals-minis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ws-fundamentals-mini { min-width: 0; display: grid; grid-template-columns: minmax(70px, .8fr) minmax(55px, 1fr); align-items: center; gap: 6px; border: 1px solid #5eead42e; background: #5eead409; border-radius: 7px; padding: 10px; }
+.ws-fundamentals-mini > div { display: grid; gap: 5px; }
+.ws-fundamentals-mini span { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--ws-muted, #94a3b8); }
+.ws-fundamentals-mini strong { font-size: 12px; font-variant-numeric: tabular-nums; }
+.ws-fundamentals-mini small { font-size: 10px; white-space: nowrap; }
+.ws-fundamentals-mini svg { width: 100%; height: 60px; }
+.ws-fundamentals-actions, .ws-fundamentals-dialog-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ws-fundamentals-actions button, .ws-fundamentals-dialog-toolbar button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px; font-size: 11px; }
+.ws-fundamentals-status { font-size: 12px; color: var(--ws-muted, #94a3b8); line-height: 1.6; }
+.ws-fundamentals-status button { margin-left: 8px; }
+.ws-fundamentals-skeleton { height: 82px; border-radius: 7px; background: #94a3b81a; }
+.ws-fundamentals-profile { display: block; max-width: 100%; height: auto; border-radius: 12px; }
+.ws-fundamentals-capture { position: fixed; top: 0; left: -20000px; width: 1120px; height: 820px; pointer-events: none; }
+.ws-fundamentals-capture .ws-fundamentals-profile { max-width: none; width: 1120px; height: 820px; }
+.workstation dialog.ws-review-dialog:has(.ws-fundamentals-dialog) { width: min(1200px, 96vw); max-width: 96vw; }
+.ws-fundamentals-dialog { display: grid; gap: 14px; }
+.ws-fundamentals-dialog-toolbar { justify-content: space-between; }
+.ws-fundamentals-sources { font-size: 12px; }
+.ws-fundamentals-sources > div { display: grid; gap: 5px; margin-top: 12px; }
+.ws-fundamentals-sources a { color: var(--ws-accent, #b69cff); overflow-wrap: anywhere; font-size: 11px; }
+@container (max-width: 355px) { .ws-fundamentals-minis { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .ws-fundamentals-dialog > .ws-fundamentals-profile { min-width: 650px; } .ws-fundamentals-dialog { overflow-x: auto; } }

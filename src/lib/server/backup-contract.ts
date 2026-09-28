@@ -12,7 +12,7 @@ export type BackupTableContract = {
 // They are deliberately excluded from user-data backup payloads, freshness, and restores.
 // Backup sessions contain temporary download manifests, not authoritative images or reviews;
 // restoring a backup starts a new session rather than reviving expired download/pin state.
-export const REGENERABLE_CACHE_MODELS = ["WorkstationMetricCache", "WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease", "NotionRequestGate", "EvidenceBackupSession"] as const;
+export const REGENERABLE_CACHE_MODELS = ["SecFundamentalsCache", "WorkstationMetricCache", "WorkstationCandleChunk", "WorkstationCandleCoverage", "WorkstationCandleJob", "WorkstationCandleLease", "NotionRequestGate", "EvidenceBackupSession"] as const;
 
 export const BACKUP_TABLES = [
   { key: "evidenceAssets", prismaModel: "EvidenceAsset", dependencies: [], restoreOrder: 470, canonicalRows: true, optionalInLegacy: true },

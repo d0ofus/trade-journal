@@ -8,7 +8,7 @@ export async function readPhysicalStorage() {
       SELECT statement_timestamp() AS "measuredAt", pg_database_size(current_database())::bigint AS "currentBytes",
         (SELECT sum(pg_database_size(oid)) FROM pg_database WHERE NOT datistemplate)::bigint AS "branchBytes",
         (SELECT coalesce(sum(pg_total_relation_size(to_regclass(quote_ident(name)))),0) FROM unnest(ARRAY[
-          'WorkstationCandleChunk','WorkstationCandleCoverage','WorkstationCandleJob','WorkstationCandleLease','WorkstationMetricCache'
+          'WorkstationCandleChunk','WorkstationCandleCoverage','WorkstationCandleJob','WorkstationCandleLease','WorkstationMetricCache','SecFundamentalsCache'
         ]) name)::bigint AS "cacheBytes",
         coalesce(pg_total_relation_size(to_regclass('"WorkstationMetricCache"')),0)::bigint AS "metricCacheBytes"`;
     return row;

@@ -1,0 +1,33 @@
+import { expect, it, vi } from "vitest";
+import { demoTrades } from "@/lib/workstation/demo";
+import { emptyDocument } from "@/lib/workstation/types";
+import { attachEvidence } from "@/lib/workstation/evidence";
+import { demoFundamentals } from "@/lib/workstation/fundamentals-demo";
+import { fallbackLayout } from "@/lib/workstation/template-layout";
+const mocks = vi.hoisted(() => ({ read: vi.fn(), trades: vi.fn(), layout: vi.fn(), request: vi.fn(), properties: vi.fn(), assets: vi.fn(), transaction: vi.fn() }));
+vi.mock("@/lib/prisma", () => ({ prisma: { notionPublication: { findUnique: vi.fn(async () => null), upsert: vi.fn() }, evidenceAsset: { findMany: mocks.assets }, $transaction: mocks.transaction } }));
+vi.mock("./trade-workstation", () => ({ readWorkstationDocument: mocks.read, listWorkstationTrades: mocks.trades, WorkstationError: Error }));
+vi.mock("./notion-template-sync", () => ({ readTemplateLayout: mocks.layout }));
+vi.mock("./notion-properties", () => ({ planNotionProperties: mocks.properties }));
+vi.mock("./closed-trade-review-lock", () => ({ lockClosedTradeForReview: vi.fn() }));
+vi.mock("./notion-client", async importOriginal => ({ ...await importOriginal<typeof import("./notion-client")>(), notionRequest: mocks.request }));
+import { createNotionPreview } from "./notion-publication-plan";
+
+it("direct Notion publishing plans only authored Fundamentals prose and explicitly assigned snapshots", async () => {
+  const { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale } = demoFundamentals(demoTrades[0], "before-entry");
+  const asset = { id: "snapshot-asset", storage: "r2" as const, sha256: "a".repeat(64), bytes: 1000, width: 2240, height: 1640, mime: "image/png" as const };
+  const doc = attachEvidence(emptyDocument(), { id: "fundamentals-one", name: "Saved fundamentals", image: "", asset, time: 1, revision: 0, timeframe: "quarterly", fundamentalsCapture: { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale, capturedAt: "2026-09-28T00:00:00.000Z" } }, "fundamentals");
+  doc.review.notion!.analysis.fundamentals = "<p>My analysis before entry</p>";
+  mocks.read.mockResolvedValue(doc); mocks.trades.mockResolvedValue([demoTrades[0]]);
+  mocks.layout.mockResolvedValue({ layout: { ...fallbackLayout, id: "verified-template", sections: fallbackLayout.sections.filter(s => s.key === "fundamentals") }, warning: "" });
+  mocks.properties.mockResolvedValue({ values: {}, display: [], errors: [], schemaHashInput: [] });
+  mocks.assets.mockResolvedValue([{ ...asset, notionHash: "b".repeat(64) }]);
+  mocks.request.mockImplementation(async (path: string) => path === "/users/me" ? { bot: { workspace_limits: { max_file_upload_size_in_bytes: 20000000 } } } : { properties: { Name: { id: "title", name: "Name", type: "title" } } });
+  mocks.transaction.mockImplementation(async work => work({ $queryRaw: vi.fn(), notionPublication: { findUniqueOrThrow: async () => ({ activeJobId: null }) }, notionPublishJob: { upsert: async ({ create }: { create: object }) => ({ ...create, id: "preview-job", state: "preview", progress: {}, error: null, retryAt: null }) }, evidenceAsset: { findFirst: async () => asset, update: vi.fn() }, evidenceAssetReference: { upsert: vi.fn() } }));
+  const result = await createNotionPreview(demoTrades[0].id, 0, "https://journal.example.test");
+  expect(result.sections).toHaveLength(1);
+  expect(result.sections[0]).toMatchObject({ key: "fundamentals", images: 1, html: "<p>My analysis before entry</p>", imageIds: ["fundamentals-one"] });
+  expect(result.assets?.[0]).toMatchObject({ id: "fundamentals-one", asset });
+  expect(JSON.stringify(result.sections)).not.toContain("revenueYoY"); expect(JSON.stringify(result.sections)).not.toContain("Illustrative");
+  expect(mocks.request.mock.calls.every(([path]) => path === "/users/me" || String(path).startsWith("/data_sources/"))).toBe(true);
+});

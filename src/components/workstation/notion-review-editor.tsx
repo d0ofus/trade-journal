@@ -2,6 +2,7 @@
 import { useId, useState, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { chartSections, emptyNotionReview, notionProperties, propertyText, type ReviewSectionKey, type NotionReview, type NotionValue, type PropertyKey } from "@/lib/workstation/notion-template";
+import { FundamentalsSection, type AttachFundamentals } from "./fundamentals-section";
 import { SectionAttachments } from "./section-attachments";
 import { PeerGroups, type PeerGroupSelection } from "./peer-groups";
 import { richPlain } from "@/lib/workstation/rich-text";
@@ -26,11 +27,12 @@ function Choices({ label, value, options, multiple, onChange }: { label: string;
   </div>;
 }
 
-export type NotionEditorProps = { trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ReviewSectionKey) => void; onImage: (section: ReviewSectionKey) => void; onComparePeers: (selection: PeerGroupSelection) => void; mode: "demo" | "application" };
+export type NotionEditorProps = { onAttachFundamentals: AttachFundamentals; onRemoveFundamentals: (id: string) => void; trade: Trade; document: TradeDocument; onChange: (update: (review: Review) => Review) => void; onEvidence: (section: ReviewSectionKey) => void; onImage: (section: ReviewSectionKey) => void; onComparePeers: (selection: PeerGroupSelection) => void; mode: "demo" | "application" };
 export function JournalSection({ section, ...props }: NotionEditorProps & { section: SectionDefinition }) {
   return <Section title={section.label}><FormattedField label={chartSections.some(([key]) => key === section.key) ? `${section.label} commentary` : section.label} value={sectionText(props.document.review, section.key)} onChange={html => props.onChange(review => setSectionText(review, section.key, html))} />
     {section.key === "peers" && <PeerGroups symbol={props.trade.symbol} savedId={props.document.review.notion?.peerGroupId} mode={props.mode} onSelect={peerGroupId => props.onChange(review => ({ ...review, notion: { ...review.notion ?? emptyNotionReview(), peerGroupId } }))} onCompare={props.onComparePeers} />}
-    <SectionAttachments section={section.key} {...props} readOnly={props.trade.stale} />
+    {section.key === "fundamentals" && <FundamentalsSection key={`${props.trade.id}:${props.trade.timeInterpretationVersion}`} trade={props.trade} mode={props.mode} onAttach={props.onAttachFundamentals} />}
+    <SectionAttachments section={section.key} {...props} readOnly={props.trade.stale} hideChartCapture={section.key === "fundamentals"} onRemoveEvidence={section.key === "fundamentals" ? props.onRemoveFundamentals : undefined} />
   </Section>;
 }
 export function NotionReviewEditor(props: NotionEditorProps) {

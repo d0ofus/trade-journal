@@ -1,0 +1,87 @@
+import { fundamentalMoney, fundamentalPercent, fundamentalPeriod, fundamentalSources, type FundamentalQuarter, type FundamentalsSnapshot } from "@/lib/workstation/fundamentals";
+
+const colours = { revenue: "#5eead4", netIncome: "#fbbf24", revenueYoY: "#38bdf8", revenueQoQ: "#22c55e", netIncomeYoY: "#f472b6", netIncomeQoQ: "#fb923c" };
+function domain(values: (number | null | undefined)[]) {
+  const finite = values.filter((v): v is number => v != null && Number.isFinite(v));
+  const min = Math.min(0, ...finite), max = Math.max(0, ...finite);
+  const pad = (max - min || 1) * .12;
+  return { min: min < 0 ? min - pad : 0, max: max + pad };
+}
+const scale = (v: number, d: { min: number; max: number }, top: number, height: number) => top + (d.max - v) / (d.max - d.min) * height;
+const moneyAxis = (v: number) => fundamentalMoney(v);
+type MetricName = "revenue" | "netIncome";
+export function FundamentalsMini({ quarters, metric }: { quarters: FundamentalQuarter[]; metric: MetricName }) {
+  const latest = quarters.at(-1), values = quarters.map(q => q[metric]?.value), d = domain(values);
+  const label = metric === "revenue" ? "Revenue" : "Net income", value = latest?.[metric === "revenue" ? "revenueYoY" : "netIncomeYoY"];
+  const zero = scale(0, d, 3, 54), slot = 150 / Math.max(quarters.length, 1);
+  return <div className="ws-fundamentals-mini"><div><span>{label}</span><strong>{fundamentalMoney(latest?.[metric]?.value)}</strong><small className={value == null ? "" : value >= 0 ? "positive" : "negative"}>{fundamentalPercent(value)} <span>YoY</span></small></div>
+    <svg viewBox="0 0 150 60" role="img" aria-label={`${label}, last ${quarters.length} quarters`}><line x1="0" x2="150" y1={zero} y2={zero} stroke="#64748b" strokeOpacity=".35" />{quarters.map((q, i) => {
+      const v = q[metric]?.value, y = scale(v ?? 0, d, 3, 54);
+      return <rect key={q.periodEnd} x={i * slot + 1} y={v == null ? zero - 1 : Math.min(y, zero)} width={Math.max(1, slot - 3)} height={Math.max(2, Math.abs(y - zero))} fill={v == null ? "#64748b" : v < 0 ? "#fb7185" : colours[metric]}><title>{`${fundamentalPeriod(q)}: ${fundamentalMoney(v)}`}</title></rect>;
+    })}</svg>
+  </div>;
+}
+
+/** Self-contained SVG: the exact same chart is shown in the dialog and captured. */
+export function FundamentalsProfile({ data, demo = false }: { data: FundamentalsSnapshot; demo?: boolean }) {
+  const rows = data.quarters, latest = rows.at(-1);
+  const width = 1120, left = 78, right = 1040, plotWidth = right - left;
+  const slot = plotWidth / Math.max(rows.length, 1), x = (i: number) => left + slot * (i + .5);
+  const money = domain(rows.flatMap(q => [q.revenue?.value, q.netIncome?.value]));
+  const revenue = domain(rows.flatMap(q => [q.revenueYoY, q.revenueQoQ]));
+  const income = domain(rows.flatMap(q => [q.netIncomeYoY, q.netIncomeQoQ]));
+  const latestSources = latest ? fundamentalSources(latest) : [];
+  const filed = latestSources.map(s => s.filed).sort().at(-1) ?? "—";
+  const summary = [["LATEST QUARTER", latest ? fundamentalPeriod(latest) : "—"], ["REVENUE", fundamentalMoney(latest?.revenue?.value)], ["NET INCOME", fundamentalMoney(latest?.netIncome?.value)], ["SEC FILED", filed], ["SOURCE", [...new Set(latestSources.map(s => s.form))].join(" / ") || "—"]];
+  function axes(d: { min: number; max: number }, top: number, height: number, format: (v: number) => string, side = "left") {
+    return Array.from({ length: 4 }, (_, i) => {
+      const v = d.min + (d.max - d.min) * i / 3, y = scale(v, d, top, height);
+      return <g key={i}>{side === "left" && <line x1={left} x2={right} y1={y} y2={y} stroke="#64748b" strokeOpacity=".22" />}<text x={side === "left" ? left - 10 : right + 10} y={y + 4} textAnchor={side === "left" ? "end" : "start"} fontSize="11" fill="#b0bdcf">{format(v)}</text></g>;
+    });
+  }
+  function labels(y: number) { return rows.map((q, i) => <text key={q.periodEnd} x={x(i)} y={y} textAnchor="middle" fill="#cbd5e1" fontSize="12">{fundamentalPeriod(q)}</text>); }
+  const series = ["revenueYoY", "revenueQoQ", "netIncomeYoY", "netIncomeQoQ"] as const;
+  const seriesNames = ["Revenue YoY", "Revenue QoQ", "NI YoY", "NI QoQ"];
+  return <svg xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${width} 820`} width={width} height="820" className="ws-fundamentals-profile" role="img" aria-label={`${data.symbol} quarterly revenue, net income and growth`} style={{ fontFamily: "Arial, sans-serif" }}>
+    <rect width={width} height="820" rx="18" fill="#101824" />
+    <text x="24" y="28" fill="#94a3b8" fontSize="11" letterSpacing="2">{demo ? "DEMO FUNDAMENTALS · ILLUSTRATIVE" : "SEC FUNDAMENTALS"}</text>
+    <text x="24" y="54" fill="#f1f5f9" fontSize="20" fontWeight="700">{data.symbol} · {(data.issuer?.name ?? "").slice(0, 65)}</text>
+    <text x="24" y="78" fill="#cbd5e1" fontSize="12">{data.mode === "before-entry" ? `Before entry · filings before ${data.cutoff} (New York)` : "Latest available · includes filings after entry"}</text>
+    <text x="24" y="99" fill={data.stale ? "#fbbf24" : "#94a3b8"} fontSize="11">{data.stale ? "Cached data · SEC unavailable · " : "Retrieved "}{data.fetchedAt?.replace("T", " ").slice(0, 19) ?? "—"} UTC</text>
+    {summary.map(([label, value], i) => <g key={label}><rect x={24 + i * 216} y="116" width="207" height="56" rx="10" fill="#131e2d" stroke="#263344" /><text x={36 + i * 216} y="136" fill="#94a3b8" fontSize="9" letterSpacing="1">{label}</text><text x={36 + i * 216} y="157" fill="#f1f5f9" fontSize="14" fontWeight="600">{value}</text></g>)}
+    <rect x="16" y="186" width="1088" height="287" rx="14" fill="none" stroke="#263344" />
+    <text x="32" y="211" fill="#f1f5f9" fontSize="14" fontWeight="600">Quarterly Revenue + Net Income</text>
+    <text x="32" y="232" fill="#94a3b8" fontSize="11">USD · {rows.length} fiscal quarters · gaps indicate unavailable values</text>
+    {axes(money, 256, 171, moneyAxis)}
+    {rows.flatMap((q, i) => (["revenue", "netIncome"] as const).map((metric, j) => {
+      const v = q[metric]?.value; if (v == null) return null;
+      const y = scale(v, money, 256, 171), zero = scale(0, money, 256, 171), barWidth = Math.min(40, slot * .35);
+      return <rect key={`${q.periodEnd}:${metric}`} x={x(i) + (j === 0 ? -barWidth - 2 : 2)} y={Math.min(y, zero)} width={barWidth} height={Math.max(1, Math.abs(y - zero))} rx="2" fill={colours[metric]}><title>{`${fundamentalPeriod(q)} ${metric === "revenue" ? "Revenue" : "Net income"}: ${fundamentalMoney(v)}${q[metric]?.derived ? " (derived Q4)" : ""}`}</title></rect>;
+    }))}
+    {labels(447)}
+    <text x="800" y="212" fill={colours.revenue} fontSize="11">■ Revenue</text><text x="925" y="212" fill={colours.netIncome} fontSize="11">■ Net income</text>
+    <rect x="16" y="487" width="1088" height="292" rx="14" fill="none" stroke="#263344" />
+    <text x="32" y="512" fill="#f1f5f9" fontSize="14" fontWeight="600">Growth: YoY + QoQ</text>
+    <text x={left} y="540" fill="#7dd3fc" fontSize="10">REVENUE</text><text x={right} y="540" fill="#f9a8d4" fontSize="10" textAnchor="end">NET INCOME</text>
+    {axes(revenue, 556, 151, v => `${Math.round(v)}%`)}{axes(income, 556, 151, v => `${Math.round(v)}%`, "right")}
+    {series.map((metric, si) => {
+      const d = si < 2 ? revenue : income;
+      const path = rows.map((q, i) => q[metric] == null ? "" : `${i && rows[i - 1][metric] != null ? "L" : "M"}${x(i)},${scale(q[metric]!, d, 556, 151)}`).join(" ");
+      return <g key={metric}><path d={path} fill="none" stroke={colours[metric]} strokeWidth="2" strokeDasharray={si < 2 ? "2 5" : undefined} />{rows.map((q, i) => q[metric] == null ? null : <circle key={q.periodEnd} cx={x(i)} cy={scale(q[metric]!, d, 556, 151)} r="3" fill={colours[metric]}><title>{`${fundamentalPeriod(q)} ${seriesNames[si]}: ${fundamentalPercent(q[metric])}`}</title></circle>)}</g>;
+    })}
+    {labels(729)}
+    {series.map((s, i) => <text key={s} x={310 + i * 140} y="759" fill={colours[s]} fontSize="11">━ {seriesNames[i]}</text>)}
+    <text x="24" y="801" fill="#94a3b8" fontSize="10">Source: SEC Company Facts · Q4 may be derived from annual results less Q1–Q3 · Growth uses the absolute prior value</text>
+  </svg>;
+}
+
+export async function captureFundamentalsSvg(svg: SVGSVGElement): Promise<HTMLCanvasElement> {
+  const blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = new Image(); image.src = url; await image.decode();
+    const canvas = document.createElement("canvas"); canvas.width = 2240; canvas.height = 1640;
+    canvas.getContext("2d")!.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  } finally { URL.revokeObjectURL(url); }
+}

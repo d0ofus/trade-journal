@@ -17,6 +17,7 @@ import { preserveLayoutArchive } from "@/lib/workstation/template-layout-schema"
 import { TemplateLayoutContext, useTemplateLayout } from "./use-template-layout";
 import { NotionPublishDialog } from "./notion-publish-dialog";
 import { newestTradesFirst } from "@/lib/workstation/trade-order";
+import type { FundamentalsCapture } from "@/lib/workstation/fundamentals";
 import type { PeerCapture, PeerView } from "@/lib/workstation/peers";
 import type { PeerGroupSelection } from "./peer-groups";
 import dynamic from "next/dynamic";
@@ -1136,6 +1137,23 @@ export function TradesWorkstation({
       assertCurrent(); notify("Comparison chart attached to Peers.");
     } finally { operation.current = false; }
   };
+  const captureFundamentals = async (canvas: HTMLCanvasElement, metadata: FundamentalsCapture) => {
+    if (operation.current || trade.stale) throw new Error("Open an editable review and finish the current save before attaching.");
+    const generation = reviewContext.current.generation;
+    const assertCurrent = () => { if (generation !== reviewContext.current.generation) throw new Error("Snapshot cancelled because the selected trade changed."); };
+    operation.current = true;
+    try {
+      if (!(await persistence.flush())) throw new Error("Save the review before attaching fundamentals.");
+      assertCurrent();
+      const candidate = { id: crypto.randomUUID(), name: `${trade.symbol} fundamentals · ${metadata.mode === "before-entry" ? `before ${metadata.cutoff}` : "latest available"}`, image: canvas.toDataURL("image/png"), time: Date.parse(metadata.capturedAt) / 1000, revision: persistence.getDocument()?.revision ?? 0, timeframe: "quarterly", timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", fundamentalsCapture: metadata };
+      assertEvidenceCapacity([...(persistence.getDocument()?.evidence ?? []), candidate]);
+      const evidence = await storeEvidence(trade.id, adapter.mode, candidate, attachmentAbort.current.signal, "fundamentals");
+      assertCurrent();
+      persistence.changeContent(d => attachEvidence(d, evidence, "fundamentals", layoutState.layout));
+      if (!(await persistence.flush())) throw new Error("The snapshot remains in your recovery draft. Retry saving the review.");
+      assertCurrent(); notify("Snapshot attached to Fundamentals.");
+    } finally { operation.current = false; }
+  };
   const imageToken = imageGeneration.current;
   const validateImported = (image: ImportedImage) => {
     const doc = persistence.getDocument();
@@ -1776,6 +1794,8 @@ export function TradesWorkstation({
       onEvidence={section => void capture("attach", section)}
       onImage={section => { if (!trade.stale) { imageGeneration.current++; setImageDestination(section); setModal("image"); } }}
       onComparePeers={openPeers}
+      onAttachFundamentals={captureFundamentals}
+      onRemoveFundamentals={id => { if (!trade.stale) persistence.changeContent(d => removeEvidence(d, id)); }}
       onNotionExport={() => void prepareNotionExport()}
       onNotionPublish={() => void prepareNotionPublish()}
       preferences={preferences}
@@ -1889,7 +1909,7 @@ export function TradesWorkstation({
   );
   const evidenceContent = (
     <div className="ws-evidence">
-      <PendingEvidence key={`${adapter.mode}:${trade.id}:${trade.timeInterpretationVersion}:${trade.stale}`} tradeId={trade.id} mode={adapter.mode} savedIds={documentState?.evidence.map(e => e.id) ?? []} readOnly={!!trade.stale} onRecover={async (evidence, section) => { const generation = reviewContext.current.generation; persistence.change(doc => { if (doc.evidence.some(e => e.id === evidence.id)) return doc; const destination = section ?? (evidence.peerCapture ? "peers" : undefined); if (destination) return attachEvidence(doc, evidence, destination, layoutState.layout); const next = { ...doc, evidence: [...doc.evidence, evidence] }; assertEvidenceCapacity(next.evidence); return next; }); if (!(await persistence.flush())) throw new Error("Recovered image remains in your review draft. Retry saving."); if (reviewContext.current.generation !== generation) throw new Error("Review changed; recovery remains scoped to the original trade."); }} />
+      <PendingEvidence key={`${adapter.mode}:${trade.id}:${trade.timeInterpretationVersion}:${trade.stale}`} tradeId={trade.id} mode={adapter.mode} savedIds={documentState?.evidence.map(e => e.id) ?? []} readOnly={!!trade.stale} onRecover={async (evidence, section) => { const generation = reviewContext.current.generation; persistence.change(doc => { if (doc.evidence.some(e => e.id === evidence.id)) return doc; const destination = section ?? (evidence.fundamentalsCapture ? "fundamentals" : evidence.peerCapture ? "peers" : undefined); if (destination) return attachEvidence(doc, evidence, destination, layoutState.layout); const next = { ...doc, evidence: [...doc.evidence, evidence] }; assertEvidenceCapacity(next.evidence); return next; }); if (!(await persistence.flush())) throw new Error("Recovered image remains in your review draft. Retry saving."); if (reviewContext.current.generation !== generation) throw new Error("Review changed; recovery remains scoped to the original trade."); }} />
       <p role="status" className="ws-help">{documentState ? `${documentState.evidence.length}/30 images · ${(evidenceUsage(documentState.evidence).bytes / 1_000_000).toFixed(2)}/50 MB originals · ${(evidenceUsage(documentState.evidence).remainingBytes / 1_000_000).toFixed(2)} MB remaining${evidenceUsage(documentState.evidence).warning ? " · Storage warning: at least 80% used" : ""}` : "Loading image usage…"}</p>
       {replay !== null && <p className="ws-replay-notice" role="note">Saved evidence may contain hindsight. New chart captures record the current replay cutoff.</p>}
       <div className="ws-executions-toolbar">

@@ -118,6 +118,7 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  fundamentalsCapture?: import("./fundamentals").FundamentalsCapture;
   asset?: import("./image-assets").ImageAssetReference;
   /** Replay cutoff at capture time; absent for ordinary captures and imports. */
   replayAt?: number;

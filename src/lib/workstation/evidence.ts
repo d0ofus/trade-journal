@@ -4,7 +4,7 @@ import type { Evidence, TradeDocument } from "./types";
 import { assertEvidenceCapacity } from "./image-assets";
 import { preserveLayoutArchive, type TemplateLayout } from "./template-layout-schema";
 
-export function evidenceSource(e: Evidence) { return e.origin === "upload" ? "Uploaded image" : e.origin === "clipboard" ? "Clipboard screenshot" : e.peerCapture ? "Peer comparison" : "Workspace chart"; }
+export function evidenceSource(e: Evidence) { return e.fundamentalsCapture ? "SEC fundamentals" : e.origin === "upload" ? "Uploaded image" : e.origin === "clipboard" ? "Clipboard screenshot" : e.peerCapture ? "Peer comparison" : "Workspace chart"; }
 export function evidenceCaption(e: Evidence) { return e.name + (e.replayAt === undefined ? "" : ` · Replay cutoff ${new Date(e.replayAt * 1000).toISOString()}`); }
 export function earlierTimestampBasis(e: Evidence, version: string) { return !e.origin && e.timeInterpretationVersion !== version; }
 

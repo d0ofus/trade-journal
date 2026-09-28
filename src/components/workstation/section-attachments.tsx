@@ -7,12 +7,12 @@ import { useJournalSections } from "./use-template-layout";
 import { CaptureQualityControls } from "./capture-quality";
 import { evidenceUsage } from "@/lib/workstation/image-assets";
 
-export function SectionAttachments({ section, document, onChange, onEvidence, onImage, readOnly = false }: {
+export function SectionAttachments({ section, document, onChange, onEvidence, onImage, readOnly = false, hideChartCapture = false, onRemoveEvidence }: {
   section: ReviewSectionKey; document: TradeDocument;
   onChange: (update: (review: Review) => Review) => void;
   onEvidence: (section: ReviewSectionKey) => void;
   onImage: (section: ReviewSectionKey) => void;
-  readOnly?: boolean;
+  readOnly?: boolean; hideChartCapture?: boolean; onRemoveEvidence?: (id: string) => void;
 }) {
   const label = useJournalSections(document.review.notion?.layout).find(([key]) => key === section)?.[1] ?? "Archived section";
   const ids = sectionEvidenceIds(document.review.notion, section);
@@ -21,15 +21,15 @@ export function SectionAttachments({ section, document, onChange, onEvidence, on
     notion: assignSectionEvidence(review.notion ?? emptyNotionReview(), section, id, checked),
   }));
   return <div className="ws-section-attachments">
-    {!readOnly && <CaptureQualityControls />}
+    {!readOnly && !hideChartCapture && <CaptureQualityControls />}
     <div className="ws-section-attachment-actions">
-      <button type="button" className="ws-add-evidence" disabled={readOnly} onClick={() => onEvidence(section)}>Attach current chart to {label}</button>
+      {!hideChartCapture && <button type="button" className="ws-add-evidence" disabled={readOnly} onClick={() => onEvidence(section)}>Attach current chart to {label}</button>}
       <button type="button" disabled={readOnly} onClick={() => onImage(section)}>Attach image</button>
     </div>
     {!readOnly && <small className="ws-help">{(usage.remainingBytes / 1_000_000).toFixed(2)} MB remaining · {30 - usage.count} image slots{usage.warning ? " · Image usage exceeds 80%" : ""}</small>}
     {document.evidence.filter(e => ids.includes(e.id)).map(e => <figure key={e.id} className="ws-section-preview">
       <EvidenceThumbnail evidence={e} />
-      <figcaption><EvidenceDownload evidence={e} /><button type="button" disabled={readOnly} onClick={() => assign(e.id, false)} aria-label={`Detach ${e.name} from ${label}`}>Detach</button></figcaption>
+      <figcaption><EvidenceDownload evidence={e} /><button type="button" disabled={readOnly} onClick={() => onRemoveEvidence ? onRemoveEvidence(e.id) : assign(e.id, false)} aria-label={`${onRemoveEvidence ? "Remove" : "Detach"} ${e.name} from ${label}`}>{onRemoveEvidence ? "Remove" : "Detach"}</button></figcaption>
     </figure>)}
   </div>;
 }

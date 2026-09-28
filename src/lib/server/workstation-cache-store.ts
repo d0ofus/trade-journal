@@ -44,7 +44,7 @@ export class CachePriorityError extends CacheBudgetError {}
 export async function cacheUsage(db: UsageReader = prisma) {
   const rows = await db.$queryRaw<{ cache: bigint; databases: bigint }[]>`
     SELECT (pg_total_relation_size('"WorkstationCandleChunk"') + pg_total_relation_size('"WorkstationCandleCoverage"') +
-      pg_total_relation_size('"WorkstationCandleJob"') + pg_total_relation_size('"WorkstationCandleLease"') + coalesce(pg_total_relation_size(to_regclass('"WorkstationMetricCache"')),0))::bigint AS cache,
+      pg_total_relation_size('"WorkstationCandleJob"') + pg_total_relation_size('"WorkstationCandleLease"') + coalesce(pg_total_relation_size(to_regclass('"WorkstationMetricCache"')),0) + coalesce(pg_total_relation_size(to_regclass('"SecFundamentalsCache"')),0))::bigint AS cache,
       (SELECT sum(pg_database_size(oid))::bigint FROM pg_database WHERE NOT datistemplate) AS databases`;
   const cacheBytes = Number(rows[0].cache), databaseBytes = Number(rows[0].databases);
   return { cacheBytes, databaseBytes, cacheLimit: 100_000_000, databaseLimit: 400_000_000,
