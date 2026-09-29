@@ -60,3 +60,14 @@ it("uses the New York day rather than UTC and never fetches unresolved historica
   const result = await loadTradeFundamentals(trade("2025-05-02T01:00:00Z"), "before-entry", new AbortController().signal, deps);
   expect(result.cutoff).toBe("2025-05-01"); expect(result.quarters).toHaveLength(4);
 });
+it.each([undefined, "OTHER", " other "])("loads SEC fundamentals for legacy %s stock imports without changing their classification", async assetType => {
+  const { deps } = setup(), legacy = { ...trade(), assetType };
+  const result = await loadTradeFundamentals(legacy, "before-entry", new AbortController().signal, deps);
+  expect(result.status).toBe("ready"); expect(result.quarters).toHaveLength(4);
+  expect(deps.fetch).toHaveBeenCalledTimes(2); expect(legacy.assetType).toBe(assetType);
+});
+it.each(["OPTION", "OTHER", undefined])("rejects option contracts classified as %s before requesting SEC data", async assetType => {
+  const { deps } = setup();
+  const result = await loadTradeFundamentals({ ...trade(), symbol: "TEST  250516C00250000", assetType }, "latest", new AbortController().signal, deps);
+  expect(result.status).toBe("unsupported"); expect(deps.fetch).not.toHaveBeenCalled();
+});

@@ -1,6 +1,7 @@
 import { emptyFundamentals, fundamentalsCutoff, type FundamentalsMode, type FundamentalsSnapshot } from "@/lib/workstation/fundamentals";
 import { SharedRequests, waitForHistory } from "@/lib/workstation/shared-requests";
 import type { Trade } from "@/lib/workstation/types";
+import { shareEligibility } from "@/lib/workstation/share-eligibility";
 import { extractFundamentalFacts, parseFundamentalQuarters, type FundamentalFacts } from "./sec-fundamentals-parser";
 import { readSecCache, writeSecCache, type SecCacheEntry } from "./sec-fundamentals-cache";
 import { claimCacheLease, releaseCacheLease, type CacheLease } from "./workstation-cache-store";
@@ -20,7 +21,8 @@ export async function loadTradeFundamentals(trade: Trade, mode: FundamentalsMode
   const cutoff = mode === "before-entry" ? fundamentalsCutoff(trade) : null;
   const result = emptyFundamentals(trade.symbol, mode, cutoff);
   if (mode === "before-entry" && !cutoff) return { ...result, status: "unresolved-date", message: "Resolve the entry execution date to view fundamentals before entry." };
-  if (trade.assetType && trade.assetType !== "STOCK") return { ...result, status: "unsupported", message: "SEC company fundamentals are available for stocks with supported USD US-GAAP filings." };
+  const shareBasis = shareEligibility(trade);
+  if (!shareBasis || shareBasis === "etf") return { ...result, status: "unsupported", message: "SEC company fundamentals are available for stocks with supported USD US-GAAP filings." };
   async function cached(key: string, maxAge: (value: unknown) => number, fetchValue: (signal: AbortSignal) => Promise<unknown>) {
     const prior = await deps.read(key);
     if (prior && Date.now() - Date.parse(prior.fetchedAt) < maxAge(prior.value)) return { ...prior, stale: false };

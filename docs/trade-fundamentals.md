@@ -10,6 +10,8 @@ The parser adapts `market-overview/worker/src/fundamentals-service.ts`: SEC tick
 
 Coverage matches standard USD revenue/net-income facts in 10-Q, 10-K and their amendments. Foreign reporting forms, custom issuer taxonomies and historical ticker changes are not inferred. Latest mode explicitly includes later filings and restatements.
 
+Older stock imports classified as `OTHER` (or without a classification) use the existing legacy-share compatibility rule and resolve their ticker through SEC. This does not change broker classifications or accounting. Explicit non-stock instruments, ETFs and recognized option-contract symbols are excluded before SEC requests.
+
 ## Automatic loading and configuration
 
 `GET /api/workstation/fundamentals?tradeId=…&mode=before-entry|latest` requires the existing API session and workstation flag. It resolves the ticker and timestamp policy from the stored trade and returns private, non-cacheable HTTP responses. Browser callers cannot override the cutoff or ticker. The section fetches when opened and aborts/ignores obsolete requests when switching trades.
