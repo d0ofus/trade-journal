@@ -29,6 +29,22 @@ describe("point-in-time SEC fundamentals", () => {
     expect(rows.map(q => [q.fiscalYear, q.fiscalQuarter])).toEqual([[2024, 1], [2024, 3], [2025, 1], [2025, 2]]);
     expect(rows[1].revenueQoQ).toBeNull(); expect(rows[3].revenueYoY).toBeNull();
   });
+  it("assigns comparative annual facts to their own fiscal year without losing the current Q4", () => {
+    const facts = testFundamentalFacts();
+    for (const tag of ["Revenues", "NetIncomeLoss"]) {
+      const current = facts[tag].find(f => f.fp === "FY")!;
+      facts[tag].unshift({ ...current, start: "2023-01-01", end: "2023-12-31", val: 300 });
+    }
+    const rows = parseFundamentalQuarters(facts, "2025-05-01");
+    expect(rows.map(q => [q.fiscalYear, q.fiscalQuarter])).toEqual([[2024, 1], [2024, 2], [2024, 3], [2024, 4]]);
+    expect(rows.at(-1)).toMatchObject({ revenue: { value: 150, derived: true }, netIncome: { value: 20, derived: true } });
+  });
+  it("labels pre-IPO comparative quarters using the reporting period rather than the filing year", () => {
+    const current = testFact(150, "2025-01-01", "2025-03-31", "2025-05-01", "Q1", 2025);
+    const comparative = { ...current, start: "2024-01-01", end: "2024-03-31", val: 100 };
+    expect(parseFundamentalQuarters({ Revenues: [comparative, current] }, "2025-05-02").map(q => [q.fiscalYear, q.fiscalQuarter, q.revenue?.value])).toEqual([[2024, 1, 100], [2025, 1, 150]]);
+    expect(parseFundamentalQuarters({ Revenues: [comparative, current] }, "2025-05-01")).toEqual([]);
+  });
   it("uses each company's disclosed fiscal year and handles a September year-end", () => {
     const Revenues = [
       testFact(90, "2023-10-01", "2023-12-31", "2024-02-01", "Q1", 2024),
@@ -37,6 +53,7 @@ describe("point-in-time SEC fundamentals", () => {
       testFact(420, "2023-10-01", "2024-09-30", "2024-11-01", "FY", 2024),
       testFact(130, "2024-10-01", "2024-12-31", "2025-02-01", "Q1", 2025),
     ];
+    Revenues.unshift({ ...Revenues[3], start: "2022-10-01", end: "2023-09-30", val: 300 });
     expect(parseFundamentalQuarters({ Revenues }, "2025-02-02").map(q => [q.fiscalYear, q.fiscalQuarter, q.revenue?.value])).toEqual([[2024, 1, 90], [2024, 2, 100], [2024, 3, 110], [2024, 4, 120], [2025, 1, 130]]);
     expect(parseFundamentalQuarters({ Revenues }, "2024-06-01").map(q => q.fiscalQuarter)).toEqual([1, 2]);
   });

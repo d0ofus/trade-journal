@@ -12,6 +12,8 @@ Coverage matches standard USD revenue/net-income facts in 10-Q, 10-K and their a
 
 Older stock imports classified as `OTHER` (or without a classification) use the existing legacy-share compatibility rule and resolve their ticker through SEC. This does not change broker classifications or accounting. Explicit non-stock instruments, ETFs and recognized option-contract symbols are excluded before SEC requests.
 
+SEC's `fy` metadata identifies the filing's fiscal year, including on prior-year comparative facts. The parser offsets comparative years using the latest period disclosed in that same eligible filing before building its fiscal calendar. This prevents comparative annual results from displacing the current year's Q4.
+
 ## Automatic loading and configuration
 
 `GET /api/workstation/fundamentals?tradeId=…&mode=before-entry|latest` requires the existing API session and workstation flag. It resolves the ticker and timestamp policy from the stored trade and returns private, non-cacheable HTTP responses. Browser callers cannot override the cutoff or ticker. The section fetches when opened and aborts/ignores obsolete requests when switching trades.

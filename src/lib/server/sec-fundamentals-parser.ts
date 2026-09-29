@@ -35,9 +35,18 @@ export function parseFundamentalQuarters(facts: FundamentalFacts, cutoff: string
   // Filter every contributing fact before calendar construction or selection.
   const eligible = Object.fromEntries(Object.entries(facts).map(([tag, values]) => [tag, values.filter(f => !cutoff || f.filed < cutoff && f.end < cutoff)]));
   const all = Object.values(eligible).flat();
+  // SEC fy identifies the filing's fiscal year, even on prior-year comparatives.
+  // Offset it from the latest period disclosed in that same eligible filing.
+  const reportEnds = new Map<string, string>();
+  for (const f of all) {
+    const key = `${f.accn}:${f.filed}`, end = reportEnds.get(key);
+    if (!end || f.end > end) reportEnds.set(key, f.end);
+  }
+  const fiscalYear = (f: SecFact) => f.fy == null ? Number(f.end.slice(0, 4))
+    : f.fy - Math.round((Date.parse(reportEnds.get(`${f.accn}:${f.filed}`)!) - Date.parse(f.end)) / (365.2425 * day));
   const annuals = [...new Set(all.filter(annual).map(f => f.end))].sort().map(end => {
     const original = all.filter(f => f.end === end && annual(f)).sort(newer)[0];
-    return { end, year: original.fy ?? Number(end.slice(0, 4)) };
+    return { end, year: fiscalYear(original) };
   });
   function period(end: string): { year: number; q: number } | null {
     // Anchor to an actually disclosed year end; elapsed quarters retain gaps.
@@ -53,7 +62,7 @@ export function parseFundamentalQuarters(facts: FundamentalFacts, cutoff: string
     }
     // Newly reporting issuers can have quarters before their first annual filing.
     const original = all.filter(f => f.end === end && quarter(f) && /^Q[1-3]$/.test(f.fp ?? "") && f.fy).sort(newer)[0];
-    return original ? { year: original.fy!, q: Number(original.fp!.slice(1)) } : null;
+    return original ? { year: fiscalYear(original), q: Number(original.fp!.slice(1)) } : null;
   }
   const calendar = new Map([...new Set(all.filter(f => quarter(f) || annual(f)).map(f => f.end))].flatMap(end => { const p = period(end); return p ? [[end, p] as const] : []; }));
   type Point = { metric: FundamentalMetric; end: string; year: number; q: number };
