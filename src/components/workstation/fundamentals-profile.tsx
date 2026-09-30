@@ -1,4 +1,6 @@
+"use client";
 import { fundamentalMoney, fundamentalPercent, fundamentalPeriod, fundamentalSources, type FundamentalQuarter, type FundamentalsSnapshot } from "@/lib/workstation/fundamentals";
+import { useFundamentalsHover } from "./fundamentals-hover";
 
 const colours = { revenue: "#5eead4", netIncome: "#fbbf24", revenueYoY: "#38bdf8", revenueQoQ: "#22c55e", netIncomeYoY: "#f472b6", netIncomeQoQ: "#fb923c" };
 function domain(values: (number | null | undefined)[]) {
@@ -11,19 +13,23 @@ const scale = (v: number, d: { min: number; max: number }, top: number, height: 
 const moneyAxis = (v: number) => fundamentalMoney(v);
 type MetricName = "revenue" | "netIncome";
 export function FundamentalsMini({ quarters, metric }: { quarters: FundamentalQuarter[]; metric: MetricName }) {
+  const hover = useFundamentalsHover(quarters, metric);
   const latest = quarters.at(-1), values = quarters.map(q => q[metric]?.value), d = domain(values);
   const label = metric === "revenue" ? "Revenue" : "Net income", value = latest?.[metric === "revenue" ? "revenueYoY" : "netIncomeYoY"];
   const zero = scale(0, d, 3, 54), slot = 150 / Math.max(quarters.length, 1);
   return <div className="ws-fundamentals-mini"><div><span>{label}</span><strong>{fundamentalMoney(latest?.[metric]?.value)}</strong><small className={value == null ? "" : value >= 0 ? "positive" : "negative"}>{fundamentalPercent(value)} <span>YoY</span></small></div>
-    <svg viewBox="0 0 150 60" role="img" aria-label={`${label}, last ${quarters.length} quarters`}><line x1="0" x2="150" y1={zero} y2={zero} stroke="#64748b" strokeOpacity=".35" />{quarters.map((q, i) => {
+    <svg viewBox="0 0 150 60" role="group" aria-label={`${label}, last ${quarters.length} quarters`}>
+      {hover.index != null && <rect data-fundamentals-highlight={hover.index} x={hover.index * slot} y={0} width={slot} height={60} fill="#b69cff" fillOpacity=".16" pointerEvents="none" />}
+      <line x1="0" x2="150" y1={zero} y2={zero} stroke="#64748b" strokeOpacity=".35" />{quarters.map((q, i) => {
       const v = q[metric]?.value, y = scale(v ?? 0, d, 3, 54);
       return <rect key={q.periodEnd} x={i * slot + 1} y={v == null ? zero - 1 : Math.min(y, zero)} width={Math.max(1, slot - 3)} height={Math.max(2, Math.abs(y - zero))} fill={v == null ? "#64748b" : v < 0 ? "#fb7185" : colours[metric]}><title>{`${fundamentalPeriod(q)}: ${fundamentalMoney(v)}`}</title></rect>;
-    })}</svg>
+    })}{hover.hitArea(`${label} mini chart`, { x: 0, y: 0, width: 150, height: 60 })}</svg>{hover.tooltip}
   </div>;
 }
 
 /** Self-contained SVG: the exact same chart is shown in the dialog and captured. */
-export function FundamentalsProfile({ data, demo = false }: { data: FundamentalsSnapshot; demo?: boolean }) {
+export function FundamentalsProfile({ data, demo = false, interactive = false }: { data: FundamentalsSnapshot; demo?: boolean; interactive?: boolean }) {
+  const hover = useFundamentalsHover(data.quarters);
   const rows = data.quarters, latest = rows.at(-1);
   const width = 1120, left = 78, right = 1040, plotWidth = right - left;
   const slot = plotWidth / Math.max(rows.length, 1), x = (i: number) => left + slot * (i + .5);
@@ -42,7 +48,7 @@ export function FundamentalsProfile({ data, demo = false }: { data: Fundamentals
   function labels(y: number) { return rows.map((q, i) => <text key={q.periodEnd} x={x(i)} y={y} textAnchor="middle" fill="#cbd5e1" fontSize="12">{fundamentalPeriod(q)}</text>); }
   const series = ["revenueYoY", "revenueQoQ", "netIncomeYoY", "netIncomeQoQ"] as const;
   const seriesNames = ["Revenue YoY", "Revenue QoQ", "NI YoY", "NI QoQ"];
-  return <svg xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${width} 820`} width={width} height="820" className="ws-fundamentals-profile" role="img" aria-label={`${data.symbol} quarterly revenue, net income and growth`} style={{ fontFamily: "Arial, sans-serif" }}>
+  return <><svg xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${width} 820`} width={width} height="820" className="ws-fundamentals-profile" role={interactive ? "group" : "img"} aria-label={`${data.symbol} quarterly revenue, net income and growth`} style={{ fontFamily: "Arial, sans-serif" }}>
     <rect width={width} height="820" rx="18" fill="#101824" />
     <text x="24" y="28" fill="#94a3b8" fontSize="11" letterSpacing="2">{demo ? "DEMO FUNDAMENTALS · ILLUSTRATIVE" : "SEC FUNDAMENTALS"}</text>
     <text x="24" y="54" fill="#f1f5f9" fontSize="20" fontWeight="700">{data.symbol} · {(data.issuer?.name ?? "").slice(0, 65)}</text>
@@ -52,6 +58,7 @@ export function FundamentalsProfile({ data, demo = false }: { data: Fundamentals
     <rect x="16" y="186" width="1088" height="287" rx="14" fill="none" stroke="#263344" />
     <text x="32" y="211" fill="#f1f5f9" fontSize="14" fontWeight="600">Quarterly Revenue + Net Income</text>
     <text x="32" y="232" fill="#94a3b8" fontSize="11">USD · {rows.length} fiscal quarters · gaps indicate unavailable values</text>
+    {interactive && hover.index != null && [ { top: 256, height: 171 }, { top: 556, height: 151 } ].map(plot => <g key={plot.top} data-fundamentals-highlight={hover.index} pointerEvents="none"><rect x={left + hover.index! * slot} y={plot.top} width={slot} height={plot.height} fill="#b69cff" fillOpacity=".09" /><line x1={x(hover.index!)} x2={x(hover.index!)} y1={plot.top} y2={plot.top + plot.height} stroke="#b69cff" strokeOpacity=".7" strokeDasharray="3 4" /></g>)}
     {axes(money, 256, 171, moneyAxis)}
     {rows.flatMap((q, i) => (["revenue", "netIncome"] as const).map((metric, j) => {
       const v = q[metric]?.value; if (v == null) return null;
@@ -72,7 +79,8 @@ export function FundamentalsProfile({ data, demo = false }: { data: Fundamentals
     {labels(729)}
     {series.map((s, i) => <text key={s} x={310 + i * 140} y="759" fill={colours[s]} fontSize="11">━ {seriesNames[i]}</text>)}
     <text x="24" y="801" fill="#94a3b8" fontSize="10">Source: SEC Company Facts · Q4 may be derived from annual results less Q1–Q3 · Growth uses the absolute prior value</text>
-  </svg>;
+    {interactive && <>{hover.hitArea("Quarterly revenue and net income chart", { x: left, y: 256, width: plotWidth, height: 198 })}{hover.hitArea("Growth chart", { x: left, y: 556, width: plotWidth, height: 180 })}</>}
+  </svg>{interactive && hover.tooltip}</>;
 }
 
 export async function captureFundamentalsSvg(svg: SVGSVGElement): Promise<HTMLCanvasElement> {

@@ -23,5 +23,19 @@
 .ws-fundamentals-sources { font-size: 12px; }
 .ws-fundamentals-sources > div { display: grid; gap: 5px; margin-top: 12px; }
 .ws-fundamentals-sources a { color: var(--ws-accent, #b69cff); overflow-wrap: anywhere; font-size: 11px; }
+.ws-fundamentals-hit-area { cursor: crosshair; outline: none; }
+.ws-fundamentals-hit-area:focus-visible { stroke: #b69cff; stroke-width: 2; }
+.ws-fundamentals-tooltip { position: fixed; z-index: 10000; pointer-events: none; box-sizing: border-box; width: 290px; padding: 12px 14px; border: 1px solid #39465b; border-radius: 10px; background: #131c2bf5; color: #f1f5f9; box-shadow: 0 8px 28px #0006; font: 12px/1.45 Arial, sans-serif; font-variant-numeric: tabular-nums; overflow: hidden; }
+.ws-fundamentals-tooltip > strong { font-size: 13px; }
+.ws-fundamentals-tooltip-date { color: #94a3b8; margin-top: 2px; font-size: 11px; }
+.ws-fundamentals-tooltip-metric { margin-top: 10px; }
+.ws-fundamentals-tooltip-value, .ws-fundamentals-tooltip dl, .ws-fundamentals-tooltip dl > div { display: flex; justify-content: space-between; gap: 8px; }
+.ws-fundamentals-tooltip-value b { overflow-wrap: anywhere; text-align: right; }
+.ws-fundamentals-tooltip-revenue { color: #5eead4; }
+.ws-fundamentals-tooltip-netIncome { color: #fbbf24; }
+.ws-fundamentals-tooltip-metric small { color: #94a3b8; font-size: 10px; }
+.ws-fundamentals-tooltip dl { margin: 4px 0 0; font-size: 11px; flex-wrap: wrap; }
+.ws-fundamentals-tooltip dt { color: #94a3b8; }
+.ws-fundamentals-tooltip dd { margin: 0; }
 @container (max-width: 355px) { .ws-fundamentals-minis { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .ws-fundamentals-dialog > .ws-fundamentals-profile { min-width: 650px; } .ws-fundamentals-dialog { overflow-x: auto; } }

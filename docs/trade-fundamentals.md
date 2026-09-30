@@ -2,6 +2,8 @@
 
 The `/trades` journal's Fundamentals section retains its commentary and adds Revenue / Net income previews, **View fundamentals**, and **Attach snapshot**. The popup follows the market-overview earnings profile. The miniature preview and viewing toggle are transient UI state; they do not become Notion page content, CSV properties, or review text. Attaching a snapshot is a deliberate review edit and follows the existing review-status behavior.
 
+Hover anywhere in a quarter column in either popup chart to inspect that period's full USD amounts, YoY/QoQ growth and derived-Q4 labels; both charts highlight the selected quarter. The mini charts show the same details for their individual metric. Missing values are labelled **Unavailable**. Touch selects a period, and keyboard users can focus a chart and use Left/Right, Home/End and Escape. Tooltips are kept within the viewport, clear when the trade or cutoff changes, and use already-loaded data without additional fetching or journal edits. Summary cards continue to show the latest eligible quarter. The separate static capture SVG excludes all hover highlights and interaction controls.
+
 ## Historical data
 
 Before entry defaults on for each selected trade. Its boundary is the earliest verified execution's America/New_York calendar date. SEC facts must have both a completed period and a filing date strictly before that boundary. Same-day filings are excluded because Company Facts supplies filing dates rather than reliable intraday availability. An unresolved execution date produces an explicit unavailable state. The toggle is separate from price-chart and replay controls.
@@ -22,7 +24,7 @@ Apply the additive migration `20260928100000_sec_fundamentals_cache` through the
 
 The regenerable cache stores compressed supported facts with all filing versions, shared by issuer CIK. A historical read revalidates after 24 hours, latest mode after 15 minutes, and an empty result after one hour. The ticker directory revalidates hourly. A distributed lease coordinates fetches across application instances, while the shared SEC gate allows at most two requests per second. HTTP 429/403 establishes a shared cooldown; transient network/5xx errors receive at most two retries with bounded timeouts.
 
-Cache allocation is capped at 10 MB, participates in the existing 100 MB cache / 400 MB branch safeguards, and evicts only regenerable SEC records. Cache tables are excluded from user-data backups. Provider failures preserve previously retrieved eligible history and expose its retrieval age with **Retry**. Uncached failures, unknown tickers and unsupported data have separate UI states. A manual Refresh SEC button is not part of the ordinary workflow.
+Cache allocation is capped at 10 MB of compressed payloads, participates in the existing 100 MB cache / 400 MB branch safeguards, and evicts only regenerable SEC records. This cache is persistent in the application database: on-demand fetching does not mean storage-free loading, and revalidation intervals are not deletion deadlines. Cache tables are excluded from user-data backups. Provider failures preserve previously retrieved eligible history and expose its retrieval age with **Retry**. Uncached failures, unknown tickers and unsupported data have separate UI states. A manual Refresh SEC button is not part of the ordinary workflow.
 
 ## Evidence and publishing
 
@@ -35,8 +37,12 @@ Only attached evidence and authored commentary enter the existing direct Notion 
 ## Checks
 
 - Focused parser/service/API/cache/client/evidence tests run under `vitest.workstation.config.ts` with mocked HTTP and Prisma; they never access the application database.
-- `tests/workstation-preview/fundamentals.spec.ts` covers the popup, cutoff toggle, snapshot dimensions and provenance, save/reload/removal, trade switching and narrow-panel layout. Start the loopback development server with `TRADES_WORKSTATION_PREVIEW=1`.
+- `tests/workstation-preview/fundamentals.spec.ts` covers the popup, cutoff toggle, snapshot dimensions and provenance, capture with hover active, save/reload/removal, trade switching, mouse/keyboard/touch period inspection, missing/negative values, narrow-panel layout and tooltip positioning. It also checks that inspection adds no journal changes or fundamentals requests. Start the loopback development server with `TRADES_WORKSTATION_PREVIEW=1`.
 - `npx tsx scripts/verify-sec-fundamentals.ts --live` performs two read-only SEC requests for BE and checks historical source dates without opening a database or writing cache records. An HTTP 403/429 means live provider connectivity has not been verified; mocked checks are not a substitute for that deployment check.
+
+### Period-tooltip validation, 2026-09-30
+
+All six Fundamentals browser scenarios and 33 focused mocked tests passed. The dedicated workstation TypeScript check, feature-specific ESLint, repository safety scan and production build passed. Desktop and narrow touch screenshots were inspected. Browser checks confirm that hover inspection leaves the review unchanged, sends no fundamentals requests, and is absent from the serialized SVG used for snapshot capture. This change is UI-only and requires no API, database migration or cache-policy changes.
 
 ### Local validation, 2026-09-28
 
