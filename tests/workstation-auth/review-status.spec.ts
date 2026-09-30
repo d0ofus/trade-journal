@@ -106,6 +106,7 @@ test("save failures preserve the draft indicator and recovery without false save
   await expect(dot(page, 2)).toHaveAttribute("data-unsaved", "true");
   await expect(await noteBox(page)).toContainText("Unsent recovery text");
   await page.unroute("**/workstation");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
   await page.getByRole("button", { name: /^Save & next/ }).click();
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).review.status).toBe("In progress");
   await expect(dot(page, 2)).not.toHaveAttribute("data-unsaved", "true");
@@ -126,6 +127,9 @@ test("cross-tab changes refresh dots while conflicting editor drafts remain prot
 });
 
 test("recovering existing content does not automatically initiate a review", async ({ page, context }) => {
+  // Keep the recovered draft unsaved while inspecting its status; autosave normally
+  // persists recovery within 1.2 seconds, before a slow browser can assert the dot.
+  await page.route("**/workstation", route => route.request().method() === "PATCH" ? route.fulfill({ status: 503, json: { error: "Hold recovered draft for inspection" } }) : route.continue());
   const document = await (await context.request.get(endpoint())).json();
   document.review.takeaway = "<p>Recovered legacy draft</p>";
   await page.addInitScript(({ key, document }) => localStorage.setItem(key, JSON.stringify(document)), {
@@ -135,6 +139,9 @@ test("recovering existing content does not automatically initiate a review", asy
   await expect(await noteBox(page)).toContainText("Recovered legacy draft");
   await expect(dot(page, 2)).toHaveAttribute("data-review-state", "not-reviewed");
   await expect(dot(page, 2)).toHaveAttribute("data-unsaved", "true");
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await page.unroute("**/workstation");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
   await page.getByRole("button", { name: /^Save & next/ }).click();
   await expect.poll(async () => (await (await context.request.get(endpoint())).json()).review.takeaway).toContain("Recovered legacy draft");
   expect((await (await context.request.get(endpoint())).json()).review.status).toBe("Not reviewed");

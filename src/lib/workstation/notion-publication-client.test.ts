@@ -25,7 +25,31 @@ describe("publication continuation without implicit publishing", () => {
   it("does not republish an unchanged successful review", async () => {
     const fetcher = responses(result("succeeded"), result("succeeded"));
     const loaded = await openPublication("trade", new AbortController().signal, vi.fn());
-    expect(loaded.job?.state).toBe("succeeded"); expect(actions(fetcher)).toHaveLength(2);
+    expect(loaded.job?.state).toBe("succeeded"); expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
+  });
+  it("acknowledges the automatic status revision without preparing another preview", async () => {
+    const completed = result("succeeded", 2, 3);
+    completed.job!.reviewCompletion = { outcome: "updated", sourceRevision: 2, revision: 3, noteUpdatedAt: "2026-09-30T00:00:01Z", journalUpdatedAt: null, previousNoteUpdatedAt: null, previousJournalUpdatedAt: null };
+    completed.publication.savedNoteUpdatedAt = "2026-09-30T00:00:01Z"; completed.publication.savedJournalUpdatedAt = null;
+    const fetcher = responses(completed, completed);
+    await continuePublication("trade", "publish", result(), new AbortController().signal, vi.fn());
+    await openPublication("trade", new AbortController().signal, vi.fn());
+    expect(actions(fetcher)).toEqual([{ action: "publish", groupKey: "trade", id: "job" }, "GET"]);
+  });
+  it("still refreshes the schema and preview when explicitly requested", async () => {
+    const fetcher = responses(result("succeeded"), result());
+    await openPublication("trade", new AbortController().signal, vi.fn(), true);
+    expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
+  });
+  it.each(["during", "after"])("prepares linked-journal edits made %s publication even without a revision increment", async timing => {
+    const completed = result("succeeded", 2, 2);
+    completed.job!.reviewCompletion = timing === "during" ? { outcome: "superseded", sourceRevision: 2 } : { outcome: "already-reviewed", sourceRevision: 2, revision: 2, noteUpdatedAt: null, journalUpdatedAt: null, previousNoteUpdatedAt: null, previousJournalUpdatedAt: null };
+    completed.publication.savedNoteUpdatedAt = null; completed.publication.savedJournalUpdatedAt = "2026-09-30T00:00:01Z";
+    const fetcher = responses(completed, result());
+    if (timing === "during") await continuePublication("trade", "resume", result("waiting"), new AbortController().signal, vi.fn());
+    else await openPublication("trade", new AbortController().signal, vi.fn());
+    expect(actions(fetcher).at(-1)).toEqual({ action: "preview", groupKey: "trade", revision: 2 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it("waits for readiness/cooldown before continuing and prepares newer edits after success", async () => {
     vi.useFakeTimers();

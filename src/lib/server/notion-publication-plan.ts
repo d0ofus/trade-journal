@@ -9,7 +9,7 @@ import { jsonHash, NotionError, notionRequest, type JsonObject } from "./notion-
 import { htmlToNotionBlocks } from "./notion-format";
 import { planNotionProperties, type RemoteProperty } from "./notion-properties";
 import type { TradeDocument } from "@/lib/workstation/types";
-import { notionPageUrl, unfinishedPublication, type PublicationContext, type TemplateWait } from "@/lib/workstation/notion-publication-state";
+import { notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 import type { ImageAssetReference } from "@/lib/workstation/image-assets";
 
 export type PublishSection = SectionDefinition & { blocks: JsonObject[]; images: string[] };
@@ -98,18 +98,19 @@ export async function createNotionPreview(groupKey: string, revision: number, so
   return publicationStatus(job, true);
 }
 export async function publicationContext(groupKey: string): Promise<PublicationContext> {
-  const [publication, note] = await Promise.all([
+  const [publication, doc] = await Promise.all([
     prisma.notionPublication.findUnique({ where: { groupKey } }),
-    prisma.closedTradeNote.findUnique({ where: { groupKey }, select: { workstationVersion: true } }),
+    readWorkstationDocument(groupKey),
   ]);
-  return { savedRevision: note?.workstationVersion ?? 0, lastPublishedRevision: publication?.lastRevision ?? null,
+  return { savedRevision: doc.revision, savedNoteUpdatedAt: doc.noteUpdatedAt ?? null, savedJournalUpdatedAt: doc.journalUpdatedAt ?? null, lastPublishedRevision: publication?.lastRevision ?? null,
     pageUrl: notionPageUrl(publication?.pageId), activeJobId: publication?.activeJobId ?? null };
 }
 export function publicationStatus(job: { id: string; groupKey: string; revision: number; state: string; error: string | null; retryAt: Date | null; plan: unknown; progress: unknown; snapshot: unknown }, details = false) {
-  const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; templateWait?: TemplateWait; sections?: Record<string, { done?: boolean }> };
+  const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; templateWait?: TemplateWait; reviewCompletion?: PublicationReviewCompletion; sections?: Record<string, { done?: boolean }> };
   const snapshot = job.snapshot as PublishSnapshot;
   const includeDetails = details && job.state === "preview";
   return { id: job.id, groupKey: job.groupKey, revision: job.revision, state: job.state, error: job.error, retryAt: job.retryAt,
+    ...(job.state === "succeeded" && progress.reviewCompletion ? { reviewCompletion: progress.reviewCompletion } : {}),
     pageUrl: notionPageUrl(progress.pageId),
     phase: progress.templateWait?.timedOut ? "template_timeout" : progress.templateWait && ["ready", "running", "waiting"].includes(job.state) ? "template_wait" : job.state,
     missingSections: progress.templateWait?.missing ?? [],

@@ -4,7 +4,7 @@ function quotePostgresIdentifier(identifier: string) {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-export function closedTradeLockQuery(groupKey: string, databaseUrl = process.env.DATABASE_URL) {
+function reviewTable(name: string, databaseUrl = process.env.DATABASE_URL) {
   let schema = "public";
   if (databaseUrl) {
     try {
@@ -14,8 +14,16 @@ export function closedTradeLockQuery(groupKey: string, databaseUrl = process.env
     }
   }
 
-  const table = Prisma.raw(`${quotePostgresIdentifier(schema)}."ClosedTrade"`);
+  return Prisma.raw(`${quotePostgresIdentifier(schema)}.${quotePostgresIdentifier(name)}`);
+}
+
+export function closedTradeLockQuery(groupKey: string, databaseUrl = process.env.DATABASE_URL) {
+  const table = reviewTable("ClosedTrade", databaseUrl);
   return Prisma.sql`SELECT "groupKey", "isStale" FROM ${table} WHERE "groupKey" = ${groupKey} FOR UPDATE`;
+}
+
+export async function lockLinkedJournalForReview(tx: Prisma.TransactionClient, journalEntryId: string) {
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM ${reviewTable("JournalEntry")} WHERE "id" = ${journalEntryId} FOR UPDATE`);
 }
 
 export async function lockClosedTradeForReview(tx: Prisma.TransactionClient, groupKey: string) {

@@ -14,6 +14,7 @@ import type { PublishPlan, PublishSnapshot } from "./notion-publication-plan";
 import { verifyEvidencePng } from "./evidence-r2";
 import { assetReference } from "./evidence-assets";
 import { assignSectionEvidence, attachEvidence } from "@/lib/workstation/evidence";
+import { completePublishedReview } from "./notion-review-completion";
 
 const remote = vi.hoisted(() => ({ call: vi.fn(), children: vi.fn(), tree: vi.fn() }));
 const originals = vi.hoisted(() => new Map<string, Buffer>());
@@ -93,6 +94,7 @@ afterEach(async () => {
     await prisma.evidenceAsset.deleteMany({ where: { tradeId: fixture.groupKey } });
     await prisma.notionPublishJob.deleteMany({ where: { groupKey: fixture.groupKey } });
     await prisma.notionPublication.deleteMany({ where: { groupKey: fixture.groupKey } });
+    await prisma.journalEntry.deleteMany({ where: { links: { some: { targetType: "CLOSED_TRADE", targetId: fixture.groupKey } } } });
     await prisma.closedTradeNote.deleteMany({ where: { groupKey: fixture.groupKey } });
     await prisma.closedTrade.delete({ where: { groupKey: fixture.groupKey } });
     await prisma.instrument.delete({ where: { id: fixture.instrumentId } }); await prisma.account.delete({ where: { id: fixture.accountId } });
@@ -118,6 +120,12 @@ async function finish(id: string, groupKey: string) {
   for (let i = 0; i < 20 && result.state === "waiting"; i++) result = await resumeNotionPublication(id, groupKey);
   return result;
 }
+async function refreshSnapshot(f: Awaited<ReturnType<typeof fixture>>) {
+  const doc = await readWorkstationDocument(f.groupKey);
+  const snapshot = { ...f.job.snapshot as unknown as PublishSnapshot, doc, digest: jsonHash(doc) };
+  await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { revision: doc.revision, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
+  return { doc, snapshot: snapshot as unknown as Prisma.InputJsonValue };
+}
 // Advance only this test job's persisted next-check time, without changing the
 // PostgreSQL clock or waiting real seconds. Cooldown tests call resumeStep directly.
 async function resumeNotionPublication(id: string, groupKey: string) {
@@ -125,6 +133,60 @@ async function resumeNotionPublication(id: string, groupKey: string) {
   return resumeStep(id, groupKey);
 }
 describe("durable Notion publishing against isolated PostgreSQL", () => {
+  it("rolls the status acknowledgement back when the completion transaction fails", async () => {
+    const f = await fixture();
+    await expect(prisma.$transaction(async tx => {
+      expect((await completePublishedReview(tx, f.groupKey, f.doc.revision, jsonHash(f.doc))).outcome).toBe("updated");
+      throw new Error("Completion lease failed");
+    })).rejects.toThrow("Completion lease failed");
+    expect(await readWorkstationDocument(f.groupKey)).toEqual(f.doc);
+    expect((await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } })).state).toBe("preview");
+  });
+  it.each(["Not reviewed", "In progress", "Reviewed"] as const)("completes first publications and updates of %s reviews once, only after confirmed success", async status => {
+    const f = await fixture(); f.doc.review.status = status;
+    await saveWorkstationDocument(f.groupKey, f.doc, f.doc.revision);
+    const { doc } = await refreshSnapshot(f);
+    await startNotionPublication(f.job.id, f.groupKey);
+    expect((await readWorkstationDocument(f.groupKey)).review.status).toBe(status);
+    const result = await finish(f.job.id, f.groupKey);
+    expect(result.state).toBe("succeeded");
+    expect(result.reviewCompletion?.outcome).toBe(status === "Reviewed" ? "already-reviewed" : "updated");
+    const saved = await readWorkstationDocument(f.groupKey);
+    expect(saved.review).toEqual({ ...doc.review, status: "Reviewed" });
+    expect(saved.evidence).toEqual(doc.evidence); expect(saved.drawings).toEqual(doc.drawings);
+    expect(saved.journalUpdatedAt).toBe(doc.journalUpdatedAt);
+    expect(saved.revision).toBe(doc.revision + (status === "Reviewed" ? 0 : 1));
+    await finish(f.job.id, f.groupKey);
+    expect(await readWorkstationDocument(f.groupKey)).toEqual(saved);
+    expect((await publicationContext(f.groupKey)).lastPublishedRevision).toBe(doc.revision);
+    // Manual statuses remain supported before a later update to the same page.
+    await saveWorkstationDocument(f.groupKey, { ...saved, review: { ...saved.review, status, notes: "Later saved commentary" } }, saved.revision);
+    const newer = await readWorkstationDocument(f.groupKey);
+    const snapshot = { ...f.job.snapshot as unknown as PublishSnapshot, doc: newer, digest: jsonHash(newer) };
+    const update = await prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: newer.revision, templateId: f.job.templateId, plan: f.job.plan!, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(update.id, f.groupKey);
+    expect((await readWorkstationDocument(f.groupKey)).review.status).toBe(status);
+    expect((await finish(update.id, f.groupKey)).reviewCompletion?.outcome).toBe(status === "Reviewed" ? "already-reviewed" : "updated");
+    const completed = await readWorkstationDocument(f.groupKey);
+    expect(completed.review).toEqual({ ...newer.review, status: "Reviewed" });
+    expect(completed.revision).toBe(newer.revision + (status === "Reviewed" ? 0 : 1));
+    await finish(update.id, f.groupKey);
+    expect(await readWorkstationDocument(f.groupKey)).toEqual(completed);
+    expect(pages.size).toBe(1);
+  });
+  it.each(["workstation", "linked-journal"])("preserves newer %s changes while publishing a frozen revision", async source => {
+    const f = await fixture(); f.doc.review.status = "In progress";
+    await saveWorkstationDocument(f.groupKey, f.doc, f.doc.revision);
+    const { doc } = await refreshSnapshot(f);
+    await startNotionPublication(f.job.id, f.groupKey);
+    if (source === "workstation") await saveWorkstationDocument(f.groupKey, { ...doc, review: { ...doc.review, notes: "Newer saved content" } }, doc.revision);
+    else await prisma.journalEntry.update({ where: { id: doc.journalEntryId! }, data: { lessonLearned: "Concurrent linked journal edit", updatedAt: new Date(Date.parse(doc.journalUpdatedAt!) + 1000) } });
+    const newer = await readWorkstationDocument(f.groupKey);
+    const result = await finish(f.job.id, f.groupKey);
+    expect(result.state).toBe("succeeded"); expect(result.reviewCompletion?.outcome).toBe("superseded");
+    expect(await readWorkstationDocument(f.groupKey)).toEqual(newer);
+    expect(newer.review.status).toBe("In progress");
+  });
   it("uploads exact private PNG originals once across sections and freezes only asset references", async () => {
     const f = await fixture(true), bytes = await sharp({ create: { width: 128, height: 96, channels: 4, background: "#123456" } }).png().toBuffer(), verified = await verifyEvidencePng(bytes);
     const row = await prisma.evidenceAsset.create({ data: { tradeId: f.groupKey, ownerId: "owner", sha256: verified.sha256, notionHash: verified.notionHash, bytes: bytes.length, width: verified.width, height: verified.height, thumbnailBytes: verified.thumbnail.length, objectKey: `originals/${randomUUID()}/${verified.sha256}.png`, thumbnailKey: `thumbnails/${randomUUID()}/${verified.sha256}.png` } }); originals.set(row.objectKey, bytes);
@@ -244,7 +306,9 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     expect([...nodes.values()].filter(n => n.type === "image")).toHaveLength(2);
     const record = await prisma.notionPublication.findUniqueOrThrow({ where: { groupKey: f.groupKey } });
     expect(record.lastRevision).toBe(f.doc.revision); expect(record.activeJobId).toBeNull();
-    expect(await readWorkstationDocument(f.groupKey)).toEqual(f.doc);
+    const completed = await readWorkstationDocument(f.groupKey);
+    expect(completed.review).toEqual({ ...f.doc.review, status: "Reviewed" });
+    expect(completed.drawings).toEqual(f.doc.drawings); expect(completed.evidence).toEqual(f.doc.evidence);
     expect(remote.call.mock.calls.filter(([path, method]) => path.endsWith("/send") && method === "POST")).toHaveLength(1);
     const upload = remote.call.mock.calls.find(([path]) => path.endsWith("/send"))![2] as unknown as FormData;
     expect(Buffer.from(await (upload.get("file") as Blob).arrayBuffer())).toEqual(Buffer.from("image"));
@@ -269,6 +333,7 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey);
     failAfter = (path, method) => path === "/pages" && method === "POST";
     expect((await resumeNotionPublication(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await readWorkstationDocument(f.groupKey)).review.status).toBe("Not reviewed");
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect(pages.size).toBe(1);
   });
   it("reconciles a lost section-container response without duplicate containers", async () => {
@@ -322,7 +387,9 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
   it("updates only app-owned containers and reuses uploaded images", async () => {
     const f = await fixture(true); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
     const pageId = [...pages.keys()][0]; const manual = add(pageId, { type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: "Human-authored outside app content" } }] } });
-    const update = await prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: f.job.revision, templateId: f.job.templateId, plan: f.job.plan!, snapshot: f.job.snapshot! } });
+    const current = await readWorkstationDocument(f.groupKey);
+    const snapshot = { ...f.job.snapshot as unknown as PublishSnapshot, doc: current, digest: jsonHash(current) };
+    const update = await prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: current.revision, templateId: f.job.templateId, plan: f.job.plan!, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
     await startNotionPublication(update.id, f.groupKey); expect((await finish(update.id, f.groupKey)).state).toBe("succeeded");
     expect(pages.size).toBe(1); expect(uploads.size).toBe(1); expect(nodes.get(manual.id)?.archived).toBe(false);
     expect([...nodes.values()].filter(n => n.type === "callout" && !n.archived)).toHaveLength(2);
@@ -351,7 +418,9 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
     const paragraph = [...nodes.values()].find(n => n.type === "paragraph")!;
     paragraph.paragraph = { rich_text: [{ type: "text", text: { content: "Edited in Notion" } }] };
-    const update = await prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: f.job.revision, templateId: f.job.templateId, plan: f.job.plan!, snapshot: f.job.snapshot! } });
+    const current = await readWorkstationDocument(f.groupKey);
+    const snapshot = { ...f.job.snapshot as unknown as PublishSnapshot, doc: current, digest: jsonHash(current) };
+    const update = await prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: current.revision, templateId: f.job.templateId, plan: f.job.plan!, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
     await startNotionPublication(update.id, f.groupKey); const result = await finish(update.id, f.groupKey);
     expect(result.state).toBe("conflict"); expect(result.error).toMatch(/content was edited/); expect(remoteText(nodes.get(paragraph.id)!)).toBe("Edited in Notion");
   });

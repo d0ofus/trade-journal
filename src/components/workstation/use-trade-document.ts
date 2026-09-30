@@ -4,8 +4,9 @@ import { TradeDocument, WorkstationAdapter } from "@/lib/workstation/types";
 import { Autosave, type SaveState } from "@/lib/journal/autosave";
 import { RecoveryStore } from "@/lib/journal/recovery";
 import { sameEvidenceAssignments } from "@/lib/workstation/evidence";
-import { announceReviewStatus } from "@/lib/workstation/review-status-events";
+import { announceReviewStatus, reviewStatusEvent, reviewStatusStorageKey, type ReviewStatusEvent } from "@/lib/workstation/review-status-events";
 import { startReviewOnContentEdit } from "@/lib/workstation/review-status";
+import { acceptPublicationReviewCompletion } from "@/lib/workstation/publication-review-completion";
 
 export function documentSaveStatus(state: SaveState<TradeDocument>, mode: string) {
   if (state.error) return /conflict|another tab/i.test(state.error) ? "Conflict \u00b7 draft preserved" : "Save paused \u00b7 draft preserved";
@@ -18,12 +19,14 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
   const [error, setError] = useState("");
   const state = useRef<Autosave<TradeDocument> | null>(null), recovery = useRef<RecoveryStore<TradeDocument> | null>(null);
   const generation = useRef(0), listeners = useRef(new Set<() => void>()), published = useRef<TradeDocument | null>(null);
+  const activeId = useRef("");
   const key = `execution-lab:workstation:draft:${adapter.mode}:${id}`;
   const emit = useCallback(() => { listeners.current.forEach(listener => listener()); }, []);
   const subscribe = useCallback((listener: () => void) => { listeners.current.add(listener); return () => { listeners.current.delete(listener); }; }, []);
   const getSnapshot = useCallback(() => state.current?.getSnapshot() ?? null, []);
   const load = useCallback(async (discard = false) => {
     const own = ++generation.current;
+    activeId.current = "";
     state.current?.dispose(); state.current = null; emit();
     setDocument(null); published.current = null; setLoadedFor(""); setError("");
     if (!id) return;
@@ -59,6 +62,7 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
         checkpoint: store.write, clearCheckpoint: store.clear,
       });
       state.current = session;
+      activeId.current = id;
       const publish = () => {
         if (own !== generation.current) return;
         const next = session.getSnapshot().value, previous = published.current;
@@ -74,8 +78,23 @@ export function useTradeDocument(adapter: WorkstationAdapter, id: string) {
   useEffect(() => {
     let cancelled = false; const lifetime = generation, active = state;
     queueMicrotask(() => { if (!cancelled) void load(); });
-    return () => { cancelled = true; lifetime.current++; active.current?.dispose(); active.current = null; };
+    return () => { cancelled = true; lifetime.current++; activeId.current = ""; active.current?.dispose(); active.current = null; };
   }, [load]);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const { mode, summary, completion } = (event as ReviewStatusEvent).detail;
+      if (mode === adapter.mode && summary.groupKey === activeId.current && completion && state.current) acceptPublicationReviewCompletion(state.current, completion);
+    };
+    const storage = (event: StorageEvent) => {
+      if (event.key !== reviewStatusStorageKey(adapter.mode) || !event.newValue) return;
+      try {
+        const { completion, ...summary } = JSON.parse(event.newValue);
+        if (completion) receive(new CustomEvent(reviewStatusEvent, { detail: { mode: adapter.mode, summary, completion } }));
+      } catch { /* Ignore malformed cross-tab notifications. */ }
+    };
+    window.addEventListener(reviewStatusEvent, receive); window.addEventListener("storage", storage);
+    return () => { window.removeEventListener(reviewStatusEvent, receive); window.removeEventListener("storage", storage); };
+  }, [adapter.mode]);
   useEffect(() => {
     const checkpoint = () => { void state.current?.checkpoint(); };
     const hidden = () => { if (window.document.visibilityState === "hidden") checkpoint(); };

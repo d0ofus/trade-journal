@@ -5,8 +5,8 @@ import { TimestampInterpretationSettings } from "@/components/workstation/timest
 import { FlexRunButton } from "@/components/flex-run-button";
 import { ImportHistoryList } from "@/components/import-history-list";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PageHeader } from "@/components/ui/page-header";
 import { getSettingsData } from "@/lib/server/queries";
+import "@/components/settings-workspace.css";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -24,12 +24,8 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
     : null;
   const flexConfigured = Boolean(process.env.IBKR_FLEX_TOKEN && process.env.IBKR_FLEX_QUERY_ID);
   return (
-    <div className="space-y-6">
-      <PageHeader
-        eyebrow="Operations"
-        title="Configuration and import controls in one polished workspace."
-        description="Account references, Flex automation, and import history remain backed by the same data sources and routes."
-      />
+    <div className="settings-workspace">
+      <header className="settings-heading"><h1>Settings</h1></header>
 
       {process.env.TRADES_WORKSTATION_ENABLED === "1" && <Card id="workstation-shortcuts">
         <CardHeader><CardTitle>Workstation · Keyboard shortcuts</CardTitle></CardHeader>
@@ -45,7 +41,7 @@ export default async function SettingsPage(props: { searchParams: SearchParams }
         <CardContent className="space-y-3 pt-6 text-sm">
           {accounts.length === 0 && <p className="text-slate-500">No accounts imported yet.</p>}
           {accounts.map((account) => (
-            <div key={account.id} className="rounded-[20px] border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
+            <div key={account.id} className="settings-record rounded-[20px] border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
               <p className="font-medium text-slate-900">{account.name}</p>
               <p className="text-slate-600">{account.ibkrAccount}</p>
             </div>

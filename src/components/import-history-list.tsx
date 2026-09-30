@@ -79,7 +79,7 @@ function BatchHistoryItem({ batch, selectedZone }: { batch: ImportHistoryBatchIt
   return (
     <div
       data-testid={`import-history-batch-${batch.id}`}
-      className="min-w-0 rounded-[20px] border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]"
+      className="settings-record min-w-0 rounded-[20px] border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]"
     >
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
         <p className="min-w-0 font-medium text-slate-900 [overflow-wrap:anywhere]">{batch.filename}</p>

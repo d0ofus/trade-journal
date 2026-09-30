@@ -4,6 +4,7 @@
     "incremental": false
   },
   "include": [
+    "src/lib/workstation/publication-review-completion.test.ts",
     "src/lib/server/fundamentals-publication.test.ts",
     "src/lib/server/sec-*.ts",
     "src/lib/workstation/fundamentals*.ts",

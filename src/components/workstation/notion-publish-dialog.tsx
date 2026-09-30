@@ -1,26 +1,39 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { continuePublication, openPublication, type PublicationResult } from "@/lib/workstation/notion-publication-client";
-import { unfinishedPublication } from "@/lib/workstation/notion-publication-state";
+import { needsPublicationPreview, publicationCoveredRevision, unfinishedPublication } from "@/lib/workstation/notion-publication-state";
+import { announcePublicationReviewCompletion } from "@/lib/workstation/review-status-events";
 import { ReviewDialog } from "./review-dialog";
 import { EvidenceThumbnail } from "./evidence-preview";
 
 export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey: string; revision: number; onClose: () => void }) {
   const [result, setResult] = useState<PublicationResult | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+  const [completionMessage, setCompletionMessage] = useState("");
   const request = useRef<AbortController | null>(null);
+  const observe = useCallback((value: PublicationResult) => {
+    setResult(value);
+    const completion = value.job?.state === "succeeded" ? value.job.reviewCompletion : undefined;
+    if (completion) {
+      const current = !needsPublicationPreview(value.job!, value.publication);
+      if (current) announcePublicationReviewCompletion("application", groupKey, completion);
+      setCompletionMessage(completion.outcome === "superseded" || !current
+        ? `Published revision ${completion.sourceRevision}. Newer saved edits are not included; the current review status was preserved.`
+        : completion.outcome === "updated" ? "Published successfully. Review marked Reviewed." : "Published successfully. Review is already Reviewed.");
+    }
+  }, [groupKey]);
   useEffect(() => {
     const controller = new AbortController(); request.current = controller;
-    void openPublication(groupKey, controller.signal, setResult)
+    void openPublication(groupKey, controller.signal, observe)
       .catch(error => { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Unable to prepare publication."); })
       .finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => { controller.abort(); request.current?.abort(); };
-  }, [groupKey]);
+  }, [groupKey, observe]);
   const job = result?.job, enabled = result?.enabled ?? false;
   const savedRevision = Math.max(revision, result?.publication.savedRevision ?? revision);
   const lastPublished = result?.publication.lastPublishedRevision;
   const pageUrl = result?.publication.pageUrl ?? job?.pageUrl;
-  const pending = unfinishedPublication(job ?? null), newerEdits = !!job && savedRevision > job.revision;
+  const pending = unfinishedPublication(job ?? null), newerEdits = !!job && (savedRevision > publicationCoveredRevision(job) || job.state === "succeeded" && needsPublicationPreview(job, result!.publication));
   const retryAt = job?.retryAt;
   useEffect(() => {
     if (!retryAt) return;
@@ -32,8 +45,8 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
     setBusy(true); setError("");
     try {
-      if (action === "preview" || !result) await openPublication(groupKey, controller.signal, setResult);
-      else await continuePublication(groupKey, action, result, controller.signal, setResult);
+      if (action === "preview" || !result) await openPublication(groupKey, controller.signal, observe, true);
+      else await continuePublication(groupKey, action, result, controller.signal, observe);
     } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Notion request failed."); }
     finally { if (!controller.signal.aborted) setBusy(false); }
   }
@@ -42,6 +55,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
     <p role="status">Saved revision {savedRevision} · Last published: {lastPublished == null ? "Not yet published" : `revision ${lastPublished}`}</p>
     {result && !enabled && <p role="status">Publishing is disabled until Notion permissions and live validation are complete. You can still prepare a preview.</p>}
     {error && <p role="alert">{error}</p>}
+    {completionMessage && <p role="status">{completionMessage}</p>}
     {busy && !job && <p role="status">Preparing latest saved-review preview…</p>}
     {pageUrl && <a href={pageUrl} target="_blank" rel="noreferrer">Open app-owned Notion page</a>}
     {job && <>
@@ -50,7 +64,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
       {job.error && <p role="alert">{job.error}</p>}
       {job.phase === "template_timeout" && job.missingSections.length > 0 && <p>Sections not ready: {job.missingSections.join(", ")}</p>}
       {newerEdits && <p role="status">Newer saved edits in revision {savedRevision} are not included in this {pending ? "unfinished publication. Finish or resolve it first; a fresh preview will then be prepared for your confirmation." : "preview. Prepare the latest preview before confirming."}</p>}
-      {job.state === "succeeded" && !newerEdits && <p role="status">This saved revision has already been published.</p>}
+      {job.state === "succeeded" && !newerEdits && <p role="status">This saved review has already been published.</p>}
       {retryAt && new Date(retryAt).getTime() > now && <p>{busy ? "Next check" : "Resume"} after {new Date(retryAt).toLocaleTimeString()}.</p>}
       <h3>Properties</h3><dl className="ws-notion-preview-properties">{job.properties.map(item => <div key={item.name}><dt>{item.name}</dt><dd>{item.value}</dd></div>)}</dl>
       <h3>Section placement</h3>{job.sections.map(section => <details className="ws-template-section" key={section.key}><summary>{section.label}: {section.blocks} text blocks, {section.images} images{section.done ? " · Complete" : ""}</summary>

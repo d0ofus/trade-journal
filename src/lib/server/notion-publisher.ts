@@ -10,6 +10,7 @@ import { publicationStatus, type PublishPlan, type PublishSnapshot } from "./not
 import { withNotionBudget } from "./notion-client";
 import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
 import { templateRetryAt, templateTimeoutMessage, templateWaitExpired, type TemplateWait } from "@/lib/workstation/notion-publication-state";
+import { completePublishedReview } from "./notion-review-completion";
 
 type Anchor = { id: string; parent: string; sourceId: string; type: string };
 type SectionBinding = { anchor: Anchor; container: string; fingerprint: string };
@@ -299,7 +300,9 @@ async function runPublicationStep(id: string, groupKey: string) {
     const nextBindings: Bindings = { sections: { ...bindings.sections }, propertyIds: Object.keys(plan.properties), propertyFingerprint: progress.newPropertyFingerprint };
     for (const section of plan.sections) { const done = progress.sections[section.key]; nextBindings.sections![section.key] = { anchor: progress.anchors[section.key], container: done.container!, fingerprint: done.fingerprint! }; }
     await prisma.$transaction(async tx => {
-      const saved = await tx.notionPublishJob.updateMany({ where: { id, leaseToken: lease, leaseUntil: { gt: new Date() } }, data: { progress: asJson(progress), state: "succeeded", error: null,
+      await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
+      const reviewCompletion = await completePublishedReview(tx, groupKey, job!.revision, snapshot.digest);
+      const saved = await tx.notionPublishJob.updateMany({ where: { id, leaseToken: lease, leaseUntil: { gt: new Date() } }, data: { progress: asJson({ ...progress, reviewCompletion }), state: "succeeded", error: null,
         snapshot: asJson({ ...snapshot, assets: snapshot.assets.map(asset => ({ ...asset, image: "" })) }),
       } });
       if (!saved.count) throw new NotionError("Publishing lease expired before completion.", 409);
