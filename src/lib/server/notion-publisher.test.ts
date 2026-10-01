@@ -133,6 +133,59 @@ async function resumeNotionPublication(id: string, groupKey: string) {
   return resumeStep(id, groupKey);
 }
 describe("durable Notion publishing against isolated PostgreSQL", () => {
+  const activeBoxes = () => [...nodes.values()].filter(node => node.type === "callout" && !node.archived);
+  async function updatePlan(f: Awaited<ReturnType<typeof fixture>>, plan: PublishPlan) {
+    const doc = await readWorkstationDocument(f.groupKey);
+    return prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: doc.revision, templateId: f.job.templateId, plan: plan as unknown as Prisma.InputJsonValue,
+      snapshot: { ...f.job.snapshot as unknown as PublishSnapshot, doc, digest: jsonHash(doc) } as unknown as Prisma.InputJsonValue } });
+  }
+  it("omits empty boxes, retains anchors, and can populate then clear a section", async () => {
+    const f = await fixture();
+    let plan = { ...f.plan, presentationVersion: 3, sections: f.plan.sections.map(s => ({ ...s, blocks: [], images: [] })) } as PublishPlan;
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: plan as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(f.job.id, f.groupKey); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    expect(activeBoxes()).toHaveLength(0);
+    const publication = await prisma.notionPublication.findUniqueOrThrow({ where: { groupKey: f.groupKey } });
+    expect(publication.bindings).toMatchObject({ sections: { entry: { anchor: { sourceId: initialSectionIds.entry } }, exit: { anchor: { sourceId: initialSectionIds.exit } } } });
+    // A template placeholder is outside the app's ownership and must survive.
+    const placeholder = add(publication.pageId!, { type: "bulleted_list_item", bulleted_list_item: { rich_text: [{ type: "text", text: { content: "List" } }] } });
+    plan = { ...plan, sections: [f.plan.sections[0], plan.sections[1]] };
+    const filled = await updatePlan(f, plan); await startNotionPublication(filled.id, f.groupKey); expect((await finish(filled.id, f.groupKey)).state).toBe("succeeded");
+    expect(activeBoxes()).toHaveLength(1);
+    plan = { ...plan, sections: plan.sections.map(s => ({ ...s, blocks: [] })) };
+    const cleared = await updatePlan(f, plan); await startNotionPublication(cleared.id, f.groupKey); expect((await finish(cleared.id, f.groupKey)).state).toBe("succeeded");
+    expect(activeBoxes()).toHaveLength(0); expect(nodes.get(placeholder.id)?.archived).toBe(false);
+    expect([...nodes.values()].filter(n => n.type === "heading_2" && !n.archived)).toHaveLength(2);
+  });
+  it("finishes frozen legacy empty jobs and cleans their boxes once after an uncertain deletion", async () => {
+    const f = await fixture(), legacy = { ...f.plan, sections: f.plan.sections.map(s => ({ ...s, blocks: [] })) };
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: legacy as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(f.job.id, f.groupKey); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect(activeBoxes()).toHaveLength(2);
+    const next = await updatePlan(f, { ...legacy, presentationVersion: 3 });
+    await startNotionPublication(next.id, f.groupKey);
+    failAfter = (_path, method) => method === "DELETE";
+    expect((await finish(next.id, f.groupKey)).state).toBe("failed");
+    const pending = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: next.id } });
+    expect(pending.progress).toMatchObject({ sections: { entry: { removeIntent: expect.any(String) } } });
+    expect((await finish(next.id, f.groupKey)).state).toBe("succeeded"); expect(activeBoxes()).toHaveLength(0);
+    const deletes = remote.call.mock.calls.filter(([, method]) => method === "DELETE"); expect(deletes).toHaveLength(2);
+    await finish(next.id, f.groupKey); expect(remote.call.mock.calls.filter(([, method]) => method === "DELETE")).toHaveLength(2);
+  });
+  it("preserves human-edited boxes and review status when empty-section cleanup conflicts", async () => {
+    const f = await fixture(); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
+    const current = await readWorkstationDocument(f.groupKey); await saveWorkstationDocument(f.groupKey, { ...current, review: { ...current.review, status: "In progress" } }, current.revision);
+    const plan = { ...f.plan, presentationVersion: 3, sections: f.plan.sections.map(s => ({ ...s, blocks: [] })) };
+    const next = await updatePlan(f, plan);
+    add(activeBoxes()[0].id, { type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: "Manual edit" } }] } });
+    await startNotionPublication(next.id, f.groupKey); expect((await finish(next.id, f.groupKey)).state).toBe("conflict");
+    expect(activeBoxes()).toHaveLength(2); expect((await readWorkstationDocument(f.groupKey)).review.status).toBe("In progress");
+  });
+  it("keeps evidence-only sections in the new presentation", async () => {
+    const f = await fixture(true), plan = { ...f.plan, presentationVersion: 3, sections: f.plan.sections.map(s => ({ ...s, blocks: [] })) };
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: plan as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(f.job.id, f.groupKey); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    expect(activeBoxes()).toHaveLength(2); expect([...nodes.values()].filter(n => n.type === "image")).toHaveLength(2);
+  });
   it("rolls the status acknowledgement back when the completion transaction fails", async () => {
     const f = await fixture();
     await expect(prisma.$transaction(async tx => {

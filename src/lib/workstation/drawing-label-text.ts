@@ -1,4 +1,15 @@
 /** Word wrapping with character breaks for notes containing long unbroken strings. */
+export function createDrawingTextCache(limit = 256) {
+  const cache = new Map<string, string[]>();
+  return (text: string, width: number, font: string, measure: (text: string) => number) => {
+    const key = JSON.stringify([font, width, text]);
+    let lines = cache.get(key);
+    if (!lines) { lines = wrapDrawingText(text, width, measure); cache.set(key, lines); if (cache.size > limit) cache.delete(cache.keys().next().value!); }
+    // Callers truncate labels to available height; never mutate cached lines.
+    return lines.slice();
+  };
+}
+
 export function wrapDrawingText(text: string, width: number, measure: (text: string) => number): string[] {
   const lines: string[] = [];
   for (const paragraph of text.trim().split(/\r?\n/)) {

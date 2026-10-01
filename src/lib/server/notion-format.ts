@@ -1,4 +1,4 @@
-import { decodeText, richHtml } from "@/lib/workstation/rich-text";
+import { decodeText, richHtml, richPlain } from "@/lib/workstation/rich-text";
 import type { JsonObject, RemoteBlock } from "./notion-client";
 
 type Node = { tag: string; text?: string; children: Node[] };
@@ -9,7 +9,7 @@ export function notionRichText(text: string): JsonObject[] {
 }
 /** The application's sanitizer already restricts the editor's HTML vocabulary. */
 export function htmlToNotionBlocks(html: string): JsonObject[] {
-  if (!html.trim()) return [];
+  if (!richPlain(html)) return [];
   const root: Node = { tag: "root", children: [] }, stack = [root];
   for (const token of richHtml(html).match(/<[^>]+>|[^<]+/g) ?? []) {
     if (token.startsWith("</")) { if (stack.length > 1) stack.pop(); }

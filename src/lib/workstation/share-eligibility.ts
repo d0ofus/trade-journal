@@ -3,7 +3,7 @@ import type { Trade } from "./types";
 
 export type ShareBasis = "stock" | "etf" | "legacy-shares";
 export const legacyShareDescription = "Calculated assuming share quantities";
-export const metricCalculationVersion = 2;
+export const metricCalculationVersion = 3;
 
 /** Presentation compatibility only. Never changes broker classifications or accounting. */
 export function shareEligibility(trade: Pick<Trade, "symbol" | "assetType">): ShareBasis | null {

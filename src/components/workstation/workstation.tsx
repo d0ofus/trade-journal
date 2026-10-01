@@ -1,11 +1,13 @@
 "use client";
+import { AnnotationTextInput } from "./annotation-text-input";
+import { useImmediateState } from "./use-immediate-state";
 import { executionColors, benchmarkColor, benchmarkTransparency, benchmarkPaneRatio } from "@/lib/workstation/comparison";
-import { assignSectionEvidence, attachEvidence, earlierTimestampBasis, evidenceSource, removeEvidence, sectionEvidenceIds } from "@/lib/workstation/evidence";
+import { assignSectionEvidence, attachEvidence, removeEvidence } from "@/lib/workstation/evidence";
 import { ImageAttachment } from "./image-attachment";
-import { EvidenceViewer, EvidenceViewerContext, EvidenceTradeContext, EvidenceThumbnail, EvidenceDownload } from "./evidence-preview";
+import { EvidenceViewer, EvidenceViewerContext, EvidenceTradeContext } from "./evidence-preview";
 import { storeEvidence, hydrateEvidenceForExport } from "@/lib/workstation/evidence-storage";
-import { assertEvidenceCapacity, evidenceUsage } from "@/lib/workstation/image-assets";
-import { PendingEvidence } from "./pending-evidence";
+import { assertEvidenceCapacity } from "@/lib/workstation/image-assets";
+import { EvidencePanel } from "./evidence-panel";
 import { VolumeSettings } from "./volume-settings";
 import { CaptureQualityContext, CaptureQualityControls } from "./capture-quality";
 import { captureResolution, type CaptureQuality } from "@/lib/workstation/capture-resolution";
@@ -32,7 +34,7 @@ import { drawingStyle, drawingStyleFor, restoreDrawingStyles } from "@/lib/works
 import { DrawingTextControls } from "./drawing-text-controls";
 import { hideExistingDrawings, hiddenDrawingIdsFor, type TemporaryDrawingVisibility } from "@/lib/workstation/drawing-visibility";
 import { executionTimeResolved, executionTimezoneLabel } from "@/lib/workstation/execution-time-provenance";
-import { formatPeakPositionCost, peakCostDescription, peakPositionCost } from "@/lib/workstation/peak-position-cost";
+import { formatPeakPositionCost, peakPositionCost } from "@/lib/workstation/peak-position-cost";
 import {
   createContext,
   ReactNode,
@@ -132,7 +134,8 @@ import {
 import { measurementLabels, measureText, riskReward } from "@/lib/workstation/math";
 import { useTradeDocument } from "./use-trade-document";
 import { useReviewStatuses } from "./use-review-statuses";
-import { ReviewStatusDot } from "./review-status-dot";
+import { TradeListRows } from "./trade-list-rows";
+import { money, time, date } from "./trade-display-format";
 import type { ReviewStatusSummary } from "@/lib/workstation/review-status";
 import { useTradeView } from "./use-trade-view";
 import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
@@ -255,21 +258,6 @@ function DockHeaderActions(p: IDockviewHeaderActionsProps) {
     );
   return null;
 }
-const money = (value: number, currency = "USD") =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currency || "USD",
-    maximumFractionDigits: 2,
-  }).format(value);
-const time = (value: number) =>
-  new Date(value * 1000).toISOString().slice(11, 19);
-const date = (value: number) =>
-  new Date(value * 1000).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
 
 function Modal({
   title,
@@ -446,8 +434,8 @@ export function TradesWorkstation({
     [speed, setSpeed] = useState(1);
   imageEditable.current = !!trade && !trade.stale;
   useEffect(() => { setPlaying(false); setReplay(null); }, [selectedTrade?.id, selectedTrade?.timeInterpretationVersion]);
-  const [undo, setUndo] = useState<Drawing[][]>([]),
-    [redo, setRedo] = useState<Drawing[][]>([]);
+  const [undo, setUndo, undoHistory] = useImmediateState<Drawing[][]>([]),
+    [redo, setRedo, redoHistory] = useImmediateState<Drawing[][]>([]);
   const [layoutName, setLayoutName] = useState(""),
     [lockedLayout, setLockedLayout] = useState(true),
     [mobileTab, setMobileTab] = useState(journalView ? "Journal" : "Charts"),
@@ -489,7 +477,7 @@ export function TradesWorkstation({
   const persistence = useTradeDocument(adapter, trade?.id ?? ""),
     documentState = persistence.document;
   const layoutState = useTemplateLayout(adapter.mode, documentState?.review.notion?.layout);
-  const reviewSections = sectionChoices(layoutState.layout, documentState?.review.notion?.layout);
+  const reviewSections = useMemo(() => sectionChoices(layoutState.layout, documentState?.review.notion?.layout), [layoutState.layout, documentState?.review.notion?.layout]);
   const notify = useCallback((message: string) => setNotice(message), []),
     closeModal = useCallback(() => { imageGeneration.current++; setModal(null); }, []);
   useEffect(() => { setViewingEvidence(null); }, [trade?.id]);
@@ -511,7 +499,7 @@ export function TradesWorkstation({
     const frame = requestAnimationFrame(reveal), observer = new ResizeObserver(reveal);
     observer.observe(list);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); };
-  }, [drawingList, selectedDrawing, drawingSelection, fullscreenChart, mobileTab, documentState?.drawings]);
+  }, [drawingList, selectedDrawing, drawingSelection, fullscreenChart, mobileTab, documentState?.drawings.length]);
   const changePreferences = useCallback(
     (patch: Partial<WorkspacePreferences>) => {
       if (patch.theme && !setAppearance(patch.theme)) setNotice("Appearance could not be saved on this device.");
@@ -594,7 +582,7 @@ export function TradesWorkstation({
   }, [trades, initialId, trade]);
   useEffect(() => {
     setSelectedExecution(null); setSelectedDrawing(null); setUndo([]); setRedo([]); setReplay(null); setPlaying(false); setFullscreenChart(null); setTool("cursor");
-  }, [trade?.id]);
+  }, [trade?.id, setUndo, setRedo]);
   useEffect(() => {
     if (!listDrawer || !tradeListRef.current) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -717,32 +705,36 @@ export function TradesWorkstation({
     else notify("Saved. You’ve reached the last trade in this view.");
   };
   const setDrawings = (drawings: Drawing[], history = true) => {
-    if (!documentState || trade.stale) return;
+    const current = persistence.getDocument();
+    if (!current || trade.stale) return;
     if (history) {
-      setUndo((stack) => [...stack.slice(-49), documentState.drawings]);
+      setUndo((stack) => [...stack.slice(-49), current.drawings]);
       setRedo([]);
     }
     persistence.change((d) => ({ ...d, drawings }));
   };
   const saveDrawing = (drawing: Drawing) => {
-    if (!documentState) return;
+    const current = persistence.getDocument();
+    if (!current) return;
     setDrawings(
-      documentState.drawings.some((d) => d.id === drawing.id)
-        ? documentState.drawings.map((d) => (d.id === drawing.id ? drawing : d))
-        : [...documentState.drawings, drawing],
+      current.drawings.some((d) => d.id === drawing.id)
+        ? current.drawings.map((d) => (d.id === drawing.id ? drawing : d))
+        : [...current.drawings, drawing],
     );
   };
   const undoDrawings = () => {
-    if (!undo.length || !documentState) return;
-    setRedo((stack) => [...stack, documentState.drawings]);
-    setDrawings(undo[undo.length - 1], false);
+    const drawings = persistence.getDocument()?.drawings, previous = undoHistory.current.at(-1);
+    if (!previous || !drawings) return;
+    setRedo((stack) => [...stack, drawings]);
+    setDrawings(previous, false);
     setUndo((stack) => stack.slice(0, -1));
     setSelectedDrawing(null);
   };
   const redoDrawings = () => {
-    if (!redo.length || !documentState) return;
-    setUndo((stack) => [...stack, documentState.drawings]);
-    setDrawings(redo[redo.length - 1], false);
+    const drawings = persistence.getDocument()?.drawings, next = redoHistory.current.at(-1);
+    if (!next || !drawings) return;
+    setUndo((stack) => [...stack, drawings]);
+    setDrawings(next, false);
     setRedo((stack) => stack.slice(0, -1));
   };
   const focusExecution = (id: string) => {
@@ -1493,6 +1485,7 @@ export function TradesWorkstation({
               trade={trade}
               adapter={adapter}
               preferences={preferences}
+              drawingStore={persistence}
               drawings={documentState?.drawings ?? []}
               temporarilyHiddenIds={temporarilyHiddenIds}
               selected={selectedDrawing}
@@ -1539,17 +1532,18 @@ export function TradesWorkstation({
         <div className="ws-drawing-properties">
           <span>{tools.find((t) => t.id === chosenDrawing.tool)?.label}</span>
           <DrawingCoordinates drawing={splitAdjustedDrawing(chosenDrawing, chartAdjustments[activeChart])} onChange={drawing => saveDrawing(splitAdjustedDrawing(drawing, chartAdjustments[activeChart], true))} />
-          <textarea
+          <AnnotationTextInput
             key={chosenDrawing.id}
             autoFocus={chosenDrawing.tool === "text"}
             aria-label="Annotation text"
             rows={1}
-            value={chosenDrawing.text}
+            store={persistence}
+            drawingId={chosenDrawing.id}
             placeholder="Add a note or label…"
             maxLength={500}
             disabled={chosenDrawing.locked || trade.stale}
-            onChange={(e) =>
-              saveDrawing({ ...chosenDrawing, text: e.target.value })
+            onText={(text) =>
+              { const current = persistence.getDocument()?.drawings.find(d => d.id === chosenDrawing.id); if (current) saveDrawing({ ...current, text }); }
             }
           />
           <input
@@ -1907,59 +1901,11 @@ export function TradesWorkstation({
       </div>
     </div>
   );
-  const evidenceContent = (
-    <div className="ws-evidence">
-      <PendingEvidence key={`${adapter.mode}:${trade.id}:${trade.timeInterpretationVersion}:${trade.stale}`} tradeId={trade.id} mode={adapter.mode} savedIds={documentState?.evidence.map(e => e.id) ?? []} readOnly={!!trade.stale} onRecover={async (evidence, section) => { const generation = reviewContext.current.generation; persistence.change(doc => { if (doc.evidence.some(e => e.id === evidence.id)) return doc; const destination = section ?? (evidence.fundamentalsCapture ? "fundamentals" : evidence.peerCapture ? "peers" : undefined); if (destination) return attachEvidence(doc, evidence, destination, layoutState.layout); const next = { ...doc, evidence: [...doc.evidence, evidence] }; assertEvidenceCapacity(next.evidence); return next; }); if (!(await persistence.flush())) throw new Error("Recovered image remains in your review draft. Retry saving."); if (reviewContext.current.generation !== generation) throw new Error("Review changed; recovery remains scoped to the original trade."); }} />
-      <p role="status" className="ws-help">{documentState ? `${documentState.evidence.length}/30 images · ${(evidenceUsage(documentState.evidence).bytes / 1_000_000).toFixed(2)}/50 MB originals · ${(evidenceUsage(documentState.evidence).remainingBytes / 1_000_000).toFixed(2)} MB remaining${evidenceUsage(documentState.evidence).warning ? " · Storage warning: at least 80% used" : ""}` : "Loading image usage…"}</p>
-      {replay !== null && <p className="ws-replay-notice" role="note">Saved evidence may contain hindsight. New chart captures record the current replay cutoff.</p>}
-      <div className="ws-executions-toolbar">
-        <span>Evidence saved with this review</span>
-        <button disabled={trade.stale} onClick={() => void capture("attach")}>
-          <Camera size={14} /> Capture chart
-        </button>
-      </div>
-      {!documentState?.evidence.length ? (
-        <div className="ws-empty">
-          <ImageIcon size={23} />
-          <p>Keep the chart behind the decision.</p>
-          <span>
-            Attach an annotated snapshot, then include it in your Notion export.
-          </span>
-        </div>
-      ) : (
-        <div className="ws-evidence-grid">
-          {documentState.evidence
-            .map((e) => (
-              <div key={e.id}>
-                <EvidenceThumbnail evidence={e} />
-                <strong className="ws-evidence-name">{e.name}</strong>
-                <small className="ws-evidence-source">{evidenceSource(e)}</small>
-                <span>
-                  {e.origin ? "Imported image" : e.timeframe} · r{e.revision}
-                  {earlierTimestampBasis(e, trade.timeInterpretationVersion ?? "original") && (e.timeInterpretationVersion || trade.executions.some(fill => fill.provenance?.interpretationStatus === "applied")) && <small>Earlier timestamp basis</small>}
-                  <EvidenceDownload evidence={e} />
-                  <button
-                    title="Remove attachment"
-                    disabled={trade.stale}
-                    onClick={() =>
-                      { if (!trade.stale) persistence.changeContent(d => removeEvidence(d, e.id)); }
-                    }
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </span>
-                {e.replayAt !== undefined && <small>Replay · {new Date(e.replayAt * 1000).toISOString()}</small>}
-                <p className="ws-evidence-assignments">{reviewSections.filter(([key]) => sectionEvidenceIds(documentState.review.notion, key).includes(e.id)).map(([, label]) => label).join(", ") || "Unassigned"}</p>
-                <details className="ws-evidence-sections"><summary>Assign sections</summary>
-                  {reviewSections.map(([key, label]) => <label key={key}><input type="checkbox" checked={sectionEvidenceIds(documentState.review.notion, key).includes(e.id)} disabled={trade.stale}
-                    onChange={event => { const checked = event.target.checked; if (!trade.stale) persistence.changeContent(d => ({ ...d, review: { ...d.review, notion: { ...assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, e.id, checked), layout: preserveLayoutArchive(layoutState.layout, d.review.notion?.layout) } } })); }} />{label}</label>)}
-                </details>
-              </div>
-            ))}
-        </div>
-      )}
-    </div>
-  );
+  const evidenceContent = <EvidencePanel documentState={documentState} trade={trade} mode={adapter.mode} replay={replay} reviewSections={reviewSections}
+    onRecover={async (evidence, section) => { const generation = reviewContext.current.generation; persistence.change(doc => { if (doc.evidence.some(e => e.id === evidence.id)) return doc; const destination = section ?? (evidence.fundamentalsCapture ? "fundamentals" : evidence.peerCapture ? "peers" : undefined); if (destination) return attachEvidence(doc, evidence, destination, layoutState.layout); const next = { ...doc, evidence: [...doc.evidence, evidence] }; assertEvidenceCapacity(next.evidence); return next; }); if (!(await persistence.flush())) throw new Error("Recovered image remains in your review draft. Retry saving."); if (reviewContext.current.generation !== generation) throw new Error("Review changed; recovery remains scoped to the original trade."); }}
+    onCapture={() => void capture("attach")}
+    onRemove={id => { if (!trade.stale) persistence.changeContent(d => removeEvidence(d, id)); }}
+    onAssign={(key, id, checked) => { if (!trade.stale) persistence.changeContent(d => ({ ...d, review: { ...d.review, notion: { ...assignSectionEvidence(d.review.notion ?? emptyNotionReview(), key, id, checked), layout: preserveLayoutArchive(layoutState.layout, d.review.notion?.layout) } } })); }} />;
   const drawingsContent = (
     <div className="ws-object-list" ref={setDrawingList}>
       <header className="ws-drawings-visibility"><button aria-pressed={!!temporarilyHiddenIds} onClick={() => { handles.current.forEach(handle => handle.cancel()); setTool("cursor"); setDrawingVisibility(temporarilyHiddenIds ? null : hideExistingDrawings(trade.id, documentState?.drawings ?? [])); }}>
@@ -2166,71 +2112,7 @@ export function TradesWorkstation({
                 </b>
               </div>
               <div className="ws-trades-scroll">
-                {filtered.map((t, i) => (
-                  <div key={t.id}>
-                    <div className="ws-list-date">
-                      {i === 0 ||
-                      date(filtered[i - 1].openTime) !== date(t.openTime)
-                        ? date(t.openTime)
-                        : null}
-                    </div>
-                    <div
-                      className={`ws-trade-card ${t.id === trade.id ? "active" : ""}`}
-                    >
-                      <input
-                        className="ws-trade-checkbox"
-                        type="checkbox"
-                        aria-label={`Select ${t.symbol} for export`}
-                        checked={checked.includes(t.id)}
-                        onChange={(e) =>
-                          setChecked((ids) =>
-                            e.target.checked
-                              ? [...ids, t.id]
-                              : ids.filter((id) => id !== t.id),
-                          )
-                        }
-                      />
-                      <button
-                        className="ws-trade-card-main"
-                        onClick={() => void selectTrade(t.id)}
-                      >
-                        <div>
-                          <strong>{t.symbol}</strong>
-                          <span
-                            className={
-                              t.direction === "LONG" ? "ws-long" : "ws-short"
-                            }
-                          >
-                            {t.direction === "LONG" ? "↗" : "↘"}{" "}
-                            {t.direction === "LONG" ? "Long" : "Short"}
-                          </span>
-                        </div>
-                        <div>
-                          <span>
-                            {time(t.openTime).slice(0, 5)} →{" "}
-                            {t.openQuantity
-                              ? "Open"
-                              : time(t.closeTime).slice(0, 5)}
-                          </span>
-                          <b className={t.pnl >= 0 ? "positive" : "negative"}>
-                            {replay !== null
-                              ? "—"
-                              : `${t.pnl >= 0 ? "+" : ""}${money(t.pnl, t.currency)}`}
-                          </b>
-                        </div>
-                        <div className="ws-trade-card-bottom">
-                          <span className="ws-trade-size">
-                            <span>{t.executions.length} fills · </span>
-                            <span>{t.quantity} shares · <span className="ws-peak-cost" title={replay !== null ? "Max notional is hidden during replay." : peakCosts.get(t.id)?.reason ?? [peakCostDescription, peakCosts.get(t.id)?.basis].filter(Boolean).join(" ")} aria-label={replay !== null ? "Max notional hidden during replay" : `${peakCostDescription} ${peakCosts.get(t.id)?.basis ?? ""} ${peakCosts.get(t.id)?.reason ?? peakCosts.get(t.id)?.formatted}`}>
-                              Max notional {replay !== null ? "—" : peakCosts.get(t.id)?.formatted}
-                            </span></span>
-                          </span>
-                          <ReviewStatusDot summary={reviewStatuses[t.id]} persistence={t.id === trade?.id ? persistence : undefined} />
-                        </div>
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                <TradeListRows filtered={filtered} activeId={trade.id} checked={checked} onChecked={setChecked} onSelect={selectTrade} replay={replay} reviewStatuses={reviewStatuses} peakCosts={peakCosts} persistence={persistence} />
                 {!filtered.length && (
                   <div className="ws-empty">No matching trades.</div>
                 )}
@@ -2477,7 +2359,7 @@ export function TradesWorkstation({
           </button>
         </div>
       )}
-      {peerComparison?.tradeId === trade.id && <PeerComparison key={`${trade.id}:${trade.timeInterpretationVersion}`} comparison={documentState?.comparison} hiddenIds={hiddenDrawingIdsFor(comparisonVisibility, trade.id)} onHideDrawings={ids => setComparisonVisibility(ids ? { tradeId: trade.id, ids } : null)} onComparisonChange={comparison => persistence.change(doc => ({ ...doc, comparison }))} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
+      {peerComparison?.tradeId === trade.id && <PeerComparison drawingStore={persistence} key={`${trade.id}:${trade.timeInterpretationVersion}`} comparison={documentState?.comparison} hiddenIds={hiddenDrawingIdsFor(comparisonVisibility, trade.id)} onHideDrawings={ids => setComparisonVisibility(ids ? { tradeId: trade.id, ids } : null)} onComparisonChange={comparison => persistence.change(doc => ({ ...doc, comparison }))} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
       {modal === "attach" && <Modal title="Attach current chart" onClose={closeModal}>
         <p>Choose the review section for the active chart.</p>
         <CaptureQualityControls />

@@ -1,5 +1,7 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
+import type { DrawingStore } from "./annotation-text-input";
+import { useStableCallbacks } from "./use-stable-callbacks";
 import { CandlestickSeries, ColorType, HistogramSeries, LineSeries, createChart, createSeriesMarkers, type IChartApi, type UTCTimestamp } from "lightweight-charts";
 import { candlePeriod } from "@/lib/workstation/execution-diagnostics";
 import { movingAverage, volumeMovingAverage } from "@/lib/workstation/math";
@@ -13,12 +15,22 @@ import { paintChart } from "./chart-paint";
 import { logicalTimeIndex } from "@/lib/workstation/math";
 
 export type PeerChartHandle = { capture: (scale: number, plotOnly?: boolean) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; bounds: () => DOMRect; range: () => HistoryRange | null; cancelDrawing: () => void };
-type Props = { drawingControls: PeerDrawingControls; symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
+type Props = { drawingStore: DrawingStore; drawingControls: PeerDrawingControls; symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
 const numericRange = (chart: IChartApi): HistoryRange | null => {
   const range = chart.timeScale().getVisibleRange();
   return range && typeof range.from === "number" && typeof range.to === "number" ? { from: range.from, to: range.to } : null;
 };
 export function PeerChart(props: Props) {
+  const callbacks = useStableCallbacks(props.drawingControls), outer = useStableCallbacks(props);
+  const { active, tool, selected, drawings, hidden, readOnly, adjustment, adjustmentReady, context, select, activate, commit, edit, done } = callbacks;
+  const drawingControls = useMemo(() => ({ active, tool, selected, drawings, hidden, readOnly, adjustment, adjustmentReady, context, select, activate, commit, edit, done }), [active, tool, selected, drawings, hidden, readOnly, adjustment, adjustmentReady, context, select, activate, commit, edit, done]);
+  const { interval, session, range, adjustment: mode, beforeEntry, replayAt } = props.view;
+  const view = useMemo(() => ({ interval, session, range, adjustment: mode, beforeEntry, replayAt }), [interval, session, range, mode, beforeEntry, replayAt]);
+  const { subscribe, getSnapshot } = props.drawingStore;
+  const drawingStore = useMemo(() => ({ subscribe, getSnapshot }), [subscribe, getSnapshot]);
+  return <MemoPeerChart {...outer} drawingStore={drawingStore} view={view} drawingControls={drawingControls} />;
+}
+const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
   const host = useRef<HTMLDivElement>(null), latest = useRef(props);
   const model = useRef<{ update: () => void; sync: () => void; draw: () => void; cancel: () => void } | null>(null);
   const appearance = JSON.stringify([props.preferences.theme, props.preferences.gridlines, props.preferences.volume, props.preferences.volumeAverage, props.preferences.volumeStyle, props.preferences.averages]);
@@ -35,7 +47,7 @@ export function PeerChart(props: Props) {
     const averages = preferences.averages.map((period, i) => ({ period, series: chart.addSeries(LineSeries, { color: ["#f59e0b", "#60a5fa", "#c084fc", "#f472b6"][i % 4], lineWidth: 1, lastValueVisible: false, priceLineVisible: false }) }));
     const markers = createSeriesMarkers(price, []);
     let applying = true, frame = 0, candles: Candle[] = [];
-    const drawingLayer = createPeerDrawingLayer(node, chart, price, () => ({ controls: latest.current.drawingControls, candles, view: latest.current.view, trade: latest.current.trade, preferences: latest.current.preferences }));
+    const drawingLayer = createPeerDrawingLayer(node, chart, price, () => ({ controls: { ...latest.current.drawingControls, drawings: latest.current.drawingStore.getSnapshot()?.value.comparison?.drawings[latest.current.symbol] ?? latest.current.drawingControls.drawings }, candles, view: latest.current.view, trade: latest.current.trade, preferences: latest.current.preferences }));
     const describeRange = () => { const range = numericRange(chart); if (range) { node.dataset.visibleFrom = String(range.from); node.dataset.visibleTo = String(range.to); } return range; };
     const beginSync = () => { applying = true; cancelAnimationFrame(frame); };
     const finishSync = () => { describeRange(); drawingLayer.draw(); frame = requestAnimationFrame(() => { applying = false; }); };
@@ -133,5 +145,10 @@ export function PeerChart(props: Props) {
   useEffect(() => { model.current?.update(); }, [props.series, props.trade, props.view.session, props.view.adjustment, props.view.beforeEntry, props.view.replayAt]);
   useEffect(() => { model.current?.sync(); }, [props.view.range]);
   useEffect(() => { model.current?.draw(); }, [props.drawingControls]);
+  const { drawingStore, symbol } = props;
+  useEffect(() => {
+    let prior = drawingStore.getSnapshot()?.value.comparison?.drawings[symbol];
+    return drawingStore.subscribe(() => { const next = drawingStore.getSnapshot()?.value.comparison?.drawings[symbol]; if (next !== prior) { prior = next; model.current?.draw(); } });
+  }, [drawingStore, symbol]);
   return <div className="ws-peer-chart" ref={host} tabIndex={0} aria-label={`${props.symbol} comparison chart`} data-peer-canvas={props.symbol} />;
-}
+});

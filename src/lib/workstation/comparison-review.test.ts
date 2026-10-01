@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "./before-entry";
 import { alignComparison, executionColors } from "./comparison";
-import { calculateMarketMetrics, previousSession } from "./market-metrics";
+import { calculateMarketMetrics, previousSession, formatMetric, metricEntries } from "./market-metrics";
 import { chartSections, emptyNotionReview, notionProperties, notionReviewSchema, stopLossPercent } from "./notion-template";
 import { notionClipboard } from "./notion-export";
 import { richHtml, richPlain } from "./rich-text";
@@ -64,6 +64,31 @@ describe("candlestick comparison", () => {
 });
 describe("pre-trade metrics", () => {
   const history = () => { const rows: Candle[] = []; let day = previousSession("2026-06-05")!; for (let i = 0; i < 250; i++) { rows.unshift(candle(day.open)); day = previousSession(day.date)!; } return rows; };
+  it.each([80, 100, 120])("calculates signed SMA50 percentage ratios for close %s", close => {
+    const rows = history().slice(-50); rows[49] = candle(rows[49].time, close);
+    const m = calculateMarketMetrics("TEST", "USD", "2026-06-04", rows, "fixture");
+    const distance = (close / ((49 * 100 + close) / 50) - 1) * 100;
+    expect(m.sma50AdrMultiple.value).toBeCloseTo(distance / m.adr.value!);
+    expect(m.sma50AtrMultiple.value).toBeCloseTo(distance / m.atr.value!);
+    expect(metricEntries(m).map(([label]) => label)).toContain("SMA50 distance · ADR×");
+    const future = calculateMarketMetrics("TEST", "USD", "2026-06-04", [...rows, candle(at("2026-06-05T13:30Z"), 900)], "fixture");
+    expect(future.sma50AdrMultiple).toEqual(m.sma50AdrMultiple);
+  });
+  it("requires a complete SMA50 window and positive volatility denominators", () => {
+    const rows = history();
+    for (const incomplete of [rows.slice(-49), rows.filter((_, i) => i !== 220)]) {
+      const m = calculateMarketMetrics("TEST", "USD", "2026-06-04", incomplete, "fixture");
+      expect(m.adr.value).not.toBeNull(); expect(m.sma50AdrMultiple.value).toBeNull(); expect(m.sma50AtrMultiple.value).toBeNull();
+    }
+    const flat = calculateMarketMetrics("TEST", "USD", "2026-06-04", rows.map(c => ({ ...c, open: 100, close: 100, high: 100, low: 100 })), "fixture");
+    expect(flat.sma50AdrMultiple.reason).toMatch(/greater than zero/); expect(flat.sma50AtrMultiple.value).toBeNull();
+    const missing = calculateMarketMetrics("TEST", "USD", "2026-06-04", rows.slice(0, -1), "fixture");
+    expect(missing.sma50AtrMultiple.reason).toBe("Reference session missing");
+    expect(formatMetric({ value: 2.1 }, "multiple", "USD")).toBe("+2.10×");
+    expect(formatMetric({ value: -.75 }, "multiple", "USD")).toBe("−0.75×");
+    expect(formatMetric({ value: -.0001 }, "multiple", "USD")).toBe("0.00×");
+    expect(formatMetric(undefined, "multiple", "USD")).toBe("Unavailable");
+  });
   it("uses 14-period ranges and average of daily dollar volumes", () => {
     const rows = history(); rows[rows.length - 1].volume = 2000;
     const result = calculateMarketMetrics("OSCR", "USD", "2026-06-04", rows, "fixture");

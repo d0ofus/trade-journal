@@ -70,6 +70,7 @@ export type ChartHandle = {
   view: () => HistoryRange | null;
 };
 type Props = {
+  drawingStore?: DrawingStore;
   panel: ChartPanel;
   trade: Trade;
   adapter: WorkstationAdapter;
@@ -122,6 +123,7 @@ import { createBenchmarkLayer, benchmarkStyle, benchmarkScale, benchmarkPaneScal
 import { useBenchmark } from "./use-benchmark";
 import { splitAdjustedDrawing, splitAdjustedTrade, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
+import type { DrawingStore } from "./annotation-text-input";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
@@ -134,6 +136,7 @@ export function TradeChart(input: Props) {
   const adjustedTrade = useMemo(() => splitAdjustedTrade(trade, result.splitAdjustment), [trade, result.splitAdjustment]);
   const drawings = useMemo(() => input.drawings.map(d => splitAdjustedDrawing(d, result.splitAdjustment)), [input.drawings, result.splitAdjustment]);
   const props = { ...input, trade: adjustedTrade, drawings,
+    currentDrawings: () => input.drawingStore ? (input.drawingStore.getSnapshot()?.value.drawings ?? input.drawings).map(d => splitAdjustedDrawing(d, result.splitAdjustment)) : drawings,
     onDrawing: (drawing: Drawing) => input.onDrawing(splitAdjustedDrawing(drawing, result.splitAdjustment, true)) };
   const adjustmentCallback = useRef(input.onPriceAdjustment); adjustmentCallback.current = input.onPriceAdjustment;
   useEffect(() => { adjustmentCallback.current?.(result.splitAdjustment); }, [result.splitAdjustment]);
@@ -155,6 +158,13 @@ export function TradeChart(input: Props) {
   const bars = useRef<Candle[]>([]),
     hits = useRef<Hit[]>([]),
     paintRef = useRef<() => void>(() => {});
+  const getSnapshot = input.drawingStore?.getSnapshot, subscribe = input.drawingStore?.subscribe;
+  const drawingStore = useMemo(() => getSnapshot && subscribe ? { getSnapshot, subscribe } : undefined, [getSnapshot, subscribe]);
+  useEffect(() => {
+    if (!drawingStore) return;
+    let prior = drawingStore.getSnapshot()?.value.drawings;
+    return drawingStore.subscribe(() => { const next = drawingStore.getSnapshot()?.value.drawings; if (next !== prior) { prior = next; paintRef.current(); } });
+  }, [drawingStore]);
   const history = useRef<CandleHistory | null>(null),
     checkHistory = useRef<() => void>(() => {}),
     autoPages = useRef(0);
@@ -459,7 +469,7 @@ export function TradeChart(input: Props) {
       x,
       y: (price) => candles.priceToCoordinate(price),
       drawings: visibleDrawings([
-        ...(beforeEntryActive.current ? beforeEntryDrawings(latest.current.drawings, bars.current, latest.current.panel.interval, historyResult.current.session) : latest.current.drawings).filter((d) => d.id !== draft.current?.id),
+        ...(beforeEntryActive.current ? beforeEntryDrawings(latest.current.currentDrawings(), bars.current, latest.current.panel.interval, historyResult.current.session) : latest.current.currentDrawings()).filter((d) => d.id !== draft.current?.id),
         ...(draft.current ? beforeEntryActive.current ? beforeEntryDrawings([draft.current], bars.current, latest.current.panel.interval, historyResult.current.session) : [draft.current] : []),
       ], p.panel.id, latest.current.replay, latest.current.temporarilyHiddenIds),
       trade: beforeEntryActive.current ? { ...latest.current.trade, executions: [] } : latest.current.trade,
@@ -502,14 +512,14 @@ export function TradeChart(input: Props) {
         if (dataReady.current) {
           const o = options();
           if (container.current) container.current.dataset.primaryPaneHeight = String(o.plotHeight);
-          hits.current = paintChart(ctx, o);
+          const rows = executionVisibility({ ...o, executions: o.trade.executions });
+          hits.current = paintChart(ctx, o, rows);
           container.current?.querySelectorAll<HTMLButtonElement>("[data-pin-target]").forEach(button => {
             const hit = hits.current.find(h => h.id === button.dataset.pinTarget && h.kind === "drawing" && h.point === undefined);
             button.hidden = !hit;
             if (hit) { button.style.left = `${hit.x}px`; button.style.top = `${hit.y}px`; button.style.width = `${hit.w}px`; button.style.height = `${hit.h}px`; }
           });
           if (container.current) container.current.dataset.pinPreview = previewPin.current ?? "";
-          const rows = executionVisibility({ ...o, executions: o.trade.executions });
           const key = JSON.stringify([latest.current.trade.id, latest.current.trade.timeInterpretationVersion, rows.map(r => [r.diagnostic.execution.id, r.reason, r.diagnostic.status, r.diagnostic.candle?.time])]);
           if (key !== visibilityKey.current) { visibilityKey.current = key; setVisibility(rows); }
         }

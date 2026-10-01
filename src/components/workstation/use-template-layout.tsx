@@ -1,5 +1,5 @@
 "use client";
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { fallbackLayout, sectionChoices, templateLayoutSchema, type TemplateLayout } from "@/lib/workstation/template-layout";
 
 type LayoutState = { layout: TemplateLayout; warning: string; pending: boolean; refresh: () => void };
@@ -36,5 +36,6 @@ export function useTemplateLayout(mode: "application" | "demo", saved?: Template
     window.addEventListener("focus", check); document.addEventListener("visibilitychange", check); document.addEventListener("focusout", adopt);
     return () => { controller.current?.abort(); controller.current = null; clearInterval(timer); window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", check); document.removeEventListener("focusout", adopt); };
   }, [apply, refresh]);
-  return { layout: layout ?? saved ?? fallbackLayout, warning, pending, refresh: () => { void refresh(true); } };
+  const refreshManually = useCallback(() => { void refresh(true); }, [refresh]);
+  return useMemo(() => ({ layout: layout ?? saved ?? fallbackLayout, warning, pending, refresh: refreshManually }), [layout, saved, warning, pending, refreshManually]);
 }

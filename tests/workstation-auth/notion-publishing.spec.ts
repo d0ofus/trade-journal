@@ -36,7 +36,7 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
     if (body?.action === "preview") {
       frozen = structuredClone(doc);
       expect(body.revision).toBe(doc.revision);
-      if (job?.state !== "succeeded" || job.revision !== doc.revision) job = { id: `job-${doc.revision}`, groupKey, revision: doc.revision, state: "preview", phase: "preview", error: null, retryAt: null, pageUrl: lastPublished === null ? null : pageUrl, missingSections: [], templateVersion: "test", properties: [], omitted: [], errors: [], assets: [], sections: [{ key: "takeaways", label: "Takeaways", blocks: 1, images: 0, done: false, html: doc.review.takeaway, imageIds: [] }] };
+      if (job?.state !== "succeeded" || job.revision !== doc.revision || job.presentationVersion !== 3) job = { id: `job-${doc.revision}`, groupKey, revision: doc.revision, state: "preview", phase: "preview", error: null, retryAt: null, pageUrl: lastPublished === null ? null : pageUrl, missingSections: [], presentationVersion: 3, templateVersion: "test", properties: [], omitted: [], errors: [], assets: [], sections: [{ key: "takeaways", label: "Takeaways", blocks: 1, images: 0, done: false, html: doc.review.takeaway, imageIds: [] }] };
     } else if (body?.action === "publish") {
       expect(body.id).toBe(job?.id); confirms++;
       job = { ...job!, state: "waiting", phase: "template_wait", retryAt: new Date(Date.now() + 2000), pageUrl };
@@ -94,4 +94,15 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
   await page.reload(); expect((await read()).review.takeaway).toContain("Edited journal content reaches the same page");
   await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
   await expect(dialog.getByText("This saved review has already been published.")).toBeVisible(); expect(confirms).toBe(2);
+  await dialog.getByRole("button", { name: "Close Publish/update in Notion", exact: true }).click();
+  const markLegacy = () => { if (!job) throw new Error("Missing completed fixture"); job.presentationVersion = 1; };
+  markLegacy();
+  await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
+  await expect(dialog.getByText(/Publication format update:/)).toBeVisible();
+  await expect(dialog.getByText(/Newer saved edits in revision/)).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: /^Confirm update/ })).toBeEnabled();
+  expect(confirms).toBe(2);
+  await dialog.getByRole("button", { name: /^Confirm update/ }).click();
+  await expect(dialog.getByText("This saved review has already been published.")).toBeVisible();
+  expect(confirms).toBe(3); expect((await read()).review.status).toBe("Reviewed");
 });

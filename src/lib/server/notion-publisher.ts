@@ -13,12 +13,12 @@ import { templateRetryAt, templateTimeoutMessage, templateWaitExpired, type Temp
 import { completePublishedReview } from "./notion-review-completion";
 
 type Anchor = { id: string; parent: string; sourceId: string; type: string };
-type SectionBinding = { anchor: Anchor; container: string; fingerprint: string };
+type SectionBinding = { anchor: Anchor; container?: string; fingerprint?: string };
 type Bindings = { sections?: Record<string, SectionBinding>; propertyFingerprint?: string; propertyIds?: string[] };
 type Progress = { pageId?: string; botId?: string; createIntent?: boolean; createTitle?: string; anchors?: Record<string, Anchor>;
   templateWait?: TemplateWait;
   checked?: boolean; propertiesDone?: boolean; propertyIntent?: boolean; propertyBase?: string; newPropertyFingerprint?: string;
-  pendingAppend?: { parent: string; count: number }; sections?: Record<string, { container?: string; createIntent?: boolean; done?: boolean; fingerprint?: string }>; };
+  pendingAppend?: { parent: string; count: number }; sections?: Record<string, { container?: string; createIntent?: boolean; removeIntent?: string; done?: boolean; fingerprint?: string }>; };
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
 function dateInstant(raw: unknown, zone: unknown) {
   if (typeof raw !== "string") return null;
@@ -215,13 +215,31 @@ async function runPublicationStep(id: string, groupKey: string) {
     }
     if (!progress.checked) {
       if (bindings.propertyFingerprint && bindings.propertyIds && await pageProperties(pageId, bindings.propertyIds) !== bindings.propertyFingerprint) throw new NotionError("App-managed Notion properties were edited. Review and resolve that conflict in Notion before resuming.", 409);
-      for (const binding of Object.values(bindings.sections ?? {})) if (await fingerprint(binding.container) !== binding.fingerprint) throw new NotionError("App-managed Notion section content was edited. Review and resolve that conflict before resuming.", 409);
+      for (const binding of Object.values(bindings.sections ?? {})) if (binding.container && await fingerprint(binding.container) !== binding.fingerprint) throw new NotionError("App-managed Notion section content was edited. Review and resolve that conflict before resuming.", 409);
       progress.checked = true; await checkpoint();
     }
     progress.sections ??= {};
     const section = plan.sections.find(section => !progress.sections?.[section.key]?.done);
     if (section) {
       const state = progress.sections[section.key] ??= {};
+      // Frozen legacy jobs retain their original presentation. New plans omit empty
+      // containers, but keep anchors so these sections can be populated later.
+      if ((plan.presentationVersion ?? 1) >= 3 && !section.blocks.length && !section.images.length) {
+        const old = bindings.sections?.[section.key];
+        if (old?.container) {
+          const block = await notionRequest<RemoteBlock>(`/blocks/${old.container}`);
+          if (block.archived || block.in_trash) {
+            if (state.removeIntent !== old.container) throw new NotionError("App-managed Notion content was removed outside this publication. Review the conflict.", 409);
+          } else {
+            if (await fingerprint(old.container) !== old.fingerprint) throw new NotionError("The previous Notion content changed during publishing. Review the conflicting content before resuming.", 409);
+            state.removeIntent = old.container; await checkpoint();
+            await write(`/blocks/${old.container}`, "DELETE");
+          }
+        }
+        state.done = true;
+        await checkpoint({ state: "waiting" });
+        return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
+      }
       const anchor = progress.anchors[section.key], parent = anchor.type === "toggle" ? anchor.id : anchor.parent;
       const marker = `${plan.sourceUrl}#notion-${id}-${jsonHash(section.key).slice(0, 12)}`;
       if (!state.container) {
@@ -268,7 +286,7 @@ async function runPublicationStep(id: string, groupKey: string) {
       }
       await append(state.container, blocks);
       const old = bindings.sections?.[section.key];
-      if (old && old.container !== state.container) {
+      if (old?.container && old.container !== state.container) {
         const oldBlock = await notionRequest<RemoteBlock>(`/blocks/${old.container}`);
         if (!oldBlock.archived && !oldBlock.in_trash) {
           if (await fingerprint(old.container) !== old.fingerprint) throw new NotionError("The previous Notion content changed during publishing. Both versions are preserved for review.", 409);
@@ -280,6 +298,10 @@ async function runPublicationStep(id: string, groupKey: string) {
       return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
     }
     if (!progress.propertiesDone) {
+      for (const state of Object.values(progress.sections)) if (state.done && state.removeIntent) {
+        const removed = await notionRequest<RemoteBlock>(`/blocks/${state.removeIntent}`);
+        if (!removed.archived && !removed.in_trash) throw new NotionError("A removed section was restored during publication. Review the Notion edit before finalizing.", 409);
+      }
       for (const state of Object.values(progress.sections)) if (state.done && state.container && await fingerprint(state.container) !== state.fingerprint)
         throw new NotionError("A completed section changed during publication. Review the Notion edit before finalizing.", 409);
       const ids = Object.keys(plan.properties), current = await pageProperties(pageId, ids);
@@ -298,7 +320,7 @@ async function runPublicationStep(id: string, groupKey: string) {
       }
     }
     const nextBindings: Bindings = { sections: { ...bindings.sections }, propertyIds: Object.keys(plan.properties), propertyFingerprint: progress.newPropertyFingerprint };
-    for (const section of plan.sections) { const done = progress.sections[section.key]; nextBindings.sections![section.key] = { anchor: progress.anchors[section.key], container: done.container!, fingerprint: done.fingerprint! }; }
+    for (const section of plan.sections) { const done = progress.sections[section.key]; nextBindings.sections![section.key] = { anchor: progress.anchors[section.key], ...(done.container ? { container: done.container, fingerprint: done.fingerprint! } : {}) }; }
     await prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
       const reviewCompletion = await completePublishedReview(tx, groupKey, job!.revision, snapshot.digest);

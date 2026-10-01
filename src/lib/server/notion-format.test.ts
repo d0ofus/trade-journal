@@ -3,6 +3,12 @@ import { htmlToNotionBlocks, managedBlockValue, notionRichText } from "./notion-
 import { propertyValue } from "./notion-publisher";
 import { jsonHash, type JsonObject, type RemoteBlock } from "./notion-client";
 describe("Notion formatting and conflict normalization", () => {
+  it.each(["", " \n\t", "<p></p>", "<p><br></p>", "<ul><li><p>&nbsp;&#160;</p></li></ul>", "<p><strong> </strong></p>"])("omits visually empty rich text %s", html => {
+    expect(htmlToNotionBlocks(html)).toEqual([]);
+  });
+  it("retains nonempty nested lists even with an empty parent item", () => {
+    expect(htmlToNotionBlocks("<ul><li><p></p><ul><li>Real content</li></ul></li></ul>")).toHaveLength(1);
+  });
   it("retains inline emphasis, entities, paragraphs, lists and nested lists", () => {
     const blocks = htmlToNotionBlocks("<p><strong>Bold &amp; clear</strong><br><em>Context</em></p><ul><li>First<ul><li>Nested</li></ul></li></ul>");
     expect(blocks[0].type).toBe("paragraph");

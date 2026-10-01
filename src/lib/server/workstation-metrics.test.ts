@@ -29,6 +29,7 @@ it("shares concurrent metric work, cancels future splits, and never calculates w
   const [a, b] = await Promise.all([loadTradeMetrics(trade, new AbortController().signal), loadTradeMetrics({ ...trade, id: "another-trade" }, new AbortController().signal)]);
   expect(a).toEqual(b); expect(a.asOf).toBe("2026-06-03"); expect(a.marketCap.value).toBe(10000);
   expect(a.adr.value).toBeCloseTo(4); expect(a.atr.value).toBeCloseTo(4); expect(a.dollarVolume.value).toBe(50000);
+  expect(a.sma50AdrMultiple.value).toBe(0); expect(a.sma50AtrMultiple.value).toBe(0);
   expect(mocks.bars).toHaveBeenCalledTimes(2); expect(mocks.shares).toHaveBeenCalledTimes(1);
   for (const call of mocks.bars.mock.calls) expect(call[2].to).toBe(reference.close + 1);
   await loadTradeMetrics(trade, new AbortController().signal);
@@ -51,7 +52,7 @@ it("calculates January 7 legacy IE against January 6, separates eligibility cach
   expect(etf.eligibilityBasis).toBe("etf"); expect(etf.marketCap.reason).toContain("ETF");
   expect(mocks.bars).toHaveBeenCalledTimes(6); expect(mocks.shares).toHaveBeenCalledTimes(2);
   const cached = await prisma.workstationMetricCache.findMany({ where: { symbol: "IE" } });
-  expect(cached).toHaveLength(3); expect(cached.every(row => row.version === 2)).toBe(true);
+  expect(cached).toHaveLength(3); expect(cached.every(row => row.version === 3)).toBe(true);
   const option = await loadTradeMetrics({ ...trade, symbol: "IE260116C00010000" }, new AbortController().signal);
   expect(option.adr.reason).toBe("Unsupported instrument"); expect(mocks.bars).toHaveBeenCalledTimes(6);
 });

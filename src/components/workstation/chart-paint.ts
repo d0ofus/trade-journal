@@ -1,15 +1,19 @@
 import { Candle, CandleSession, Drawing, Interval, Trade, WorkspacePreferences } from "@/lib/workstation/types";
-import { executionVisibility } from "@/lib/workstation/execution-visibility";
+import { executionVisibility, type ExecutionVisibility } from "@/lib/workstation/execution-visibility";
 import type { CandleRange } from "@/lib/workstation/candle-ranges";
 import { measureText, riskReward } from "@/lib/workstation/math";
 import { defaultNoteEnd, noteLayout, type PixelPoint } from "@/lib/workstation/note-layout";
-import { ellipsizeDrawingText, wrapDrawingText } from "@/lib/workstation/drawing-label-text";
+import { ellipsizeDrawingText, createDrawingTextCache } from "@/lib/workstation/drawing-label-text";
 import { defaultNoteWidth, positivePercentColor, negativePercentColor } from "@/lib/workstation/drawing-style";
 
 export type Hit = { id: string; kind: "drawing" | "execution" | "handle"; resizeNote?: { width: number; direction: 1 | -1 }; point?: number; anchor?: PixelPoint; segment?: [PixelPoint, PixelPoint]; x: number; y: number; w: number; h: number };
 export type PaintOptions = { pinPreview?: string | null; capturePinNotes?: boolean; beforeEntry?: boolean; executionColors?: { buy: string; sell: string }; covered?: CandleRange[]; visibleRange?: CandleRange | null; width: number; height: number; plotWidth: number; plotHeight: number; x: (time: number) => number | null; y: (price: number) => number | null; drawings: Drawing[]; trade: Trade; candles: Candle[]; interval: Interval; session?: CandleSession; labels: WorkspacePreferences["labels"]; selected: string | null; selectedExecution: string | null; light: boolean; export?: boolean; replay: number | null };
 
-export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[] {
+const textLayouts = new WeakMap<CanvasRenderingContext2D, ReturnType<typeof createDrawingTextCache>>();
+export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions, executions?: ExecutionVisibility[]): Hit[] {
+  let cachedWrap = textLayouts.get(ctx);
+  if (!cachedWrap) { cachedWrap = createDrawingTextCache(); textLayouts.set(ctx, cachedWrap); }
+  const wrap = (text: string, width: number) => cachedWrap(text, width, ctx.font, value => ctx.measureText(value).width);
   const hits: Hit[] = [], occupied: { x: number; y: number; w: number; h: number }[] = [];
   const { x, y, plotHeight: h } = o;
   const last = o.candles.at(-1), prior = o.candles.at(-2);
@@ -22,8 +26,8 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
     ctx.font = "11px system-ui, sans-serif";
     const measure = (value: string) => ctx.measureText(value).width;
     const width = Math.max(18, Math.min(fixedWidth ? maxWidth : Math.max(...text.split(/\r?\n/).map(measure), ...note.split(/\r?\n/).map(measure)) + 18, maxWidth, w - 6));
-    let values = text ? wrapDrawingText(text, width - 16, measure) : [];
-    let notes = note ? wrapDrawingText(note, width - 16, measure) : [];
+    let values = text ? wrap(text, width - 16) : [];
+    let notes = note ? wrap(note, width - 16) : [];
     // Keep the calculated values visible even when a note exceeds the plot height.
     const maxRows = Math.max(1, Math.floor((h - topInset - 9) / 16));
     if (values.length > maxRows) { values = values.slice(0, maxRows); values[maxRows - 1] = ellipsizeDrawingText(values[maxRows - 1], width - 16, measure); }
@@ -97,7 +101,7 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       ctx.font = "11px system-ui, sans-serif";
       const desiredWidth = d.noteWidth ?? Math.min(defaultNoteWidth, Math.max(...text.split(/\r?\n/).map(t => ctx.measureText(t).width)) + 18);
       const width = Math.max(18, Math.min(desiredWidth, w - 6));
-      const lines = wrapDrawingText(text, width - 16, value => ctx.measureText(value).width);
+      const lines = wrap(text, width - 16);
       const layout = noteLayout(a, points[1] ? b : defaultNoteEnd(a), width - 18, w, h, topInset, 8 + lines.length * 16, width);
       line(a.x, a.y, layout.join.x, layout.join.y);
       const angle = Math.atan2(layout.join.y - a.y, layout.join.x - a.x);
@@ -157,7 +161,7 @@ export function paintChart(ctx: CanvasRenderingContext2D, o: PaintOptions): Hit[
       for (let i = 0; i < points.length; i++) { const p = points[i]; if (p.x === null || p.y === null) continue; ctx.setLineDash([]); ctx.fillStyle = o.light ? "#fff" : "#121722"; ctx.strokeStyle = d.color; ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); if (!d.locked) hits.push({ id: d.id, kind: "handle", point: i, x: p.x - 9, y: p.y - 9, w: 18, h: 18 }); }
     }
   }
-  for (const row of executionVisibility({ ...o, executions: o.trade.executions })) {
+  for (const row of executions ?? executionVisibility({ ...o, executions: o.trade.executions })) {
     if (row.reason !== "visible" || row.x === null || row.y === null) continue;
     const { diagnostic, index: i, x: px, y: py } = row, e = diagnostic.execution;
     const color = e.side === "BUY" ? o.executionColors?.buy ?? "#34d399" : o.executionColors?.sell ?? "#fb7185", selected = o.selectedExecution === e.id;

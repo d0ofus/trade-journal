@@ -4,6 +4,8 @@
     "incremental": false
   },
   "include": [
+    "tests/workstation-preview/drawing-typing.spec.ts",
+    "src/lib/workstation/drawing-label-text.test.ts",
     "src/lib/workstation/publication-review-completion.test.ts",
     "src/lib/server/fundamentals-publication.test.ts",
     "src/lib/server/sec-*.ts",

@@ -1,10 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 import { defaultPreferences, type TradeDocument } from "../../src/lib/workstation/types";
 import { DEMO_PREFIX, demoTrades, initialDemoDocument } from "../../src/lib/workstation/demo";
 
 const prefKey = "execution-lab:workstation:preferences:demo:v1", docKey = DEMO_PREFIX + demoTrades[0].id;
 type Row = { text: string; x: number; y: number; maxWidth?: number; color: string };
-declare global { interface Window { refinementRows: Row[]; refinementExport: Row[]; noteResize?: { x: number; y: number }; } }
+declare global { interface Window { refinementRows: Row[]; refinementExport: Row[]; refinementPng?: Blob; noteResize?: { x: number; y: number }; } }
 async function open(page: Page, existing = false) {
   const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
   await page.route("**/api/**", route => route.abort());
@@ -14,6 +15,8 @@ async function open(page: Page, existing = false) {
     if (!localStorage.getItem(prefKey)) localStorage.setItem(prefKey, JSON.stringify(prefs));
     if (!localStorage.getItem(docKey)) localStorage.setItem(docKey, JSON.stringify(doc));
     window.refinementRows = []; window.refinementExport = [];
+    const createUrl = URL.createObjectURL;
+    URL.createObjectURL = function(value) { if (value instanceof Blob && value.type === "image/png") window.refinementPng = value; return createUrl.call(URL, value); };
     const proto = CanvasRenderingContext2D.prototype, fill = proto.fillText, rect = proto.fillRect, clear = proto.clearRect;
     proto.clearRect = function(x, y, w, h) { if (this.canvas.classList.contains("ws-chart-overlay")) { window.refinementRows = []; window.noteResize = undefined; } clear.call(this, x, y, w, h); };
     proto.fillText = function(text, x, y, maxWidth) {
@@ -93,7 +96,12 @@ test("index pane keeps dates and chart size, resizes, restores and captures alig
   const live = await page.evaluate(() => window.refinementRows.filter(r => r.text.includes("Capture") || r.text === "note"));
   await chart.getByRole("button", { name: "Export chart-1", exact: true }).click();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Active chart PNG", exact: true }).click();
-  await (await download).saveAs(info.outputPath("index-pane-capture.png"));
+  expect((await download).suggestedFilename()).toMatch(/\.png$/);
+  // Verify the exact Blob passed to the download, independently of Windows'
+  // intermittently locked or empty Chromium download artifacts.
+  const png = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await window.refinementPng!.arrayBuffer()))));
+  expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+  await writeFile(info.outputPath("index-pane-capture.png"), png);
   const exported = await page.evaluate(() => window.refinementExport);
   for (const row of live) {
     const match = exported.find(r => r.text === row.text)!; expect(match).toBeTruthy();

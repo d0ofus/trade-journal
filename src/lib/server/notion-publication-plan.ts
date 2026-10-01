@@ -9,14 +9,14 @@ import { jsonHash, NotionError, notionRequest, type JsonObject } from "./notion-
 import { htmlToNotionBlocks } from "./notion-format";
 import { planNotionProperties, type RemoteProperty } from "./notion-properties";
 import type { TradeDocument } from "@/lib/workstation/types";
-import { notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait } from "@/lib/workstation/notion-publication-state";
+import { NOTION_PRESENTATION_VERSION, notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 import type { ImageAssetReference } from "@/lib/workstation/image-assets";
 
 export type PublishSection = SectionDefinition & { blocks: JsonObject[]; images: string[] };
-export type PublishPlan = { layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
+export type PublishPlan = { presentationVersion?: number; layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
 export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; name?: string; caption: string; image: string; asset?: ImageAssetReference }[] };
 // A new explicit preview must not reuse a completed job with the old generated captions.
-export const NOTION_PRESENTATION_VERSION = 2;
+export { NOTION_PRESENTATION_VERSION } from "@/lib/workstation/notion-publication-state";
 
 export async function createNotionPreview(groupKey: string, revision: number, sourceOrigin: string) {
   const existing = await prisma.notionPublication.findUnique({ where: { groupKey } });
@@ -66,7 +66,7 @@ export async function createNotionPreview(groupKey: string, revision: number, so
     else for (const image of assets) if ((image.asset?.bytes ?? Buffer.from(image.image.split(",")[1] ?? "", "base64").length) > limit) errors.push(`Evidence ${image.id} exceeds this Notion workspace's ${limit.toLocaleString()}-byte file allowance. The original will not be compressed or omitted.`);
   }
   const origin = new URL(sourceOrigin); if (!/^https?:$/.test(origin.protocol)) throw new NotionError("Invalid application origin.", 400);
-  const plan: PublishPlan = { layout, schemaHash: jsonHash(propertyPlan.schemaHashInput), properties: propertyPlan.values, propertyDisplay: propertyPlan.display, sections, omitted, errors,
+  const plan: PublishPlan = { presentationVersion: NOTION_PRESENTATION_VERSION, layout, schemaHash: jsonHash(propertyPlan.schemaHashInput), properties: propertyPlan.values, propertyDisplay: propertyPlan.display, sections, omitted, errors,
     titleId: Object.values(schema.properties).find(p => p.type === "title")?.id ?? "", sourceUrl: `${origin.origin}/trades?groupKey=${encodeURIComponent(groupKey)}` };
   const digest = jsonHash(doc), snapshot: PublishSnapshot = { doc: { ...doc, drawings: [], evidence: [], legacy: null }, symbol: trade.symbol, digest, assets };
   // Re-read after upstream I/O; never preview a silently superseded revision.
@@ -114,7 +114,7 @@ export function publicationStatus(job: { id: string; groupKey: string; revision:
     pageUrl: notionPageUrl(progress.pageId),
     phase: progress.templateWait?.timedOut ? "template_timeout" : progress.templateWait && ["ready", "running", "waiting"].includes(job.state) ? "template_wait" : job.state,
     missingSections: progress.templateWait?.missing ?? [],
-    templateVersion: plan.layout.id, properties: plan.propertyDisplay, omitted: plan.omitted, errors: plan.errors,
+    presentationVersion: plan.presentationVersion ?? 1, templateVersion: plan.layout.id, properties: plan.propertyDisplay, omitted: plan.omitted, errors: plan.errors,
     sections: plan.sections.map(section => ({ key: section.key, label: [...section.groups, section.label].join(" · "), images: section.images.length, blocks: section.blocks.length, done: progress.sections?.[section.key]?.done ?? false,
       html: includeDetails ? richHtml(sectionText(snapshot.doc.review, section.key)) : undefined, imageIds: includeDetails ? section.images : undefined })),
     assets: includeDetails ? snapshot.assets.map(asset => ({ id: asset.id, image: asset.image, asset: asset.asset, name: asset.name, caption: asset.caption })) : undefined,

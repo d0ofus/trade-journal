@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { continuePublication, openPublication, type PublicationResult } from "./notion-publication-client";
-import { templateCheckDelay, templateRetryAt, templateWaitExpired } from "./notion-publication-state";
+import { NOTION_PRESENTATION_VERSION, publicationContentChanged, templateCheckDelay, templateRetryAt, templateWaitExpired } from "./notion-publication-state";
 
 function result(state = "preview", revision = 2, savedRevision = revision): PublicationResult {
   return { enabled: true, publication: { savedRevision, lastPublishedRevision: state === "succeeded" ? revision : 1, pageUrl: "https://notion.invalid/page", activeJobId: ["preview", "succeeded"].includes(state) ? null : "job" },
-    job: { id: "job", groupKey: "trade", revision, state, error: null, retryAt: null, phase: state, missingSections: [], pageUrl: null, templateVersion: "v1", properties: [], omitted: [], errors: [], sections: [], assets: undefined } };
+    job: { id: "job", groupKey: "trade", revision, state, error: null, retryAt: null, phase: state, missingSections: [], pageUrl: null, presentationVersion: NOTION_PRESENTATION_VERSION, templateVersion: "v1", properties: [], omitted: [], errors: [], sections: [], assets: undefined } };
 }
 function responses(...results: PublicationResult[]) {
   const fetcher = vi.fn(); results.forEach(value => fetcher.mockResolvedValueOnce(Response.json(value))); vi.stubGlobal("fetch", fetcher); return fetcher;
@@ -12,6 +12,15 @@ function responses(...results: PublicationResult[]) {
 const actions = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.map(([, init]) => init.body ? JSON.parse(init.body) : "GET");
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("publication continuation without implicit publishing", () => {
+  it("prepares a format upgrade without claiming new content or confirming writes", async () => {
+    const completed = result("succeeded"); completed.job!.presentationVersion = 1;
+    completed.job!.reviewCompletion = { outcome: "already-reviewed", sourceRevision: 2, revision: 2, noteUpdatedAt: null, journalUpdatedAt: null, previousNoteUpdatedAt: null, previousJournalUpdatedAt: null };
+    completed.publication.savedNoteUpdatedAt = null; completed.publication.savedJournalUpdatedAt = null;
+    expect(publicationContentChanged(completed.job, completed.publication)).toBe(false);
+    const fetcher = responses(completed, result());
+    expect((await openPublication("trade", new AbortController().signal, vi.fn())).job?.state).toBe("preview");
+    expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
+  });
   it("prepares the latest saved revision on opening, without confirming it", async () => {
     const fetcher = responses(result("succeeded", 1, 3), result("preview", 3));
     await openPublication("trade", new AbortController().signal, vi.fn());
