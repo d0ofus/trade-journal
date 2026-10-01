@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { continuePublication, openPublication, type PublicationResult } from "@/lib/workstation/notion-publication-client";
-import { publicationContentChanged, publicationFormatChanged, publicationCoveredRevision, unfinishedPublication } from "@/lib/workstation/notion-publication-state";
+import { publicationContentChanged, publicationCoveredRevision, unfinishedPublication } from "@/lib/workstation/notion-publication-state";
 import { announcePublicationReviewCompletion } from "@/lib/workstation/review-status-events";
 import { ReviewDialog } from "./review-dialog";
 import { EvidenceThumbnail } from "./evidence-preview";
@@ -10,11 +10,9 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
   const [result, setResult] = useState<PublicationResult | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   const [completionMessage, setCompletionMessage] = useState("");
-  const [formatUpdate, setFormatUpdate] = useState(false);
   const request = useRef<AbortController | null>(null);
   const observe = useCallback((value: PublicationResult) => {
     setResult(value);
-    if (value.job?.state === "succeeded" && publicationFormatChanged(value.job) && !publicationContentChanged(value.job, value.publication)) setFormatUpdate(true);
     const completion = value.job?.state === "succeeded" ? value.job.reviewCompletion : undefined;
     if (completion) {
       const current = !publicationContentChanged(value.job!, value.publication);
@@ -57,7 +55,9 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
     <p role="status">Saved revision {savedRevision} · Last published: {lastPublished == null ? "Not yet published" : `revision ${lastPublished}`}</p>
     {result && !enabled && <p role="status">Publishing is disabled until Notion permissions and live validation are complete. You can still prepare a preview.</p>}
     {error && <p role="alert">{error}</p>}
-    {formatUpdate && job?.state === "preview" && <p role="status">Publication format update: empty app-owned section boxes will be omitted or removed when you confirm.</p>}
+    {job && <p className="ws-help">{(job.presentationVersion ?? 1) >= 4
+      ? "Sections publish as ordinary text, lists and images, without generated callouts or review links."
+      : "This publication retains the page’s existing callout format and review links."}</p>}
     {completionMessage && <p role="status">{completionMessage}</p>}
     {busy && !job && <p role="status">Preparing latest saved-review preview…</p>}
     {pageUrl && <a href={pageUrl} target="_blank" rel="noreferrer">Open app-owned Notion page</a>}
@@ -70,7 +70,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
       {job.state === "succeeded" && !newerEdits && <p role="status">This saved review has already been published.</p>}
       {retryAt && new Date(retryAt).getTime() > now && <p>{busy ? "Next check" : "Resume"} after {new Date(retryAt).toLocaleTimeString()}.</p>}
       <h3>Properties</h3><dl className="ws-notion-preview-properties">{job.properties.map(item => <div key={item.name}><dt>{item.name}</dt><dd>{item.value}</dd></div>)}</dl>
-      <h3>Section placement</h3>{job.sections.map(section => <details className="ws-template-section" key={section.key}><summary>{section.label}: {section.blocks} text blocks, {section.images} images{section.blocks === 0 && section.images === 0 && (job.presentationVersion ?? 1) >= 3 ? " · Empty: no app box" : ""}{section.done ? " · Complete" : ""}</summary>
+      <h3>Section placement</h3>{job.sections.map(section => <details className="ws-template-section" key={section.key}><summary>{section.label}: {section.blocks} text blocks, {section.images} images{section.blocks === 0 && section.images === 0 && (job.presentationVersion ?? 1) >= 3 ? " · Empty: no content" : ""}{section.done ? " · Complete" : ""}</summary>
         {section.html && <div className="ws-notion-preview-text" dangerouslySetInnerHTML={{ __html: section.html }} />}
         {section.imageIds?.map(id => { const asset = job.assets?.find(asset => asset.id === id); return asset ? <figure key={id}>
           {/* Saved, size-validated embedded evidence; never a remote image URL. */}

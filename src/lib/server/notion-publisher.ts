@@ -11,14 +11,16 @@ import { withNotionBudget } from "./notion-client";
 import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
 import { templateRetryAt, templateTimeoutMessage, templateWaitExpired, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 import { completePublishedReview } from "./notion-review-completion";
+import { effectivePresentation, planPresentation } from "./notion-presentation";
+import { createPlainProgress, fingerprint, publishPlainSection, verifyPlainAnchor, verifyPlainBinding, verifyPlainCompletion, type PlainBinding, type PlainProgress } from "./notion-plain-sections";
 
 type Anchor = { id: string; parent: string; sourceId: string; type: string };
-type SectionBinding = { anchor: Anchor; container?: string; fingerprint?: string };
-type Bindings = { sections?: Record<string, SectionBinding>; propertyFingerprint?: string; propertyIds?: string[] };
+type SectionBinding = { anchor: Anchor; container?: string; fingerprint?: string; plain?: PlainBinding };
+type Bindings = { presentationVersion?: number; sections?: Record<string, SectionBinding>; propertyFingerprint?: string; propertyIds?: string[] };
 type Progress = { pageId?: string; botId?: string; createIntent?: boolean; createTitle?: string; anchors?: Record<string, Anchor>;
   templateWait?: TemplateWait;
   checked?: boolean; propertiesDone?: boolean; propertyIntent?: boolean; propertyBase?: string; newPropertyFingerprint?: string;
-  pendingAppend?: { parent: string; count: number }; sections?: Record<string, { container?: string; createIntent?: boolean; removeIntent?: string; done?: boolean; fingerprint?: string }>; };
+  pendingAppend?: { parent: string; count: number }; sections?: Record<string, { container?: string; createIntent?: boolean; removeIntent?: string; done?: boolean; fingerprint?: string; plain?: PlainProgress }>; };
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
 function dateInstant(raw: unknown, zone: unknown) {
   if (typeof raw !== "string") return null;
@@ -60,19 +62,6 @@ async function pageProperties(pageId: string, ids: string[]) {
   }
   return jsonHash(ids.slice().sort().map(id => [id, propertyValue(byId.get(id)!)]));
 }
-async function fingerprint(id: string): Promise<string> {
-  let count = 0;
-  async function value(block: RemoteBlock): Promise<unknown> {
-    if (++count > 1500) throw new NotionError("The managed Notion section is too large to verify safely.", 409);
-    const image = block.type === "image" ? block.image as { file?: { url?: string }; external?: { url?: string } } : undefined;
-    const imageUrl = image?.file?.url ?? image?.external?.url;
-    return { id: block.id, value: managedBlockValue(block), image: imageUrl ? new URL(imageUrl).pathname : undefined,
-      children: block.has_children ? await Promise.all((await notionChildren(block.id)).map(value)) : [] };
-  }
-  const block = await notionRequest<RemoteBlock>(`/blocks/${id}`);
-  if (block.archived || block.in_trash) throw new NotionError("App-managed Notion content was removed. Review this conflict before publishing.", 409);
-  return jsonHash(await value(block));
-}
 function locate(tree: TemplateBlock[], path: number[], pageId: string): { node: TemplateBlock; parent: string } | null {
   let nodes = tree, parent = pageId;
   for (let depth = 0; depth < path.length; depth++) {
@@ -103,6 +92,9 @@ export async function startNotionPublication(id: string, groupKey: string) {
     const publication = await tx.notionPublication.findUniqueOrThrow({ where: { groupKey } });
     if (publication.activeJobId && publication.activeJobId !== id) throw new NotionError("Another publication for this trade needs to finish first.", 409);
     if (publication.dataSourceId !== NOTION_DATA_SOURCE_ID) throw new NotionError("This trade is bound to a different Notion database.", 409);
+    if (await effectivePresentation(publication, tx) !== planPresentation(plan) ||
+      (plan.targetPageId !== undefined && plan.targetPageId !== publication.pageId))
+      throw new NotionError("The destination or publication format changed. Prepare a new preview.", 409);
     const assets = (job.snapshot as unknown as PublishSnapshot).assets.flatMap(image => image.asset ? [image.asset.id] : []);
     if (assets.length) {
       const { lockClosedTradeForReview } = await import("./closed-trade-review-lock");
@@ -171,7 +163,7 @@ async function runPublicationStep(id: string, groupKey: string) {
             progress.pageId = page.id;
           } catch (e) { if (e instanceof NotionError && !e.uncertain) { progress.createIntent = false; await checkpoint(); } throw e; }
         }
-        await prisma.notionPublication.update({ where: { groupKey }, data: { pageId: progress.pageId } });
+        await prisma.notionPublication.update({ where: { groupKey }, data: { pageId: progress.pageId, bindings: asJson({ ...bindings, presentationVersion: planPresentation(plan) }) } });
       }
       if (!bindings.sections || !Object.keys(bindings.sections).length) progress.templateWait ??= { startedAt: Date.now(), attempt: 0 };
       await checkpoint({ state: "waiting", retryAt: progress.templateWait ? templateRetryAt(progress.templateWait) : null });
@@ -216,12 +208,30 @@ async function runPublicationStep(id: string, groupKey: string) {
     if (!progress.checked) {
       if (bindings.propertyFingerprint && bindings.propertyIds && await pageProperties(pageId, bindings.propertyIds) !== bindings.propertyFingerprint) throw new NotionError("App-managed Notion properties were edited. Review and resolve that conflict in Notion before resuming.", 409);
       for (const binding of Object.values(bindings.sections ?? {})) if (binding.container && await fingerprint(binding.container) !== binding.fingerprint) throw new NotionError("App-managed Notion section content was edited. Review and resolve that conflict before resuming.", 409);
+      for (const binding of Object.values(bindings.sections ?? {})) if (binding.plain) await verifyPlainBinding(binding.plain);
       progress.checked = true; await checkpoint();
     }
     progress.sections ??= {};
     const section = plan.sections.find(section => !progress.sections?.[section.key]?.done);
     if (section) {
       const state = progress.sections[section.key] ??= {};
+      if (planPresentation(plan) >= 4) {
+        const old = bindings.sections?.[section.key];
+        if (old?.container) throw new NotionError("An existing callout page cannot be converted by this publication. Prepare a new preview.", 409);
+        await verifyPlainAnchor(progress.anchors[section.key]);
+        state.plain ??= await createPlainProgress(progress.anchors[section.key], old?.plain);
+        await checkpoint();
+        const blocks = [...section.blocks], imageHashes = new Map<string, string>();
+        for (const imageId of section.images) {
+          const asset = snapshot.assets.find(asset => asset.id === imageId);
+          if (!asset) throw new NotionError("A frozen evidence asset is missing. Review the publication.", 409);
+          const uploadId = await uploadAsset(asset, write); imageHashes.set(uploadId, asset.hash);
+          blocks.push({ object: "block", type: "image", image: { type: "file_upload", file_upload: { id: uploadId }, caption: notionRichText(asset.caption) } });
+        }
+        await publishPlainSection(state.plain, blocks, old?.plain, progress.botId!, imageHashes, checkpoint, write);
+        state.done = true; await checkpoint({ state: "waiting" });
+        return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
+      }
       // Frozen legacy jobs retain their original presentation. New plans omit empty
       // containers, but keep anchors so these sections can be populated later.
       if ((plan.presentationVersion ?? 1) >= 3 && !section.blocks.length && !section.images.length) {
@@ -297,6 +307,10 @@ async function runPublicationStep(id: string, groupKey: string) {
       await checkpoint({ state: "waiting" });
       return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));
     }
+    // Recheck plain blocks even after a properties response/completion retry.
+    for (const [key, state] of Object.entries(progress.sections)) if (state.done && state.plain) {
+      await verifyPlainAnchor(progress.anchors[key]); await verifyPlainCompletion(state.plain);
+    }
     if (!progress.propertiesDone) {
       for (const state of Object.values(progress.sections)) if (state.done && state.removeIntent) {
         const removed = await notionRequest<RemoteBlock>(`/blocks/${state.removeIntent}`);
@@ -319,8 +333,8 @@ async function runPublicationStep(id: string, groupKey: string) {
         progress.propertiesDone = true; progress.propertyIntent = false; await checkpoint();
       }
     }
-    const nextBindings: Bindings = { sections: { ...bindings.sections }, propertyIds: Object.keys(plan.properties), propertyFingerprint: progress.newPropertyFingerprint };
-    for (const section of plan.sections) { const done = progress.sections[section.key]; nextBindings.sections![section.key] = { anchor: progress.anchors[section.key], ...(done.container ? { container: done.container, fingerprint: done.fingerprint! } : {}) }; }
+    const nextBindings: Bindings = { presentationVersion: planPresentation(plan), sections: { ...bindings.sections }, propertyIds: Object.keys(plan.properties), propertyFingerprint: progress.newPropertyFingerprint };
+    for (const section of plan.sections) { const done = progress.sections[section.key]; nextBindings.sections![section.key] = { anchor: progress.anchors[section.key], ...(done.container ? { container: done.container, fingerprint: done.fingerprint! } : {}), ...(done.plain ? { plain: done.plain.binding! } : {}) }; }
     await prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
       const reviewCompletion = await completePublishedReview(tx, groupKey, job!.revision, snapshot.digest);

@@ -9,13 +9,14 @@ import { jsonHash, NotionError, notionRequest, type JsonObject } from "./notion-
 import { htmlToNotionBlocks } from "./notion-format";
 import { planNotionProperties, type RemoteProperty } from "./notion-properties";
 import type { TradeDocument } from "@/lib/workstation/types";
-import { NOTION_PRESENTATION_VERSION, notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait } from "@/lib/workstation/notion-publication-state";
+import { notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 import type { ImageAssetReference } from "@/lib/workstation/image-assets";
+import { effectivePresentation } from "./notion-presentation";
 
 export type PublishSection = SectionDefinition & { blocks: JsonObject[]; images: string[] };
-export type PublishPlan = { presentationVersion?: number; layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
+export type PublishPlan = { presentationVersion?: number; targetPageId?: string | null; layout: TemplateLayout; schemaHash: string; properties: Record<string, JsonObject>; propertyDisplay: { name: string; value: string }[]; sections: PublishSection[]; omitted: string[]; errors: string[]; titleId: string; sourceUrl: string };
 export type PublishSnapshot = { doc: TradeDocument; symbol: string; digest: string; assets: { id: string; hash: string; name?: string; caption: string; image: string; asset?: ImageAssetReference }[] };
-// A new explicit preview must not reuse a completed job with the old generated captions.
+// Preview identity includes the page's effective format and destination.
 export { NOTION_PRESENTATION_VERSION } from "@/lib/workstation/notion-publication-state";
 
 export async function createNotionPreview(groupKey: string, revision: number, sourceOrigin: string) {
@@ -66,12 +67,13 @@ export async function createNotionPreview(groupKey: string, revision: number, so
     else for (const image of assets) if ((image.asset?.bytes ?? Buffer.from(image.image.split(",")[1] ?? "", "base64").length) > limit) errors.push(`Evidence ${image.id} exceeds this Notion workspace's ${limit.toLocaleString()}-byte file allowance. The original will not be compressed or omitted.`);
   }
   const origin = new URL(sourceOrigin); if (!/^https?:$/.test(origin.protocol)) throw new NotionError("Invalid application origin.", 400);
-  const plan: PublishPlan = { presentationVersion: NOTION_PRESENTATION_VERSION, layout, schemaHash: jsonHash(propertyPlan.schemaHashInput), properties: propertyPlan.values, propertyDisplay: propertyPlan.display, sections, omitted, errors,
+  const presentationVersion = await effectivePresentation(existing), targetPageId = existing?.pageId ?? null;
+  const plan: PublishPlan = { presentationVersion, targetPageId, layout, schemaHash: jsonHash(propertyPlan.schemaHashInput), properties: propertyPlan.values, propertyDisplay: propertyPlan.display, sections, omitted, errors,
     titleId: Object.values(schema.properties).find(p => p.type === "title")?.id ?? "", sourceUrl: `${origin.origin}/trades?groupKey=${encodeURIComponent(groupKey)}` };
   const digest = jsonHash(doc), snapshot: PublishSnapshot = { doc: { ...doc, drawings: [], evidence: [], legacy: null }, symbol: trade.symbol, digest, assets };
   // Re-read after upstream I/O; never preview a silently superseded revision.
   if (jsonHash(await readWorkstationDocument(groupKey)) !== digest) throw new WorkstationError("The review changed while preparing the preview. Open it again.");
-  const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors, presentation: NOTION_PRESENTATION_VERSION });
+  const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors, presentation: presentationVersion, pageId: targetPageId });
   await prisma.notionPublication.upsert({ where: { groupKey }, create: { groupKey, dataSourceId: NOTION_DATA_SOURCE_ID }, update: {} });
   const job = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
@@ -80,6 +82,7 @@ export async function createNotionPreview(groupKey: string, revision: number, so
       const active = await tx.notionPublishJob.findUniqueOrThrow({ where: { id: current.activeJobId } });
       if (unfinishedPublication(active)) return active;
     }
+    if (current.pageId !== targetPageId || await effectivePresentation(current, tx) !== presentationVersion) throw new NotionError("The destination or publication format changed. Prepare a new preview.", 409);
     const prepared = await tx.notionPublishJob.upsert({ where: { requestKey }, create: { groupKey, revision, templateId: layout.id, requestKey,
       snapshot: snapshot as unknown as Prisma.InputJsonValue, plan: plan as unknown as Prisma.InputJsonValue }, update: {} });
     if (storedAssets.length) {
@@ -103,7 +106,7 @@ export async function publicationContext(groupKey: string): Promise<PublicationC
     readWorkstationDocument(groupKey),
   ]);
   return { savedRevision: doc.revision, savedNoteUpdatedAt: doc.noteUpdatedAt ?? null, savedJournalUpdatedAt: doc.journalUpdatedAt ?? null, lastPublishedRevision: publication?.lastRevision ?? null,
-    pageUrl: notionPageUrl(publication?.pageId), activeJobId: publication?.activeJobId ?? null };
+    pageUrl: notionPageUrl(publication?.pageId), activeJobId: publication?.activeJobId ?? null, presentationVersion: await effectivePresentation(publication) };
 }
 export function publicationStatus(job: { id: string; groupKey: string; revision: number; state: string; error: string | null; retryAt: Date | null; plan: unknown; progress: unknown; snapshot: unknown }, details = false) {
   const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; templateWait?: TemplateWait; reviewCompletion?: PublicationReviewCompletion; sections?: Record<string, { done?: boolean }> };

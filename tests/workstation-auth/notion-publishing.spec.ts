@@ -15,7 +15,7 @@ test.beforeEach(async () => {
 });
 test.afterAll(() => prisma.$disconnect());
 
-test("authenticated saves automatically prepare a fresh preview and explicitly update the same page", async ({ page, context }) => {
+for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: explicit publication preserves drafts and updates the same page`, async ({ page, context }) => {
   test.setTimeout(90000);
   const groupKey = await notionFixtureKey(), endpoint = `/api/closed-trades/${encodeURIComponent(groupKey)}/workstation`;
   let editorSaves = 0;
@@ -36,7 +36,7 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
     if (body?.action === "preview") {
       frozen = structuredClone(doc);
       expect(body.revision).toBe(doc.revision);
-      if (job?.state !== "succeeded" || job.revision !== doc.revision || job.presentationVersion !== 3) job = { id: `job-${doc.revision}`, groupKey, revision: doc.revision, state: "preview", phase: "preview", error: null, retryAt: null, pageUrl: lastPublished === null ? null : pageUrl, missingSections: [], presentationVersion: 3, templateVersion: "test", properties: [], omitted: [], errors: [], assets: [], sections: [{ key: "takeaways", label: "Takeaways", blocks: 1, images: 0, done: false, html: doc.review.takeaway, imageIds: [] }] };
+      if (job?.state !== "succeeded" || job.revision !== doc.revision || job.presentationVersion !== presentationVersion) job = { id: `job-${doc.revision}`, groupKey, revision: doc.revision, state: "preview", phase: "preview", error: null, retryAt: null, pageUrl: lastPublished === null ? null : pageUrl, missingSections: [], presentationVersion, templateVersion: "test", properties: [], omitted: [], errors: [], assets: [], sections: [{ key: "takeaways", label: "Takeaways", blocks: 1, images: 0, done: false, html: doc.review.takeaway, imageIds: [] }] };
     } else if (body?.action === "publish") {
       expect(body.id).toBe(job?.id); confirms++;
       job = { ...job!, state: "waiting", phase: "template_wait", retryAt: new Date(Date.now() + 2000), pageUrl };
@@ -46,7 +46,7 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
       job = { ...job!, state: "succeeded", phase: "succeeded", retryAt: null, reviewCompletion };
     }
     const saved = await read();
-    await route.fulfill({ json: { enabled: true, job, publication: { savedRevision: saved.revision, savedNoteUpdatedAt: saved.noteUpdatedAt ?? null, savedJournalUpdatedAt: saved.journalUpdatedAt ?? null, lastPublishedRevision: lastPublished, pageUrl: job?.pageUrl ?? null, activeJobId: job?.state === "waiting" ? job.id : null } } });
+    await route.fulfill({ json: { enabled: true, job, publication: { savedRevision: saved.revision, savedNoteUpdatedAt: saved.noteUpdatedAt ?? null, savedJournalUpdatedAt: saved.journalUpdatedAt ?? null, presentationVersion: job?.presentationVersion ?? presentationVersion, lastPublishedRevision: lastPublished, pageUrl: job?.pageUrl ?? null, activeJobId: job?.state === "waiting" ? job.id : null } } });
   });
   await page.addInitScript(prefs => localStorage.setItem("execution-lab:workstation:preferences:application:v1", JSON.stringify({ ...prefs, journal: true, panels: [{ id: "chart-1", interval: "5m" }] })), defaultPreferences());
   await page.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${groupKey}`);
@@ -58,6 +58,7 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
     await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
     await expect(dialog.getByRole("button", { name: new RegExp(`^Confirm ${index ? "update" : "publish"} revision`) })).toBeEnabled();
     expect(confirms).toBe(index);
+    await expect(dialog.getByText(presentationVersion === 4 ? /Sections publish as ordinary text/ : /retains the page.*existing callout format/)).toBeVisible();
     await dialog.locator("summary").filter({ hasText: /^Takeaways:/ }).click(); await expect(dialog.locator(".ws-notion-preview-text")).toContainText(text);
     const otherTab = await context.newPage();
     await otherTab.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${groupKey}`);
@@ -95,14 +96,15 @@ test("authenticated saves automatically prepare a fresh preview and explicitly u
   await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
   await expect(dialog.getByText("This saved review has already been published.")).toBeVisible(); expect(confirms).toBe(2);
   await dialog.getByRole("button", { name: "Close Publish/update in Notion", exact: true }).click();
-  const markLegacy = () => { if (!job) throw new Error("Missing completed fixture"); job.presentationVersion = 1; };
-  markLegacy();
-  await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
-  await expect(dialog.getByText(/Publication format update:/)).toBeVisible();
-  await expect(dialog.getByText(/Newer saved edits in revision/)).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: /^Confirm update/ })).toBeEnabled();
-  expect(confirms).toBe(2);
-  await dialog.getByRole("button", { name: /^Confirm update/ }).click();
-  await expect(dialog.getByText("This saved review has already been published.")).toBeVisible();
-  expect(confirms).toBe(3); expect((await read()).review.status).toBe("Reviewed");
+  // A previously published older page remains pinned, without a cleanup preview.
+  if (presentationVersion === 3) {
+    if (!job) throw new Error("Missing completed fixture");
+    (job as NonNullable<PublicationResult["job"]>).presentationVersion = 1;
+    await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
+    await expect(dialog.getByText("This saved review has already been published.")).toBeVisible();
+    await expect(dialog.getByText(/Publication format update:/)).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: /^Confirm update/ })).toHaveCount(0);
+    expect(confirms).toBe(2);
+    expect((await read()).review.status).toBe("Reviewed");
+  }
 });

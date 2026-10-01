@@ -12,14 +12,21 @@ function responses(...results: PublicationResult[]) {
 const actions = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.map(([, init]) => init.body ? JSON.parse(init.body) : "GET");
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("publication continuation without implicit publishing", () => {
-  it("prepares a format upgrade without claiming new content or confirming writes", async () => {
+  it("refreshes an obsolete new-page preview without confirming writes", async () => {
     const completed = result("succeeded"); completed.job!.presentationVersion = 1;
+    completed.publication.pageUrl = null; completed.publication.presentationVersion = 4;
     completed.job!.reviewCompletion = { outcome: "already-reviewed", sourceRevision: 2, revision: 2, noteUpdatedAt: null, journalUpdatedAt: null, previousNoteUpdatedAt: null, previousJournalUpdatedAt: null };
     completed.publication.savedNoteUpdatedAt = null; completed.publication.savedJournalUpdatedAt = null;
     expect(publicationContentChanged(completed.job, completed.publication)).toBe(false);
     const fetcher = responses(completed, result());
     expect((await openPublication("trade", new AbortController().signal, vi.fn())).job?.state).toBe("preview");
     expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
+  });
+  it.each([1, 2, 3])("does not offer a format upgrade for an existing version %s page", async version => {
+    const completed = result("succeeded"); completed.job!.presentationVersion = version; completed.publication.presentationVersion = version;
+    const fetcher = responses(completed);
+    expect((await openPublication("trade", new AbortController().signal, vi.fn())).job?.state).toBe("succeeded");
+    expect(actions(fetcher)).toEqual(["GET"]);
   });
   it("prepares the latest saved revision on opening, without confirming it", async () => {
     const fetcher = responses(result("succeeded", 1, 3), result("preview", 3));
@@ -34,7 +41,7 @@ describe("publication continuation without implicit publishing", () => {
   it("does not republish an unchanged successful review", async () => {
     const fetcher = responses(result("succeeded"), result("succeeded"));
     const loaded = await openPublication("trade", new AbortController().signal, vi.fn());
-    expect(loaded.job?.state).toBe("succeeded"); expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
+    expect(loaded.job?.state).toBe("succeeded"); expect(actions(fetcher)).toEqual(["GET"]);
   });
   it("acknowledges the automatic status revision without preparing another preview", async () => {
     const completed = result("succeeded", 2, 3);

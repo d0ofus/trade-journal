@@ -17,7 +17,7 @@ async function request(groupKey: string, signal: AbortSignal, observe: Observer,
 }
 export async function openPublication(groupKey: string, signal: AbortSignal, observe: Observer, refreshPreview = false) {
   const result = await request(groupKey, signal, observe);
-  if (!refreshPreview && result.job?.state === "succeeded" && result.job.reviewCompletion && !needsPublicationPreview(result.job, result.publication)) return result;
+  if (!refreshPreview && result.job?.state === "succeeded" && !needsPublicationPreview(result.job, result.publication)) return result;
   // Inspect unfinished jobs without resuming their writes. Only a new explicit
   // confirmation (or Resume) can start server-side publishing work.
   if (!unfinishedPublication(result.job)) return request(groupKey, signal, observe, { action: "preview", revision: result.publication.savedRevision });
