@@ -25,6 +25,10 @@
 .ws-fundamentals-sources a { color: var(--ws-accent, #b69cff); overflow-wrap: anywhere; font-size: 11px; }
 .ws-fundamentals-hit-area { cursor: crosshair; outline: none; }
 .ws-fundamentals-hit-area:focus-visible { stroke: #b69cff; stroke-width: 2; }
+.ws-fundamentals-legend { cursor: pointer; outline: none; }
+.ws-fundamentals-legend[aria-disabled="true"] { cursor: wait; }
+.ws-fundamentals-legend:focus-visible .ws-fundamentals-legend-hit { stroke: #b69cff; stroke-width: 2; }
+.ws-fundamentals-legend:hover:not([aria-disabled="true"]) .ws-fundamentals-legend-hit { fill: #94a3b814; }
 .ws-fundamentals-tooltip { position: fixed; z-index: 10000; pointer-events: none; box-sizing: border-box; width: 290px; padding: 12px 14px; border: 1px solid #39465b; border-radius: 10px; background: #131c2bf5; color: #f1f5f9; box-shadow: 0 8px 28px #0006; font: 12px/1.45 Arial, sans-serif; font-variant-numeric: tabular-nums; overflow: hidden; }
 .ws-fundamentals-tooltip > strong { font-size: 13px; }
 .ws-fundamentals-tooltip-date { color: #94a3b8; margin-top: 2px; font-size: 11px; }

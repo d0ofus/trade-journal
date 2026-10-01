@@ -7,6 +7,7 @@ export const fundamentalsCaptureSchema = z.object({
   symbol: z.string().max(40), mode: z.enum(["before-entry", "latest"]), cutoff: date.nullable(),
   issuer: z.object({ cik: z.string().regex(/^\d{10}$/), name: z.string().max(500) }).strict().nullable(),
   fetchedAt: z.string().datetime().nullable(), capturedAt: z.string().datetime(), stale: z.boolean(),
+  seriesVisibility: z.object({ revenue: z.boolean(), netIncome: z.boolean(), revenueYoY: z.boolean(), revenueQoQ: z.boolean(), netIncomeYoY: z.boolean(), netIncomeQoQ: z.boolean() }).strict().optional(),
   quarters: z.array(z.object({ fiscalYear: z.number().int().min(1900).max(2200), fiscalQuarter: z.number().int().min(1).max(4), periodEnd: date, revenue: metric, netIncome: metric, revenueYoY: growth, revenueQoQ: growth, netIncomeYoY: growth, netIncomeQoQ: growth }).strict()).min(1).max(8),
 }).strict().superRefine((value, ctx) => {
   if (value.mode === "before-entry" && (!value.cutoff || value.quarters.some(q => q.periodEnd >= value.cutoff! || [q.revenue, q.netIncome].some(m => m?.sources.some(s => s.filed >= value.cutoff!))))) ctx.addIssue({ code: "custom", message: "Historical fundamentals must precede the entry date." });

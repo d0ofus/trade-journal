@@ -3,6 +3,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { fundamentalPercent, fundamentalPeriod, type FundamentalQuarter } from "@/lib/workstation/fundamentals";
+import { allFundamentalsSeries, fundamentalsSeries, type FundamentalsSeriesVisibility } from "@/lib/workstation/fundamentals-series";
 
 type Metric = "revenue" | "netIncome";
 type Selection = {
@@ -11,11 +12,12 @@ type Selection = {
   x: number;
   y: number;
   target: SVGRectElement;
+  visibilityKey: string;
 };
 const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const percent = (value: number | null) => value == null ? "Unavailable" : fundamentalPercent(value);
 
-function QuarterTooltip({ selection, metric, id }: { selection: Selection; metric?: Metric; id: string }) {
+function QuarterTooltip({ selection, metric, id, visibility }: { selection: Selection; metric?: Metric; id: string; visibility: FundamentalsSeriesVisibility }) {
   const ref = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const host = selection.target.closest("dialog") ?? document.body;
@@ -39,19 +41,23 @@ function QuarterTooltip({ selection, metric, id }: { selection: Selection; metri
   return createPortal(<div ref={ref} id={id} role="tooltip" aria-live="polite" className="ws-fundamentals-tooltip" style={{ ...position, visibility: position ? "visible" : "hidden" }}>
     <strong>{fundamentalPeriod(quarter)}</strong>
     <div className="ws-fundamentals-tooltip-date">Period ended {quarter.periodEnd}</div>
-    {metrics.map(name => <div className="ws-fundamentals-tooltip-metric" key={name}>
-      <div className="ws-fundamentals-tooltip-value"><span className={`ws-fundamentals-tooltip-${name}`}>{name === "revenue" ? "Revenue" : "Net income"}</span><b>{quarter[name] == null ? "Unavailable" : dollars.format(quarter[name].value)}</b></div>
+    {metrics.map(name => {
+      const yoy = name === "revenue" ? "revenueYoY" : "netIncomeYoY", qoq = name === "revenue" ? "revenueQoQ" : "netIncomeQoQ";
+      if (!visibility[name] && !visibility[yoy] && !visibility[qoq]) return null;
+      return <div className="ws-fundamentals-tooltip-metric" key={name}>
+      <div className="ws-fundamentals-tooltip-value"><span className={`ws-fundamentals-tooltip-${name}`}>{name === "revenue" ? "Revenue" : "Net income"}</span>{visibility[name] && <b>{quarter[name] == null ? "Unavailable" : dollars.format(quarter[name].value)}</b>}</div>
       {quarter[name]?.derived && <small>Derived Q4</small>}
-      <dl><div><dt>YoY</dt><dd>{percent(quarter[name === "revenue" ? "revenueYoY" : "netIncomeYoY"])}</dd></div><div><dt>QoQ</dt><dd>{percent(quarter[name === "revenue" ? "revenueQoQ" : "netIncomeQoQ"])}</dd></div></dl>
-    </div>)}
+      {(visibility[yoy] || visibility[qoq]) && <dl>{visibility[yoy] && <div><dt>YoY</dt><dd>{percent(quarter[yoy])}</dd></div>}{visibility[qoq] && <div><dt>QoQ</dt><dd>{percent(quarter[qoq])}</dd></div>}</dl>}
+    </div>; })}
   </div>, host);
 }
 
 /** UI-only selection. Keeping the source array on the selection immediately invalidates old data. */
-export function useFundamentalsHover(quarters: FundamentalQuarter[], metric?: Metric) {
+export function useFundamentalsHover(quarters: FundamentalQuarter[], metric?: Metric, visibility = allFundamentalsSeries) {
   const [selection, setSelection] = useState<Selection | null>(null);
   const id = useId();
-  const active = selection?.quarters === quarters ? selection : null;
+  const visibilityKey = fundamentalsSeries.map(s => Number(visibility[s])).join("");
+  const active = selection?.quarters === quarters && selection.visibilityKey === visibilityKey ? selection : null;
   useEffect(() => {
     if (!active) return;
     const dismiss = () => setSelection(null);
@@ -73,15 +79,15 @@ export function useFundamentalsHover(quarters: FundamentalQuarter[], metric?: Me
   const fromPointer = (event: PointerEvent<SVGRectElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
     const index = Math.max(0, Math.min(quarters.length - 1, Math.floor((event.clientX - box.left) / box.width * quarters.length)));
-    setSelection({ quarters, index, x: event.clientX, y: event.clientY, target: event.currentTarget });
+    setSelection({ quarters, visibilityKey, index, x: event.clientX, y: event.clientY, target: event.currentTarget });
   };
   const fromKeyboard = (target: SVGRectElement, index: number) => {
     const box = target.getBoundingClientRect();
-    setSelection({ quarters, index, x: box.left + box.width * (index + .5) / quarters.length, y: box.top + box.height / 2, target });
+    setSelection({ quarters, visibilityKey, index, x: box.left + box.width * (index + .5) / quarters.length, y: box.top + box.height / 2, target });
   };
   return {
     index: active?.index ?? null,
-    tooltip: active && <QuarterTooltip selection={active} metric={metric} id={id} />,
+    tooltip: active && <QuarterTooltip selection={active} metric={metric} id={id} visibility={visibility} />,
     hitArea: (label: string, bounds: { x: number; y: number; width: number; height: number }) => quarters.length ? <rect
       {...bounds} className="ws-fundamentals-hit-area" fill="transparent" tabIndex={0} role="group"
       aria-label={`${label}. Use Left and Right arrow keys to inspect quarters.`}

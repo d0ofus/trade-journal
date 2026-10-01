@@ -8,12 +8,24 @@ import { workstationDocumentSchema } from "./schema";
 import { notionBlocks } from "./notion-export";
 import { notionImportCsv, notionPageArchive } from "./notion-import";
 import { reviewArchive, exportColumns } from "./export";
+import { allFundamentalsSeries } from "./fundamentals-series";
 
 function snapshot(): Evidence {
   const { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale } = demoFundamentals(demoTrades[0], "before-entry");
   return { id: "fundamentals-one", name: "NVDA fundamentals before entry", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: 0, timeframe: "quarterly", fundamentalsCapture: { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale, capturedAt: "2026-09-28T00:00:00.000Z" } };
 }
 describe("fundamentals evidence", () => {
+  it("round-trips the selected series while accepting older captures without visibility metadata", () => {
+    const doc = attachEvidence(emptyDocument(), snapshot(), "fundamentals");
+    expect(workstationDocumentSchema.parse(doc).evidence[0].fundamentalsCapture?.seriesVisibility).toBeUndefined();
+    doc.evidence[0].fundamentalsCapture!.seriesVisibility = { ...allFundamentalsSeries, revenue: false, netIncomeQoQ: false };
+    expect(workstationDocumentSchema.parse(JSON.parse(JSON.stringify(doc))).evidence[0].fundamentalsCapture).toEqual(doc.evidence[0].fundamentalsCapture);
+    const malformed = JSON.parse(JSON.stringify(doc));
+    delete malformed.evidence[0].fundamentalsCapture.seriesVisibility.revenue;
+    expect(workstationDocumentSchema.safeParse(malformed).success).toBe(false);
+    malformed.evidence[0].fundamentalsCapture.seriesVisibility = { ...allFundamentalsSeries, unexpected: true };
+    expect(workstationDocumentSchema.safeParse(malformed).success).toBe(false);
+  });
   it("preserves provenance and existing commentary through validation and removal", () => {
     const doc = attachEvidence(emptyDocument(), snapshot(), "fundamentals");
     doc.review.notion!.analysis.fundamentals = "<p>Revenue expanded before entry.</p>";

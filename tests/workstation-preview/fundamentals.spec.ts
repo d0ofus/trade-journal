@@ -1,6 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 import { defaultPreferences } from "../../src/lib/workstation/types";
 import { DEMO_PREFIX } from "../../src/lib/workstation/demo";
+import { allFundamentalsSeries, fundamentalsSeries } from "../../src/lib/workstation/fundamentals-series";
 const prefKey = "execution-lab:workstation:preferences:demo:v1";
 async function open(page: Page) {
   const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
@@ -27,13 +29,19 @@ async function tooltipFits(page: Page) {
   expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
   expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
 }
-test("section, shared cutoff, complete snapshot, save/reload and removal", async ({ page }) => {
+test("section, shared cutoff, complete snapshot, save/reload and removal", async ({ page }, info) => {
   await page.addInitScript(() => {
     const original = XMLSerializer.prototype.serializeToString;
     XMLSerializer.prototype.serializeToString = function(node) {
       const markup = original.call(this, node);
       if (node instanceof SVGSVGElement && node.classList.contains("ws-fundamentals-profile")) (window as unknown as { capturedFundamentals: string }).capturedFundamentals = markup;
       return markup;
+    };
+    const dataUrl = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+      const value = dataUrl.apply(this, args);
+      if (this.width === 2240 && this.height === 1640) (window as unknown as { capturedFundamentalsPng: string }).capturedFundamentalsPng = value;
+      return value;
     };
   });
   const errors = await open(page), section = page.locator(".ws-fundamentals");
@@ -47,6 +55,8 @@ test("section, shared cutoff, complete snapshot, save/reload and removal", async
   await expect(dialog).toContainText("Latest available");
   await dialog.getByLabel("Before entry fundamentals dialog").check();
   await expect(dialog.getByRole("button", { name: "Attach snapshot", exact: true })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Revenue", exact: true }).click();
+  await dialog.getByRole("button", { name: "NI YoY", exact: true }).click();
   await hoverQuarter(page, dialog.locator(".ws-fundamentals-hit-area").first(), 2);
   await expect(dialog.locator("[data-fundamentals-highlight]")).toHaveCount(2);
   await expect(section.locator(".ws-fundamentals-capture [data-fundamentals-highlight], .ws-fundamentals-capture [tabindex]")).toHaveCount(0);
@@ -56,11 +66,20 @@ test("section, shared cutoff, complete snapshot, save/reload and removal", async
   await expect.poll(async () => (await doc(page))?.evidence?.length).toBe(1);
   const captured = await page.evaluate(() => (window as unknown as { capturedFundamentals: string }).capturedFundamentals);
   expect(captured).toContain("Growth: YoY + QoQ");
-  expect(captured).not.toMatch(/fundamentals-highlight|fundamentals-hit-area|role="tooltip"/);
+  expect(captured).not.toMatch(/fundamentals-highlight|fundamentals-hit-area|legend-hit|role="tooltip"|role="button"|tabindex=/);
+  expect(captured).not.toContain('data-fundamentals-series="revenue"');
+  expect(captured).not.toContain('data-fundamentals-series="netIncomeYoY"');
+  expect(captured).toContain('data-fundamentals-series="netIncome"');
+  expect(captured).toContain('text-decoration="line-through"');
   const saved = await doc(page), evidence = saved.evidence[0];
+  const png = await page.evaluate(() => (window as unknown as { capturedFundamentalsPng: string }).capturedFundamentalsPng);
+  await writeFile(info.outputPath("fundamentals-selected-series.png"), Buffer.from(png.split(",")[1], "base64"));
   expect(evidence.asset).toMatchObject({ storage: "demo", width: 2240, height: 1640 });
-  expect(evidence.fundamentalsCapture).toMatchObject({ symbol: "NVDA", mode: "before-entry", cutoff: "2026-09-09" });
+  expect(evidence.fundamentalsCapture).toMatchObject({ symbol: "NVDA", mode: "before-entry", cutoff: "2026-09-09", seriesVisibility: { ...allFundamentalsSeries, revenue: false, netIncomeYoY: false } });
   expect(saved.review.notion.sectionEvidence.fundamentals).toEqual([evidence.id]);
+  await dialog.getByRole("button", { name: "Revenue", exact: true }).click();
+  await dialog.getByRole("button", { name: "NI YoY", exact: true }).click();
+  expect((await doc(page)).evidence[0]).toEqual(evidence);
   await dialog.getByRole("button", { name: "Close NVDA fundamentals" }).click();
   await page.reload();
   await page.locator("summary").filter({ hasText: /^Fundamentals$/ }).click();
@@ -74,6 +93,7 @@ test("changing trades resets the cutoff, closes the old modal and preserves prev
   await open(page);
   await page.getByLabel("Before entry fundamentals preview").uncheck();
   await page.getByRole("button", { name: "View fundamentals", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Revenue", exact: true }).click();
   await hoverQuarter(page, page.getByRole("dialog").locator(".ws-fundamentals-hit-area").first(), 3);
   await page.mouse.move(0, 0);
   await page.getByRole("dialog", { name: "NVDA fundamentals", exact: true }).press("Escape");
@@ -84,7 +104,80 @@ test("changing trades resets the cutoff, closes the old modal and preserves prev
   await expect(page.getByRole("dialog", { name: "NVDA fundamentals", exact: true })).toHaveCount(0);
   await expect(page.getByRole("tooltip")).toHaveCount(0);
   await expect(page.locator("[data-fundamentals-highlight]")).toHaveCount(0);
+  await page.getByRole("button", { name: "View fundamentals", exact: true }).click();
+  await expect(page.getByRole("dialog").locator('[data-fundamentals-legend][aria-pressed="true"]')).toHaveCount(6);
   expect(JSON.stringify(await doc(page))).not.toContain("fundamentalsCapture");
+});
+
+test("legends independently filter and rescale bars and lines without requests or saves", async ({ page }) => {
+  const errors = await open(page), before = await doc(page), requests: string[] = [];
+  page.on("request", request => { if (/\/api\/(workstation\/fundamentals|closed-trades)/.test(request.url())) requests.push(request.url()); });
+  const minis = await page.locator(".ws-fundamentals-minis").innerHTML();
+  await page.getByRole("button", { name: "View fundamentals" }).click();
+  const dialog = page.getByRole("dialog", { name: "NVDA fundamentals", exact: true });
+  const legend = (name: string) => dialog.getByRole("button", { name, exact: true });
+  const plotted = (name: string) => dialog.locator(`[data-fundamentals-series="${name}"]`);
+  const axis = (name: string) => dialog.locator(`[data-fundamentals-axis="${name}"]`);
+  await expect(dialog.locator('[data-fundamentals-legend][aria-pressed="true"]')).toHaveCount(6);
+  const bothAmountAxis = await axis("bars").textContent(), revenueGrowthAxis = await axis("revenue-growth").textContent(), incomeGrowthAxis = await axis("income-growth").textContent();
+  const initialLossHeight = Number(await plotted("netIncome").first().getAttribute("height"));
+  const revenueQoQPath = await plotted("revenueQoQ").locator("path").getAttribute("d");
+  await hoverQuarter(page, dialog.locator(".ws-fundamentals-hit-area").first(), 0);
+  await legend("Revenue").click();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(dialog.locator("[data-fundamentals-highlight]")).toHaveCount(0);
+  await expect(legend("Revenue")).toHaveAttribute("aria-pressed", "false");
+  await expect(plotted("revenue")).toHaveCount(0);
+  expect(await axis("bars").textContent()).not.toEqual(bothAmountAxis);
+  expect(Number(await plotted("netIncome").first().getAttribute("height"))).toBeGreaterThan(initialLossHeight);
+  const incomeBar = plotted("netIncome").first();
+  expect(Number(await incomeBar.getAttribute("x")) + Number(await incomeBar.getAttribute("width")) / 2).toBeCloseTo(78 + (1040 - 78) / 8 / 2);
+  expect(await axis("revenue-growth").textContent()).toEqual(revenueGrowthAxis);
+  await hoverQuarter(page, dialog.locator(".ws-fundamentals-hit-area").first(), 0);
+  await expect(page.getByRole("tooltip")).not.toContainText("$298,000,000");
+  await expect(page.getByRole("tooltip")).toContainText("-$12,500,000");
+  await legend("Revenue YoY").focus();
+  await legend("Revenue YoY").press("Space");
+  await expect(plotted("revenueYoY")).toHaveCount(0);
+  expect(await axis("revenue-growth").textContent()).not.toEqual(revenueGrowthAxis);
+  expect(await plotted("revenueQoQ").locator("path").getAttribute("d")).not.toEqual(revenueQoQPath);
+  expect(await axis("income-growth").textContent()).toEqual(incomeGrowthAxis);
+  await legend("Revenue QoQ").click();
+  await expect(axis("revenue-growth")).toHaveCount(0);
+  await legend("NI YoY").click();
+  expect(await axis("income-growth").textContent()).not.toEqual(incomeGrowthAxis);
+  await legend("NI QoQ").click();
+  await expect(axis("income-growth")).toHaveCount(0);
+  await expect(dialog.locator('[data-fundamentals-empty="growth"]')).toHaveText("Select a legend item to display data");
+  await legend("Net income").click();
+  await expect(dialog.locator('[data-fundamentals-empty="bars"]')).toHaveText("Select a legend item to display data");
+  await expect(dialog.locator(".ws-fundamentals-hit-area")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Attach snapshot", exact: true })).toBeDisabled();
+  await legend("Net income").press("Enter");
+  await expect(legend("Net income")).toHaveAttribute("aria-pressed", "true");
+  await expect(dialog.getByRole("button", { name: "Attach snapshot", exact: true })).toBeEnabled();
+  await hoverQuarter(page, dialog.locator(".ws-fundamentals-hit-area"), 2);
+  await expect(page.getByRole("tooltip")).toContainText("Net incomeUnavailable");
+  await expect(page.getByRole("tooltip").locator("dt")).toHaveCount(0);
+  await expect(page.getByRole("tooltip")).not.toContainText("Revenue");
+  await dialog.getByRole("button", { name: "Close NVDA fundamentals" }).click();
+  expect(await page.locator(".ws-fundamentals-minis").innerHTML()).toEqual(minis);
+  expect(await doc(page)).toEqual(before);
+  expect(requests).toEqual([]);
+  await page.getByRole("button", { name: "View fundamentals" }).click();
+  await expect(dialog.locator('[data-fundamentals-legend][aria-pressed="true"]')).toHaveCount(1);
+  await dialog.getByLabel("Before entry fundamentals dialog").uncheck();
+  await expect(dialog).toContainText("Latest available");
+  await expect(dialog.locator('[data-fundamentals-legend][aria-pressed="true"]')).toHaveCount(1);
+  await dialog.getByRole("button", { name: "Close NVDA fundamentals" }).click();
+  await page.getByRole("button", { name: "Attach snapshot", exact: true }).click();
+  await expect.poll(async () => (await doc(page))?.evidence?.length).toBe(1);
+  expect((await doc(page)).evidence[0].fundamentalsCapture.seriesVisibility).toEqual(Object.fromEntries(fundamentalsSeries.map(s => [s, s === "netIncome"])));
+  await page.reload();
+  await page.locator("summary").filter({ hasText: /^Fundamentals$/ }).click();
+  await page.getByRole("button", { name: "View fundamentals" }).click();
+  await expect(dialog.locator('[data-fundamentals-legend][aria-pressed="true"]')).toHaveCount(6);
+  expect(errors).toEqual([]);
 });
 
 test("mini charts inspect precise amounts, losses, gaps and derived quarters without saves or requests", async ({ page }) => {
@@ -121,6 +214,37 @@ test("mini charts inspect precise amounts, losses, gaps and derived quarters wit
   expect(await doc(page)).toEqual(before);
   expect(requests).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+test("snapshot capture freezes legend selection until the image is attached", async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = async function() {
+      await original.call(this);
+      const state = window as unknown as { holdFundamentals?: boolean; captureWaiting?: boolean; finishCapture?: () => void };
+      if (state.holdFundamentals && this.src.startsWith("blob:")) {
+        state.captureWaiting = true;
+        await new Promise<void>(resolve => { state.finishCapture = resolve; });
+      }
+    };
+  });
+  await open(page);
+  await page.getByRole("button", { name: "View fundamentals" }).click();
+  const dialog = page.getByRole("dialog", { name: "NVDA fundamentals", exact: true });
+  const revenue = dialog.getByRole("button", { name: "Revenue", exact: true });
+  await revenue.click();
+  await page.evaluate(() => { (window as unknown as { holdFundamentals: boolean }).holdFundamentals = true; });
+  await dialog.getByRole("button", { name: "Attach snapshot", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { captureWaiting?: boolean }).captureWaiting)).toBe(true);
+  await expect(revenue).toHaveAttribute("aria-disabled", "true");
+  await expect(dialog.getByLabel("Before entry fundamentals dialog")).toBeDisabled();
+  await revenue.evaluate(element => element.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await revenue.press("Enter");
+  await expect(revenue).toHaveAttribute("aria-pressed", "false");
+  await page.evaluate(() => (window as unknown as { finishCapture: () => void }).finishCapture());
+  await expect.poll(async () => (await doc(page))?.evidence?.length).toBe(1);
+  expect((await doc(page)).evidence[0].fundamentalsCapture.seriesVisibility).toEqual({ ...allFundamentalsSeries, revenue: false });
+  await expect(revenue).toHaveAttribute("aria-disabled", "false");
 });
 
 test("modal synchronizes quarter highlights, preserves summary, and resets on cutoff change", async ({ page }) => {
@@ -174,6 +298,18 @@ test.describe("touch fundamentals", () => {
     await dialog.screenshot({ path: "test-results/fundamentals-tooltip-mobile.png" });
     await dialog.getByRole("heading").tap();
     await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const revenueLegend = dialog.getByRole("button", { name: "Revenue", exact: true });
+    await revenueLegend.tap();
+    await expect(revenueLegend).toHaveAttribute("aria-pressed", "false");
+    await expect(dialog.locator('[data-fundamentals-series="revenue"]')).toHaveCount(0);
+    const hit = await revenueLegend.locator("rect").boundingBox();
+    expect(hit!.height).toBeGreaterThanOrEqual(24);
+    await revenueLegend.tap();
+    await expect(revenueLegend).toHaveAttribute("aria-pressed", "true");
+    const growthLegend = dialog.getByRole("button", { name: "NI QoQ", exact: true });
+    await growthLegend.tap();
+    await expect(growthLegend).toHaveAttribute("aria-pressed", "false");
+    await dialog.screenshot({ path: "test-results/fundamentals-legends-mobile.png" });
     expect(errors).toEqual([]);
   });
 });

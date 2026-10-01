@@ -16,7 +16,7 @@ export type FundamentalsSnapshot = {
   status: "ready" | "empty" | "unresolved-date" | "unknown-ticker" | "unsupported" | "unavailable";
   fetchedAt: string | null; stale: boolean; message: string | null; retryable: boolean;
 };
-export type FundamentalsCapture = Pick<FundamentalsSnapshot, "symbol" | "mode" | "cutoff" | "issuer" | "quarters" | "fetchedAt" | "stale"> & { capturedAt: string };
+export type FundamentalsCapture = Pick<FundamentalsSnapshot, "symbol" | "mode" | "cutoff" | "issuer" | "quarters" | "fetchedAt" | "stale"> & { capturedAt: string; seriesVisibility?: import("./fundamentals-series").FundamentalsSeriesVisibility };
 export function fundamentalsCutoff(trade: Trade): string | null {
   const first = firstExecution(trade);
   if (!first || !executionTimeResolved(first) || ["pending", "stale", "unresolved"].includes(first.provenance?.interpretationStatus ?? "")) return null;

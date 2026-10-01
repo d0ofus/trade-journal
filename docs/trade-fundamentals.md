@@ -40,6 +40,33 @@ Only attached evidence and authored commentary enter the existing direct Notion 
 - `tests/workstation-preview/fundamentals.spec.ts` covers the popup, cutoff toggle, snapshot dimensions and provenance, capture with hover active, save/reload/removal, trade switching, mouse/keyboard/touch period inspection, missing/negative values, narrow-panel layout and tooltip positioning. It also checks that inspection adds no journal changes or fundamentals requests. Start the loopback development server with `TRADES_WORKSTATION_PREVIEW=1`.
 - `npx tsx scripts/verify-sec-fundamentals.ts --live` performs two read-only SEC requests for BE and checks historical source dates without opening a database or writing cache records. An HTTP 403/429 means live provider connectivity has not been verified; mocked checks are not a substitute for that deployment check.
 
+### Clickable legends
+
+The popup's existing six legend entries toggle revenue/net-income bars and each
+YoY/QoQ line independently. Hidden entries stay visible, muted and struck through.
+Mouse, touch, Enter and Space use the same toggle; keyboard focus is visible.
+Amount and growth domains use only enabled series, retain zero, and distinguish
+hidden charts from unavailable values. A single bar is centred in its quarter;
+growth axes disappear when their selected series have no usable values.
+
+Selections last for the current trade, including modal reopening and cutoff
+changes. Trade changes and page reloads restore all series. Summary cards and mini
+charts stay complete. The shared modal tooltip omits hidden amounts/lines and
+resets when visibility changes. Toggling does not fetch data or save a review.
+
+Both Attach snapshot actions use the selected view, with static legend states and
+no interactive overlays. Capture freezes visibility and data until attachment
+finishes; at least one enabled series must have usable values. Capture provenance
+adds optional six-boolean `seriesVisibility` metadata. Older evidence without it
+represents all series visible. Existing images and exports remain immutable.
+This uses existing review JSON; no SEC API, database or worker migration is needed.
+
+Validation on 1 October 2026 passed 39 focused mocked/unit/integration tests and
+all eight Fundamentals browser scenarios. Desktop/mobile views and the generated
+2240×1640 PNG were inspected. Type checks, affected-file lint, repository safety
+and the production build passed. Validation used synthetic data and the isolated
+local test database; production reviews and Notion pages were not modified.
+
 ### Period-tooltip validation, 2026-09-30
 
 All six Fundamentals browser scenarios and 33 focused mocked tests passed. The dedicated workstation TypeScript check, feature-specific ESLint, repository safety scan and production build passed. Desktop and narrow touch screenshots were inspected. Browser checks confirm that hover inspection leaves the review unchanged, sends no fundamentals requests, and is absent from the serialized SVG used for snapshot capture. This change is UI-only and requires no API, database migration or cache-policy changes.
