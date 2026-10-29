@@ -1,11 +1,12 @@
 import { IMAGE_MAX_BYTES } from "@/lib/workstation/image-assets";
-import { jsonHash, NotionError, notionChildren, notionRequest, type JsonObject, type RemoteBlock } from "./notion-client";
+import { jsonHash, NotionError, notionChildren, notionRequest, yieldNotion, type JsonObject, type RemoteBlock } from "./notion-client";
 import { managedBlockValue } from "./notion-format";
+import { readFingerprint, blockValue, written, type WrittenNode, type VerificationState } from "./notion-block-verification";
+export type { VerificationState } from "./notion-block-verification";
 
 export type SectionAnchor = { id: string; parent: string; sourceId: string; type: string };
 type Position = { parent: string; after: string | null; before: string | null };
 export type PlainBinding = Position & { blocks: { id: string; fingerprint: string }[] };
-type WrittenNode = { id: string; value: string; children: WrittenNode[] };
 type AppendIntent = Position & { priorIds: string[]; expected: JsonObject[]; imageHashes: (string | null)[] };
 export type PlainProgress = Position & {
   nodes: WrittenNode[];
@@ -13,25 +14,16 @@ export type PlainProgress = Position & {
   removalIntents: string[];
   ready?: boolean;
   binding?: PlainBinding;
+  verification?: VerificationState;
+  cleanupIndex?: number;
+  oldChecked?: boolean;
+  appended?: string[];
+  removalCheckIndex?: number;
 };
 function conflict(message: string): never { throw new NotionError(message, 409); }
-const imageUrl = (block: RemoteBlock) => {
-  const data = block.image as { file?: { url?: string }; external?: { url?: string } } | undefined;
-  return data?.file?.url ?? data?.external?.url;
-};
-const blockValue = (block: RemoteBlock) => ({ value: managedBlockValue(block), image: imageUrl(block) ? new URL(imageUrl(block)!).pathname : undefined });
 
 /** Include descendants, order and file identity, excluding expiring URL signatures. */
-export async function fingerprint(id: string): Promise<string> {
-  let count = 0;
-  async function value(block: RemoteBlock): Promise<unknown> {
-    if (++count > 1500) throw new NotionError("The managed Notion section is too large to verify safely.", 409);
-    return { id: block.id, ...blockValue(block), children: block.has_children ? await Promise.all((await notionChildren(block.id)).map(value)) : [] };
-  }
-  const block = await notionRequest<RemoteBlock>(`/blocks/${id}`);
-  if (block.archived || block.in_trash) conflict("App-managed Notion content was removed. Review this conflict before publishing.");
-  return jsonHash(await value(block));
-}
+export const fingerprint = (id: string, cursors?: VerificationState, checkpoint?: () => Promise<void>) => readFingerprint(id, false, cursors, checkpoint);
 
 async function placement(position: Position, ids: string[], ignore: string[] = [], checkEnd = true) {
   const blocks = (await notionChildren(position.parent)).filter(b => !ignore.includes(b.id)), siblings = blocks.map(b => b.id);
@@ -41,11 +33,16 @@ async function placement(position: Position, ids: string[], ignore: string[] = [
   return blocks;
 }
 
-export async function verifyPlainBinding(binding: PlainBinding, ignore: string[] = []) {
+export async function inspectPlainBinding(binding: PlainBinding, ignore: string[] = [], cursors?: VerificationState, checkpoint?: () => Promise<void>): Promise<PlainBinding> {
   // Unrelated content after this owned range may change between publications.
   // The anchored start, owned IDs/order and complete subtrees must stay intact.
   const siblings = await placement(binding, binding.blocks.map(b => b.id), ignore, false);
-  for (const block of binding.blocks) if (await plainFingerprint(block.id, siblings.find(b => b.id === block.id)) !== block.fingerprint)
+  const blocks = [];
+  for (const block of binding.blocks) blocks.push({ id: block.id, fingerprint: await readFingerprint(block.id, true, cursors, checkpoint, siblings.find(b => b.id === block.id)) });
+  return { ...binding, blocks };
+}
+export async function verifyPlainBinding(binding: PlainBinding, ignore: string[] = [], cursors?: VerificationState, checkpoint?: () => Promise<void>) {
+  if (jsonHash(await inspectPlainBinding(binding, ignore, cursors, checkpoint)) !== jsonHash(binding))
     conflict("App-managed Notion section content was edited. Review the conflict before publishing.");
 }
 
@@ -95,23 +92,12 @@ const stripChildren = (block: JsonObject) => {
   const type = String(block.type), data = { ...block[type] as JsonObject }; delete data.children;
   return { ...block, [type]: data };
 };
-const written = (block: RemoteBlock): WrittenNode => ({ id: block.id, value: jsonHash(blockValue(block)), children: [] });
-async function plainFingerprint(id: string, block?: RemoteBlock): Promise<string> {
-  let count = 0;
-  async function read(block: RemoteBlock, depth = 0): Promise<WrittenNode> {
-    if (++count > 1500 || depth > 12) conflict("The published section exceeds the safe verification limit.");
-    if (block.archived || block.in_trash) conflict("Published Notion content was removed.");
-    return { ...written(block), children: block.has_children ? await Promise.all((await notionChildren(block.id)).map(child => read(child, depth + 1))) : [] };
-  }
-  return jsonHash(await read(block ?? await notionRequest<RemoteBlock>(`/blocks/${id}`)));
-}
-async function verifyNodes(parent: string, nodes: WrittenNode[], roots = false): Promise<void> {
+async function verifyNodes(parent: string, nodes: WrittenNode[], roots = false, cursors?: VerificationState, checkpoint?: () => Promise<void>): Promise<void> {
   const actual = await notionChildren(parent);
   if (!roots && jsonHash(actual.map(b => b.id)) !== jsonHash(nodes.map(b => b.id))) conflict("An in-progress Notion list was edited. Resolve the conflict before resuming.");
   for (const node of nodes) {
     const block = actual.find(b => b.id === node.id);
-    if (!block || jsonHash(blockValue(block)) !== node.value) conflict("In-progress Notion content was edited or removed. Resolve the conflict before resuming.");
-    if (node.children.length || block.has_children) await verifyNodes(node.id, node.children);
+    if (!block || await readFingerprint(node.id, true, cursors, checkpoint, block) !== jsonHash(node)) conflict("In-progress Notion content was edited or removed. Resolve the conflict before resuming.");
   }
 }
 
@@ -139,6 +125,7 @@ export async function publishPlainSection(state: PlainProgress, desired: JsonObj
   }
   async function append(parent: string, nodes: WrittenNode[], blocks: JsonObject[], root = false, depth = 0): Promise<void> {
     if (depth > 12) throw new NotionError("This section's nesting exceeds the safe publishing limit.", 422);
+    if (state.appended?.includes(parent)) return;
     if (state.pending?.parent === parent) await reconcile(parent, nodes);
     // Verify nested appends at their own level, after reconciling any uncertain
     // request there. Otherwise a successfully committed child looks unowned.
@@ -173,6 +160,7 @@ export async function publishPlainSection(state: PlainProgress, desired: JsonObj
       if (nested.length || nodes[i].children.length || actual.find(b => b.id === nodes[i].id)?.has_children)
         await append(nodes[i].id, nodes[i].children, nested, false, depth + 1);
     }
+    (state.appended ??= []).push(parent); await checkpoint();
   }
   if (state.pending) {
     const find = (nodes: WrittenNode[], parent: string): WrittenNode[] | undefined => {
@@ -183,42 +171,54 @@ export async function publishPlainSection(state: PlainProgress, desired: JsonObj
     await reconcile(state.pending.parent, nodes!);
   }
   if (!state.ready) {
-    if (old) await verifyPlainBinding(old, freshIds());
+    // This verification belongs to the pre-append phase; cleanup verifies again.
+    if (old && !state.oldChecked) await verifyPlainBinding(old, freshIds(), state.verification ??= {}, checkpoint);
+    state.oldChecked = true;
+    delete state.verification;
     await append(state.parent, state.nodes, desired, true);
     await placement(state, freshIds(), oldIds);
-    await verifyNodes(state.parent, state.nodes, true);
+    await verifyNodes(state.parent, state.nodes, true, state.verification ??= {}, checkpoint);
+    delete state.verification;
     state.ready = true; await checkpoint();
   }
   // Every retry verifies the replacement and remaining originals before cleanup.
   await placement(state, freshIds(), oldIds);
-  await verifyNodes(state.parent, state.nodes, true);
-  const liveOld: string[] = [];
+  await verifyNodes(state.parent, state.nodes, true, state.verification ??= {}, checkpoint);
+  delete state.verification;
   const siblings = oldIds.length ? await notionChildren(state.parent) : [];
-  for (const block of old?.blocks ?? []) {
+  const liveOld = oldIds.slice(state.cleanupIndex ?? 0).filter(id => siblings.some(block => block.id === id) || !state.removalIntents.includes(id));
+  if (old) await placement({ ...old, before: state.before }, liveOld, freshIds());
+  for (let index = state.cleanupIndex ?? 0; index < (old?.blocks.length ?? 0); index++) {
+    const block = old!.blocks[index];
     const actual = siblings.find(b => b.id === block.id) ?? await notionRequest<RemoteBlock>(`/blocks/${block.id}`);
     if (actual.archived || actual.in_trash) {
       if (!state.removalIntents.includes(block.id)) conflict("Published Notion content was removed outside this job.");
     } else {
-      if (await plainFingerprint(block.id, actual) !== block.fingerprint) conflict("Previous Notion content was edited. Both versions are preserved for review.");
-      liveOld.push(block.id);
+      if (await readFingerprint(block.id, true, state.verification ??= {}, checkpoint, actual) !== block.fingerprint) conflict("Previous Notion content was edited. Both versions are preserved for review.");
+      if (!state.removalIntents.includes(block.id)) { state.removalIntents.push(block.id); await checkpoint(); }
+      await write(`/blocks/${block.id}`, "DELETE");
     }
-  }
-  if (old) await placement({ ...old, before: state.before }, liveOld, freshIds());
-  for (const id of liveOld) {
-    if (!state.removalIntents.includes(id)) { state.removalIntents.push(id); await checkpoint(); }
-    await write(`/blocks/${id}`, "DELETE");
+    delete state.verification;
+    state.cleanupIndex = index + 1;
+    await checkpoint();
+    if (index + 1 < old!.blocks.length) yieldNotion();
   }
   state.binding = { parent: state.parent, after: state.after, before: state.before,
     blocks: state.nodes.map(node => ({ id: node.id, fingerprint: jsonHash(node) })) };
-  await verifyPlainCompletion(state);
+  await verifyPlainCompletion(state, checkpoint);
   await checkpoint();
 }
 
-export async function verifyPlainCompletion(state: PlainProgress) {
+export async function verifyPlainCompletion(state: PlainProgress, checkpoint?: () => Promise<void>) {
   if (!state.binding) conflict("Plain-content publication has not completed its block tracking.");
-  await verifyPlainBinding(state.binding!);
-  for (const id of state.removalIntents) {
+  await verifyPlainBinding(state.binding!, [], state.verification ??= {}, checkpoint);
+  for (let index = state.removalCheckIndex ?? 0; index < state.removalIntents.length; index++) {
+    const id = state.removalIntents[index];
     const block = await notionRequest<RemoteBlock>(`/blocks/${id}`);
     if (!block.archived && !block.in_trash) conflict("Removed Notion content was restored during publication. Review the conflict.");
+    state.removalCheckIndex = index + 1;
+    if (checkpoint) await checkpoint();
   }
+  delete state.verification;
+  delete state.removalCheckIndex;
 }

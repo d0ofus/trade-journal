@@ -40,4 +40,12 @@ describe("Notion publication API boundaries", () => {
     expect((await POST(request({ action: "preview", groupKey: "test-trade", revision: 1 }))).status).toBe(200);
     expect(mocks.preview).toHaveBeenCalledWith("test-trade", 1, "http://localhost");
   });
+  it("accepts fingerprint acknowledgements only on resume", async () => {
+    const overwrite = "a".repeat(64);
+    mocks.resume.mockResolvedValue({ id: "job", state: "waiting" });
+    expect((await POST(request({ action: "resume", groupKey: "test-trade", id: "job", overwrite }))).status).toBe(200);
+    expect(mocks.resume).toHaveBeenCalledWith("job", "test-trade", overwrite);
+    expect((await POST(request({ action: "publish", groupKey: "test-trade", id: "job", overwrite }))).status).toBe(400);
+    expect((await POST(request({ action: "resume", groupKey: "test-trade", id: "job", overwrite: "anything" }))).status).toBe(400);
+  });
 });

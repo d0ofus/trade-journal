@@ -1,5 +1,6 @@
 // Shared, serializable publication state. No credentials or Notion write logic.
 export const NOTION_PRESENTATION_VERSION = 4;
+export type PublicationConflict = { key: string; label: string; fingerprint: string };
 export type TemplateWait = { startedAt: number; attempt: number; timedOut?: boolean; missing?: string[] };
 export const TEMPLATE_WAIT_MS = 120_000;
 export const templateCheckDelay = (attempt: number) => [2000, 4000, 8000, 10000][Math.min(Math.max(attempt, 0), 3)];

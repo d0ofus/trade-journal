@@ -18,7 +18,8 @@ export async function GET(request: NextRequest) {
 }
 const command = z.discriminatedUnion("action", [
   z.object({ action: z.literal("preview"), groupKey: z.string().min(1).max(1000), revision: z.number().int().nonnegative() }).strict(),
-  z.object({ action: z.enum(["publish", "resume"]), groupKey: z.string().min(1).max(1000), id: z.string().min(1).max(100) }).strict(),
+  z.object({ action: z.literal("publish"), groupKey: z.string().min(1).max(1000), id: z.string().min(1).max(100) }).strict(),
+  z.object({ action: z.literal("resume"), groupKey: z.string().min(1).max(1000), id: z.string().min(1).max(100), overwrite: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict(),
 ]);
 export async function POST(request: NextRequest) {
   const auth = await notionRouteAuth(request, true); if (auth) return auth;
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
     if (!result.success) return NextResponse.json({ error: "Invalid publication command." }, { status: 400 });
     const input = result.data;
     const job = await withNotionBudget(() => input.action === "preview" ? createNotionPreview(input.groupKey, input.revision, request.nextUrl.origin)
-      : input.action === "publish" ? startNotionPublication(input.id, input.groupKey) : resumeNotionPublication(input.id, input.groupKey));
+      : input.action === "publish" ? startNotionPublication(input.id, input.groupKey) : resumeNotionPublication(input.id, input.groupKey, input.overwrite));
     return NextResponse.json({ job, publication: await publicationContext(input.groupKey), enabled: process.env.NOTION_PUBLISH_ENABLED === "1" }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return notionRouteError(error); }
 }

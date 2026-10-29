@@ -24,9 +24,10 @@ describe("publication continuation without implicit publishing", () => {
   });
   it.each([1, 2, 3])("does not offer a format upgrade for an existing version %s page", async version => {
     const completed = result("succeeded"); completed.job!.presentationVersion = version; completed.publication.presentationVersion = version;
-    const fetcher = responses(completed);
-    expect((await openPublication("trade", new AbortController().signal, vi.fn())).job?.state).toBe("succeeded");
-    expect(actions(fetcher)).toEqual(["GET"]);
+    const preview = result(); preview.job!.presentationVersion = version;
+    const fetcher = responses(completed, preview);
+    expect((await openPublication("trade", new AbortController().signal, vi.fn())).job?.presentationVersion).toBe(version);
+    expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
   });
   it("prepares the latest saved revision on opening, without confirming it", async () => {
     const fetcher = responses(result("succeeded", 1, 3), result("preview", 3));
@@ -38,19 +39,19 @@ describe("publication continuation without implicit publishing", () => {
     const loaded = await openPublication("trade", new AbortController().signal, vi.fn());
     expect(loaded.job?.revision).toBe(1); expect(actions(fetcher)).toEqual(["GET"]);
   });
-  it("does not republish an unchanged successful review", async () => {
-    const fetcher = responses(result("succeeded"), result("succeeded"));
+  it("prepares verification of an unchanged successful review without implicit writes", async () => {
+    const fetcher = responses(result("succeeded"), result());
     const loaded = await openPublication("trade", new AbortController().signal, vi.fn());
-    expect(loaded.job?.state).toBe("succeeded"); expect(actions(fetcher)).toEqual(["GET"]);
+    expect(loaded.job?.state).toBe("preview"); expect(actions(fetcher)).toEqual(["GET", { action: "preview", groupKey: "trade", revision: 2 }]);
   });
   it("acknowledges the automatic status revision without preparing another preview", async () => {
     const completed = result("succeeded", 2, 3);
     completed.job!.reviewCompletion = { outcome: "updated", sourceRevision: 2, revision: 3, noteUpdatedAt: "2026-09-30T00:00:01Z", journalUpdatedAt: null, previousNoteUpdatedAt: null, previousJournalUpdatedAt: null };
     completed.publication.savedNoteUpdatedAt = "2026-09-30T00:00:01Z"; completed.publication.savedJournalUpdatedAt = null;
-    const fetcher = responses(completed, completed);
+    const fetcher = responses(completed, completed, result("preview", 3));
     await continuePublication("trade", "publish", result(), new AbortController().signal, vi.fn());
     await openPublication("trade", new AbortController().signal, vi.fn());
-    expect(actions(fetcher)).toEqual([{ action: "publish", groupKey: "trade", id: "job" }, "GET"]);
+    expect(actions(fetcher)).toEqual([{ action: "publish", groupKey: "trade", id: "job" }, "GET", { action: "preview", groupKey: "trade", revision: 3 }]);
   });
   it("still refreshes the schema and preview when explicitly requested", async () => {
     const fetcher = responses(result("succeeded"), result());
@@ -81,6 +82,33 @@ describe("publication continuation without implicit publishing", () => {
     const fetcher = responses(result(state));
     await continuePublication("trade", "publish", result(), new AbortController().signal, vi.fn());
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("polls a running lease before resuming and sends overwrite approval only once", async () => {
+    vi.useFakeTimers();
+    const running = result("running"); running.job!.leaseUntil = new Date(Date.now() + 10000);
+    const fetcher = responses(running, result("waiting"), result("succeeded"));
+    const pending = continuePublication("trade", "resume", result("conflict"), new AbortController().signal, vi.fn(), "a".repeat(64));
+    await vi.advanceTimersByTimeAsync(2000); await vi.runAllTimersAsync(); await pending;
+    expect(actions(fetcher)).toEqual([{ action: "resume", groupKey: "trade", id: "job", overwrite: "a".repeat(64) }, "GET", { action: "resume", groupKey: "trade", id: "job" }]);
+  });
+  it("retries publisher contention without presenting a content conflict", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ error: "Busy", reason: "busy", retryAt: new Date(Date.now() + 2000) }, { status: 429 }))
+      .mockResolvedValueOnce(Response.json(result("succeeded")));
+    vi.stubGlobal("fetch", fetcher);
+    const pending = continuePublication("trade", "resume", result("waiting"), new AbortController().signal, vi.fn());
+    await vi.advanceTimersByTimeAsync(2000); await pending;
+    expect(actions(fetcher)).toEqual([{ action: "resume", groupKey: "trade", id: "job" }, { action: "resume", groupKey: "trade", id: "job" }]);
+  });
+  it("inspects a lost response before submitting another write", async () => {
+    vi.useFakeTimers();
+    const running = result("running"); running.job!.leaseUntil = new Date(Date.now() + 10000);
+    const fetcher = vi.fn().mockRejectedValueOnce(new TypeError("Network lost"))
+      .mockResolvedValueOnce(Response.json(running)).mockResolvedValueOnce(Response.json(result("succeeded")));
+    vi.stubGlobal("fetch", fetcher);
+    const pending = continuePublication("trade", "publish", result(), new AbortController().signal, vi.fn());
+    await vi.advanceTimersByTimeAsync(4000); await pending;
+    expect(actions(fetcher)).toEqual([{ action: "publish", groupKey: "trade", id: "job" }, "GET", "GET"]);
   });
   it("cancels a pending wait on close/navigation", async () => {
     vi.useFakeTimers(); const controller = new AbortController(), waiting = result("waiting"); waiting.job!.retryAt = new Date(Date.now() + 10000);

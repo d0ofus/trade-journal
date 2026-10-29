@@ -21,9 +21,10 @@ export async function planNotionProperties(trade: Trade, doc: TradeDocument, sch
   function set(name: string, type: string, value: unknown) {
     const property = byName.get(name);
     if (!property || property.type !== type) { errors.push(`${name} must exist as a Notion ${type} property.`); return; }
+    if (type === "number" && value !== null && (typeof value !== "number" || !Number.isFinite(value))) { errors.push(`${name} has an unavailable or invalid number. Correct the saved data before publishing.`); return; }
     values[property.id] = { [type]: value }; display.push({ name, value: value === null ? "Empty" : typeof value === "object" ? JSON.stringify(value) : String(value) });
   }
-  set("Entry", "number", publishedPrice(trade.entry)); set("Exit", "number", publishedPrice(trade.exit));
+  for (const [name, price] of [["Entry", trade.entry], ["Exit", trade.exit]] as const) set(name, "number", Number.isFinite(price) ? publishedPrice(price) : undefined);
   for (const [name, price] of [["Entry", trade.entry], ["Exit", trade.exit]] as const) {
     const item = display.find(item => item.name === name);
     if (item) item.value = publishedPrice(price).toFixed(2);
@@ -45,10 +46,17 @@ export async function planNotionProperties(trade: Trade, doc: TradeDocument, sch
   }
   for (const p of notionProperties) {
     if (p.kind === "date" || p.kind === "formula") continue;
-    const value = p.kind === "takeaways" ? richPlain(doc.review.takeaway) : doc.review.notion?.properties[p.key];
-    // Access to every required relation must be verified even for an untouched
-    // review. An unset value is checked, but must not clear a Notion property.
-    if (value === undefined && p.kind !== "relation") continue;
+    // Optional saved fields render as blank/unchecked in the app. Publish those
+    // empty values too, so template defaults and older values cannot survive.
+    const raw = p.kind === "takeaways" ? richPlain(doc.review.takeaway) : doc.review.notion?.properties[p.key];
+    if (raw !== undefined) {
+      const valid = p.kind === "relation" || p.kind === "multi" ? Array.isArray(raw) && raw.every(item => typeof item === "string")
+        : p.kind === "checkbox" ? typeof raw === "boolean"
+        : p.kind === "number" ? raw === null || typeof raw === "number" && Number.isFinite(raw) : typeof raw === "string";
+      if (!valid) { errors.push(`${p.label} has an invalid saved value. Correct it in the app before publishing.`); continue; }
+    }
+    const value = raw
+      ?? (p.kind === "relation" || p.kind === "multi" ? [] : p.kind === "checkbox" ? false : p.kind === "number" ? null : "");
     if (p.kind === "relation") {
       const property = byName.get(p.label), names = Array.isArray(value) ? value : [];
       if (!property?.relation?.data_source_id) { if (property) errors.push(`${p.label} does not expose an accessible related data source.`); continue; }
@@ -56,7 +64,6 @@ export async function planNotionProperties(trade: Trade, doc: TradeDocument, sch
         const target = await notionRequest<{ properties: Record<string, RemoteProperty> }>(`/data_sources/${property.relation.data_source_id}`);
         const title = Object.values(target.properties).find(p => p.type === "title");
         if (!title) { errors.push(`Cannot resolve the title field for ${p.label}.`); continue; }
-        if (value === undefined) continue;
         const ids: { id: string }[] = [], matches = new Map<string, string[]>();
         if (names.length) {
           let cursor: string | null = null, count = 0; const cursors = new Set<string>();

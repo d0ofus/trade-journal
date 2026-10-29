@@ -40,13 +40,13 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
     const timer = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(timer);
   }, [retryAt]);
-  async function send(action: "preview" | "publish" | "resume") {
+  async function send(action: "preview" | "publish" | "resume", overwrite?: string) {
     if (busy) return;
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
     setBusy(true); setError("");
     try {
       if (action === "preview" || !result) await openPublication(groupKey, controller.signal, observe, true);
-      else await continuePublication(groupKey, action, result, controller.signal, observe);
+      else await continuePublication(groupKey, action, result, controller.signal, observe, overwrite);
     } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Notion request failed."); }
     finally { if (!controller.signal.aborted) setBusy(false); }
   }
@@ -65,6 +65,9 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
       <p role="status">{pending ? "Publishing frozen" : job.state === "preview" ? "Preview" : "Published"} revision {job.revision} · {job.state}{busy && job.phase !== "template_wait" ? " · Working…" : ""}</p>
       {job.phase === "template_wait" && <p role="status">Waiting for Notion to apply the template…{!busy ? " Resume/check progress to continue." : " This page will be checked automatically."}</p>}
       {job.error && <p role="alert">{job.error}</p>}
+      {!!job.conflicts?.length && <p>Notion edits detected in: {job.conflicts.map(conflict => conflict.label).join(", ")}. Replacing uses frozen app revision {job.revision}. Cancel by closing this dialog.</p>}
+      {busy && job.retryReason && job.phase !== "template_wait" && <p role="status">{job.retryReason === "budget" ? "Continuing from saved progress…" : "Waiting for Notion; publishing will continue automatically."}</p>}
+      <p role="status">Sections complete: {job.sections.filter(section => section.done).length} / {job.sections.length}</p>
       {job.phase === "template_timeout" && job.missingSections.length > 0 && <p>Sections not ready: {job.missingSections.join(", ")}</p>}
       {newerEdits && <p role="status">Newer saved edits in revision {savedRevision} are not included in this {pending ? "unfinished publication. Finish or resolve it first; a fresh preview will then be prepared for your confirmation." : "preview. Prepare the latest preview before confirming."}</p>}
       {job.state === "succeeded" && !newerEdits && <p role="status">This saved review has already been published.</p>}
@@ -84,6 +87,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
       <button disabled={busy || pending} onClick={() => void send("preview")}>Refresh saved-review preview</button>
       {job?.state === "preview" && <button className="ws-primary" disabled={busy || !enabled || !!job.errors.length || job.revision !== savedRevision} onClick={() => void send("publish")}>Confirm {pageUrl ? "update" : "publish"} revision {job.revision}</button>}
       {pending && <button disabled={busy || !enabled || !!retryAt && new Date(retryAt).getTime() > now} onClick={() => void send("resume")}>Resume/check progress</button>}
+      {job?.state === "conflict" && job.overwriteToken && <button className="ws-primary" disabled={busy || !enabled} onClick={() => void send("resume", job.overwriteToken!)}>Replace with saved app data</button>}
     </div>
     <p className="ws-help">Closing pauses client-driven continuation; an already submitted server step may finish. Reopen to inspect or resume the same job.</p>
   </ReviewDialog>;

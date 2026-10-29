@@ -46,11 +46,14 @@ describe("live Notion property mapping", () => {
     const plan = await planNotionProperties(trade, doc, properties);
     expect(requiredRelations.every(name => plan.errors.some(error => error.includes(name)))).toBe(true);
   });
-  it("verifies related database access for empty reviews without clearing unset values", async () => {
+  it("verifies related database access and clears mapped blanks in empty reviews", async () => {
     const { trade, doc } = inputs();
     const plan = await planNotionProperties(trade, doc, schema());
     expect(mock.request.mock.calls.filter(([path]) => path.startsWith("/data_sources/related-"))).toHaveLength(6);
-    expect(plan.values.typeOfReview).toBeUndefined();
+    expect(plan.values.typeOfReview).toEqual({ relation: [] });
+    expect(plan.values.highAvat).toEqual({ checkbox: false });
+    expect(plan.values.xFrom50Sma).toEqual({ number: null });
+    expect(plan.values.bestPeerTickers).toEqual({ rich_text: [] });
     mock.request.mockRejectedValue(new Error("No access"));
     const denied = await planNotionProperties(trade, doc, schema());
     expect(requiredRelations.every(name => denied.errors.some(error => error.includes(name)))).toBe(true);
@@ -70,5 +73,21 @@ describe("live Notion property mapping", () => {
     const { trade, doc } = inputs(); doc.review.notion!.properties.typeOfReview = ["Duplicate"];
     mock.request.mockImplementation(async (_path: string, method = "GET") => method === "GET" ? { properties: { Name: { id: "title", type: "title" } } } : { results: [1, 2].map(id => ({ id: String(id), properties: { Name: { title: [{ plain_text: "Duplicate" }] } } })), has_more: false });
     expect((await planNotionProperties(trade, doc, schema())).errors.some(error => error.includes("exactly one"))).toBe(true);
+  });
+  it("publishes explicit clears for mapped selections, numbers, text and checkboxes", async () => {
+    const { trade, doc } = inputs();
+    Object.assign(doc.review.notion!.properties, { plannedStop: null, typeOfTrade: [], indexContext: [], leaderLaggard: "", highAvat: false, xFrom50Sma: null, bestPeerTickers: "" });
+    const plan = await planNotionProperties(trade, doc, schema());
+    expect(plan.errors).toEqual([]);
+    expect(plan.values).toMatchObject({ "S/L": { number: null }, typeOfTrade: { relation: [] }, indexContext: { multi_select: [] }, leaderLaggard: { select: null }, highAvat: { checkbox: false }, xFrom50Sma: { number: null }, bestPeerTickers: { rich_text: [] } });
+  });
+  it("blocks unavailable execution prices and invalid saved values instead of clearing them", async () => {
+    const { trade, doc } = inputs(); trade.entry = Number.NaN;
+    Object.assign(doc.review.notion!.properties, { highAvat: null, xFrom50Sma: Number.NaN });
+    const plan = await planNotionProperties(trade, doc, schema());
+    expect(plan.errors.some(error => error.includes("Entry"))).toBe(true);
+    expect(plan.errors.some(error => error.includes("High AVAT"))).toBe(true);
+    expect(plan.errors.some(error => error.includes("50 SMA"))).toBe(true);
+    expect(plan.values.Entry).toBeUndefined(); expect(plan.values.highAvat).toBeUndefined(); expect(plan.values.xFrom50Sma).toBeUndefined();
   });
 });

@@ -132,7 +132,12 @@ async function confirmLegacyPublication(id: string, groupKey: string) {
 }
 async function finish(id: string, groupKey: string) {
   let result = await resumeNotionPublication(id, groupKey);
-  for (let i = 0; i < 20 && result.state === "waiting"; i++) result = await resumeNotionPublication(id, groupKey);
+  for (let i = 0; i < 200 && result.state === "waiting"; i++) result = await resumeNotionPublication(id, groupKey);
+  return result;
+}
+async function interrupted(id: string, groupKey: string) {
+  let result = await resumeNotionPublication(id, groupKey);
+  for (let i = 0; i < 200 && result.state === "waiting" && result.retryReason !== "transient"; i++) result = await resumeNotionPublication(id, groupKey);
   return result;
 }
 async function refreshSnapshot(f: Awaited<ReturnType<typeof fixture>>) {
@@ -179,7 +184,7 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     const next = await updatePlan(f, { ...legacy, presentationVersion: 3 });
     await confirmLegacyPublication(next.id, f.groupKey);
     failAfter = (_path, method) => method === "DELETE";
-    expect((await finish(next.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(next.id, f.groupKey)).state).toBe("waiting");
     const pending = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: next.id } });
     expect(pending.progress).toMatchObject({ sections: { entry: { removeIntent: expect.any(String) } } });
     expect((await finish(next.id, f.groupKey)).state).toBe("succeeded"); expect(activeBoxes()).toHaveLength(0);
@@ -364,7 +369,7 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     const retryAt = new Date(Date.now() + 300000);
     remote.tree.mockRejectedValueOnce(new NotionError("Cooldown", 429, retryAt));
     const paused = await resumeNotionPublication(f.job.id, f.groupKey);
-    expect(paused.state).toBe("failed"); expect(paused.retryAt).toEqual(retryAt); expect(paused.error).toMatch(/cooldown beyond/);
+    expect(paused.state).toBe("failed"); expect(paused.retryAt).toEqual(retryAt); expect(paused.error).toMatch(/two minutes/);
     const calls = remote.call.mock.calls.length;
     expect((await resumeStep(f.job.id, f.groupKey)).state).toBe("failed"); expect(remote.call.mock.calls).toHaveLength(calls);
   });
@@ -401,14 +406,14 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
   it("reconciles a lost page response without creating another page", async () => {
     const f = await fixture(); await confirmLegacyPublication(f.job.id, f.groupKey);
     failAfter = (path, method) => path === "/pages" && method === "POST";
-    expect((await resumeNotionPublication(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     expect((await readWorkstationDocument(f.groupKey)).review.status).toBe("Not reviewed");
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect(pages.size).toBe(1);
   });
   it("reconciles a lost section-container response without duplicate containers", async () => {
     const f = await fixture(); await confirmLegacyPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
     failAfter = (_path, method, body) => method === "PATCH" && (body.children as JsonObject[] | undefined)?.[0]?.type === "callout";
-    expect((await resumeNotionPublication(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect([...nodes.values()].filter(n => n.type === "callout")).toHaveLength(2);
   });
   it("reconciles a lost content response without duplicate paragraphs or images", async () => {
@@ -418,13 +423,13 @@ describe("durable Notion publishing against isolated PostgreSQL", () => {
     await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { snapshot: snapshot as unknown as Prisma.InputJsonValue } });
     await confirmLegacyPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
     failAfter = (_path, method, body) => method === "PATCH" && (body.children as JsonObject[] | undefined)?.[0]?.type === "paragraph";
-    expect((await resumeNotionPublication(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect([...nodes.values()].filter(n => n.type === "image")).toHaveLength(2);
   });
   it("reconciles a lost property-update response", async () => {
     const f = await fixture(); await confirmLegacyPublication(f.job.id, f.groupKey);
     failAfter = (path, method) => path.startsWith("/pages/") && method === "PATCH";
-    expect((await finish(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
   });
   it("blocks a changed saved revision before making remote writes", async () => {
@@ -509,7 +514,7 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     f.job = await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
     return f;
   }
-  async function update(f: Awaited<ReturnType<typeof fixture>>, sections = f.plan.sections) {
+  async function update(f: Awaited<ReturnType<typeof fixture>>, sections = f.plan.sections.map(section => ({ ...section, blocks: htmlToNotionBlocks(`<p>Updated ${section.key}</p>`) }))) {
     const doc = await readWorkstationDocument(f.groupKey), publication = await prisma.notionPublication.findUniqueOrThrow({ where: { groupKey: f.groupKey } });
     const plan = { ...f.plan, sections, targetPageId: publication.pageId };
     return prisma.notionPublishJob.create({ data: { groupKey: f.groupKey, requestKey: randomUUID(), revision: doc.revision, templateId: f.job.templateId,
@@ -517,6 +522,114 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
   }
   const live = () => [...nodes.values()].filter(n => !n.archived);
   const mutations = () => remote.call.mock.calls.filter(([path, method]) => method && method !== "GET" && !String(path).endsWith("/query"));
+  it.each([3, 4])("skips verified unchanged version %s sections and patches only changed properties", async version => {
+    const f = await fixture(true); f.plan.presentationVersion = version;
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
+    if (version === 3) await confirmLegacyPublication(f.job.id, f.groupKey); else await startNotionPublication(f.job.id, f.groupKey);
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    const count = mutations().length, unchanged = await update(f, f.plan.sections);
+    await startNotionPublication(unchanged.id, f.groupKey);
+    const result = await finish(unchanged.id, f.groupKey);
+    expect(result.state).toBe("succeeded"); expect(result.sections.every(section => section.unchanged)).toBe(true);
+    expect(mutations()).toHaveLength(count);
+    const changed = await update(f, f.plan.sections), plan = changed.plan as unknown as PublishPlan;
+    plan.properties["entry-price"] = { number: null };
+    await prisma.notionPublishJob.update({ where: { id: changed.id }, data: { plan: plan as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(changed.id, f.groupKey); expect((await finish(changed.id, f.groupKey)).state).toBe("succeeded");
+    expect(mutations().slice(count)).toEqual([[expect.stringContaining("/pages/"), "PATCH", { properties: { "entry-price": { number: null } } }]]);
+  });
+  it.each([3, 4])("requires fresh overwrite approval for Notion edits on an unchanged version %s journal", async version => {
+    const f = await fixture(); f.plan.presentationVersion = version;
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
+    if (version === 3) await confirmLegacyPublication(f.job.id, f.groupKey); else await startNotionPublication(f.job.id, f.groupKey);
+    await finish(f.job.id, f.groupKey);
+    const target = live().find(node => node.type === "paragraph")!;
+    target.paragraph = { rich_text: [{ text: { content: "Edited in Notion" } }] };
+    const next = await update(f, f.plan.sections), count = mutations().length;
+    await startNotionPublication(next.id, f.groupKey);
+    const conflict = await finish(next.id, f.groupKey);
+    expect(conflict.state).toBe("conflict"); expect(conflict.conflicts?.[0].label).toBe("Entry Screen"); expect(conflict.overwriteToken).toMatch(/^[a-f0-9]{64}$/);
+    expect(mutations()).toHaveLength(count);
+    target.paragraph = { rich_text: [{ text: { content: "Edited again" } }] };
+    const stale = await resumeStep(next.id, f.groupKey, conflict.overwriteToken!);
+    expect(stale.state).toBe("conflict"); expect(stale.overwriteToken).not.toBe(conflict.overwriteToken); expect(mutations()).toHaveLength(count);
+    remote.children.mockRejectedValueOnce(new NotionError("Budget pause while checking approval", 429, new Date(Date.now() + 1000), false, "budget"));
+    expect((await resumeStep(next.id, f.groupKey, stale.overwriteToken!)).state).toBe("waiting");
+    expect((await finish(next.id, f.groupKey)).state).toBe("succeeded");
+    const visible = readChildren([...pages.keys()][0]).flatMap(node => node.type === "callout" ? readChildren(node.id) : [node]);
+    expect(visible.filter(node => node.type === "paragraph").map(remoteText).sort()).toEqual(["Saved entry", "Saved exit"]);
+  });
+  it("automatically yields for budgets and cooldowns after section work, and limits repeated transient failures", async () => {
+    const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey);
+    let result = await resumeNotionPublication(f.job.id, f.groupKey);
+    while (!result.sections.some(section => section.done)) result = await resumeNotionPublication(f.job.id, f.groupKey);
+    const implementation = remote.call.getMockImplementation()!;
+    remote.call.mockRejectedValueOnce(new NotionError("Bounded pause", 429, new Date(Date.now() + 1000), false, "budget"));
+    result = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(result.state).toBe("waiting"); expect(result.retryReason).toBe("budget");
+    const retryAt = new Date(Date.now() + 5000);
+    remote.call.mockRejectedValueOnce(new NotionError("Cooldown", 429, retryAt, false, "cooldown"));
+    result = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(result.state).toBe("waiting"); expect(result.retryAt).toEqual(retryAt);
+    const calls = remote.call.mock.calls.length;
+    await resumeStep(f.job.id, f.groupKey); expect(remote.call.mock.calls).toHaveLength(calls);
+    remote.call.mockRejectedValue(new NotionError("Temporary outage", 503));
+    for (let i = 0; i < 5 && result.state !== "failed"; i++) result = await resumeNotionPublication(f.job.id, f.groupKey);
+    expect(result.state).toBe("failed"); expect(result.error).toMatch(/repeated interruptions/);
+    remote.call.mockImplementation(implementation);
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+  });
+  it("waits for publisher contention and returns an active job lease without competing writes", async () => {
+    const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey);
+    await prisma.notionRequestGate.upsert({ where: { key: "publisher" }, create: { key: "publisher", nextAt: new Date(Date.now() + 60000) }, update: { nextAt: new Date(Date.now() + 60000) } });
+    await expect(resumeStep(f.job.id, f.groupKey)).rejects.toMatchObject({ status: 429, reason: "busy" });
+    expect((await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } })).state).toBe("ready");
+    await prisma.notionRequestGate.update({ where: { key: "publisher" }, data: { nextAt: new Date(0) } });
+    const leaseUntil = new Date(Date.now() + 60000);
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { state: "running", leaseUntil, leaseToken: "other-request" } });
+    const count = mutations().length, running = await resumeStep(f.job.id, f.groupKey);
+    expect(running.state).toBe("running"); expect(running.leaseUntil).toEqual(leaseUntil); expect(mutations()).toHaveLength(count);
+    expect((await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } })).leaseToken).toBe("other-request");
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { leaseUntil: new Date(0) } });
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+  });
+  it("reviews a directly edited mapped property and restores the saved app value", async () => {
+    const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
+    const page = pages.get([...pages.keys()][0])!;
+    ((page.properties as JsonObject).Entry as JsonObject).number = 123;
+    const next = await update(f, f.plan.sections), count = mutations().length;
+    await startNotionPublication(next.id, f.groupKey);
+    const conflict = await finish(next.id, f.groupKey);
+    expect(conflict.state).toBe("conflict"); expect(conflict.conflicts).toMatchObject([{ key: "$properties", label: "Entry" }]); expect(mutations()).toHaveLength(count);
+    await resumeStep(next.id, f.groupKey, conflict.overwriteToken!);
+    expect((await finish(next.id, f.groupKey)).state).toBe("succeeded");
+    expect(((page.properties as JsonObject).Entry as JsonObject).number).toBe(100);
+  });
+  it("rechecks completed legacy subtrees after an interrupted nested append", async () => {
+    const f = await fixture(); f.plan.presentationVersion = 3;
+    f.plan.sections[0].blocks = htmlToNotionBlocks("<ul><li>First<ul><li>Child one</li></ul></li><li>Second<ul><li>Child two</li></ul></li></ul>");
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
+    await confirmLegacyPublication(f.job.id, f.groupKey);
+    failAfter = (path, method, body) => path.startsWith("/blocks/") && method === "PATCH" && JSON.stringify(body).includes('"Child two"');
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
+    const child = live().find(node => remoteText(node) === "Child one")!;
+    (child[child.type] as JsonObject).rich_text = [{ text: { content: "Edited during pause" } }];
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("conflict");
+    expect((await readWorkstationDocument(f.groupKey)).review.status).toBe("Not reviewed");
+  });
+  it("continues a rejected provider save collision without a content-conflict prompt or duplicates", async () => {
+    const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey);
+    const implementation = remote.call.getMockImplementation()!;
+    let collided = false;
+    remote.call.mockImplementation(async (path: string, method?: string, body?: unknown) => {
+      if (!collided && path.startsWith("/blocks/") && method === "PATCH") {
+        collided = true; throw new NotionError("Temporary save collision", 409, undefined, false, "transient");
+      }
+      return implementation(path, method, body);
+    });
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded"); expect(collided).toBe(true);
+    expect(pages.size).toBe(1); expect(live().filter(node => node.type === "paragraph")).toHaveLength(2);
+  });
   it.each([1, 2, 3])("keeps existing version %s pages unchanged during preview and retains callouts on confirmed updates", async version => {
     const f = await fixture(); f.plan.presentationVersion = version;
     await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
@@ -586,8 +699,9 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     expect(nodes.get(placeholder.id)?.archived).toBe(false); expect(nodes.get(manual.id)?.archived).toBe(false);
     expect(uploads.size).toBe(1);
     const saved = await readWorkstationDocument(f.groupKey); expect(saved.review).toEqual({ ...f.doc.review, status: "Reviewed" }); expect(saved.evidence).toEqual(f.doc.evidence);
-    // Updating creates verified replacements, then removes only the owned roots.
-    const next = await update(f); await startNotionPublication(next.id, f.groupKey); expect((await finish(next.id, f.groupKey)).state).toBe("succeeded");
+    // The verified unchanged publication retains its owned roots and other content.
+    const count = mutations().length, next = await update(f, f.plan.sections); await startNotionPublication(next.id, f.groupKey); expect((await finish(next.id, f.groupKey)).state).toBe("succeeded");
+    expect(mutations()).toHaveLength(count);
     expect(nodes.get(placeholder.id)?.archived).toBe(false); expect(nodes.get(manual.id)?.archived).toBe(false);
     expect(readChildren(pageId).map(remoteText)).toEqual(top.map(remoteText)); expect(uploads.size).toBe(1);
   });
@@ -616,7 +730,7 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     if (kind === "image") vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from("image"))));
     await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
     failAfter = (path, method, body) => method === "PATCH" && path.startsWith("/blocks/") && (kind !== "nested" || JSON.stringify(body).includes('"Child"'));
-    expect((await finish(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     const result = await finish(f.job.id, f.groupKey); expect(result.error).toBeNull(); expect(result.state).toBe("succeeded");
     expect(live().filter(n => n.type === "image")).toHaveLength(kind === "image" ? 2 : 0);
     expect(live().filter(n => remoteText(n) === (kind === "nested" ? "Child" : "Saved entry"))).toHaveLength(1);
@@ -624,7 +738,7 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
   it("does not adopt identical neighbouring text from another creator after an uncertain append", async () => {
     const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
     failAfter = (path, method) => path.startsWith("/blocks/") && method === "PATCH";
-    expect((await finish(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     live().find(n => remoteText(n) === "Saved entry")!.created_by = { id: "human" };
     const before = mutations().length; expect((await finish(f.job.id, f.groupKey)).state).toBe("conflict"); expect(mutations()).toHaveLength(before);
   });
@@ -644,7 +758,7 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey); await finish(f.job.id, f.groupKey);
     const next = await update(f); await startNotionPublication(next.id, f.groupKey);
     failAfter = (_path, method) => method === "DELETE";
-    expect((await finish(next.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(next.id, f.groupKey)).state).toBe("waiting");
     expect((await finish(next.id, f.groupKey)).state).toBe("succeeded");
     expect(live().filter(n => n.type === "paragraph")).toHaveLength(2); expect(live().filter(n => n.type === "heading_2")).toHaveLength(2);
     const count = mutations().length; await finish(next.id, f.groupKey); expect(mutations()).toHaveLength(count);
@@ -655,7 +769,7 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     const prior = live().filter(n => n.type === "paragraph").map(n => n.id), next = await update(f);
     await startNotionPublication(next.id, f.groupKey);
     failAfter = (path, method) => path.startsWith("/blocks/") && method === "PATCH";
-    expect((await finish(next.id, f.groupKey)).state).toBe("failed"); expect(prior.every(id => !nodes.get(id)!.archived)).toBe(true);
+    expect((await interrupted(next.id, f.groupKey)).state).toBe("waiting"); expect(prior.every(id => !nodes.get(id)!.archived)).toBe(true);
     expect((await finish(next.id, f.groupKey)).state).toBe("succeeded"); expect(prior.every(id => nodes.get(id)!.archived)).toBe(true);
     expect(live().filter(n => n.type === "paragraph")).toHaveLength(2);
   });
@@ -670,13 +784,13 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
     await startNotionPublication(f.job.id, f.groupKey);
     failAfter = (path, method, body) => path.startsWith("/blocks/") && method === "PATCH" && JSON.stringify(body).includes('"Block 80"');
-    expect((await finish(f.job.id, f.groupKey)).state).toBe("failed"); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting"); expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
     expect(readChildren([...pages.keys()][0]).filter(n => remoteText(n).startsWith("Block ")).map(remoteText)).toEqual(Array.from({ length: 81 }, (_, i) => `Block ${i}`));
   });
   it("pauses an uncertain image append if downloaded bytes differ from the frozen original", async () => {
     const f = await plainFixture(true); await startNotionPublication(f.job.id, f.groupKey);
     failAfter = (path, method) => path.startsWith("/blocks/") && method === "PATCH";
-    expect((await finish(f.job.id, f.groupKey)).state).toBe("failed");
+    expect((await interrupted(f.job.id, f.groupKey)).state).toBe("waiting");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from("different bytes"))));
     const count = mutations().length; const result = await finish(f.job.id, f.groupKey);
     expect(result.state).toBe("conflict"); expect(result.error).toMatch(/differs from the frozen evidence/); expect(mutations()).toHaveLength(count);
@@ -684,7 +798,8 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
   });
   it("does not mark Reviewed when completed plain content changes before finalization", async () => {
     const f = await plainFixture(); await startNotionPublication(f.job.id, f.groupKey);
-    await resumeNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey); await resumeNotionPublication(f.job.id, f.groupKey);
+    let sectionStep = await resumeNotionPublication(f.job.id, f.groupKey);
+    while (!sectionStep.sections.some(section => section.done)) sectionStep = await resumeNotionPublication(f.job.id, f.groupKey);
     live().find(n => n.type === "paragraph")!.paragraph = { rich_text: [{ text: { content: "Edited after the section step" } }] };
     expect((await finish(f.job.id, f.groupKey)).state).toBe("conflict"); expect((await readWorkstationDocument(f.groupKey)).review.status).toBe(f.doc.review.status);
   });

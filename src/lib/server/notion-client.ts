@@ -9,8 +9,12 @@ type Results<T> = { results: T[]; has_more: boolean; next_cursor: string | null 
 const budget = new AsyncLocalStorage<{ deadline: number }>();
 export const withNotionBudget = <T>(operation: () => Promise<T>) => budget.getStore() ? operation() : budget.run({ deadline: Date.now() + 65_000 }, operation);
 export class NotionError extends Error {
-  constructor(message: string, public status = 503, public retryAt?: Date, public uncertain = false) { super(message); }
+  providerCode?: string;
+  providerRequestId?: string;
+  constructor(message: string, public status = 503, public retryAt?: Date, public uncertain = false,
+    public reason?: "budget" | "cooldown" | "busy" | "transient" | "blocked") { super(message); }
 }
+export const yieldNotion = () => { throw new NotionError("Continuing from saved progress…", 429, new Date(Date.now() + 1000), false, "budget"); };
 export const jsonHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)).digest("hex");
 export function notionConfigured() { return !!process.env.NOTION_TOKEN; }
@@ -25,11 +29,11 @@ async function reserveRequest() {
     ON CONFLICT ("key") DO UPDATE SET "nextAt" = GREATEST("NotionRequestGate"."nextAt", (NOW() AT TIME ZONE 'UTC')) + INTERVAL '400 milliseconds', "updatedAt" = (NOW() AT TIME ZONE 'UTC')
     RETURNING "nextAt"`;
   const delay = rows[0].nextAt.getTime() - Date.now() - 400;
-  if (delay > 8000) throw new NotionError("Notion is cooling down. Resume after the indicated time.", 429, rows[0].nextAt);
+  if (delay > 8000) throw new NotionError("Notion is cooling down. Resume after the indicated time.", 429, rows[0].nextAt, false, "cooldown");
   if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
 }
 export async function notionRequest<T = JsonObject>(path: string, method = "GET", body?: unknown): Promise<T> {
-  if (budget.getStore() && budget.getStore()!.deadline - Date.now() < 15_000) throw new NotionError("This bounded step paused safely. Resume to continue from saved progress.", 429, new Date(Date.now() + 1000));
+  if (budget.getStore() && budget.getStore()!.deadline - Date.now() < 15_000) yieldNotion();
   if (!notionConfigured()) throw new NotionError("The server's Notion connection is not configured.");
   if (!/^\/(users|data_sources|pages|blocks|file_uploads)(\/|\?|$)/.test(path)) throw new Error("Invalid Notion API path");
   const mutation = method !== "GET" && !/\/query$/.test(path);
@@ -46,17 +50,25 @@ export async function notionRequest<T = JsonObject>(path: string, method = "GET"
     });
   } catch { throw new NotionError("Notion did not confirm the request. Check saved progress before retrying.", 503, undefined, mutation); }
   if (!response.ok) {
+    const detail = await response.json().catch(() => ({})) as { code?: string; request_id?: string; additional_data?: { rate_limit_reason?: string } };
+    if (detail.additional_data?.rate_limit_reason === "public_api_request_blocked") throw new NotionError("Notion has restricted this connection. Check the connection before resuming.", 403, undefined, false, "blocked");
     if (response.status === 429 || response.status === 529) {
       const raw = Number(response.headers.get("retry-after"));
       const retryAt = new Date(Date.now() + (Number.isFinite(raw) && raw > 0 ? raw : 60) * 1000 + 500);
       await prisma.$executeRaw`UPDATE "NotionRequestGate" SET "nextAt" = GREATEST("nextAt", (${retryAt}::timestamptz AT TIME ZONE 'UTC')), "updatedAt" = (NOW() AT TIME ZONE 'UTC') WHERE "key" = 'notion'`;
-      throw new NotionError("Notion has requested a cooldown. Your publication can be resumed.", 429, retryAt);
+      throw new NotionError("Notion has requested a cooldown. Publishing will continue automatically.", 429, retryAt, false, "cooldown");
     }
     const message = response.status === 401 ? "Notion authentication failed. Renew the server connection token."
       : response.status === 403 || response.status === 404 ? "Notion access is missing, the destination was removed, or the workspace block limit was reached."
       : response.status === 400 ? "Notion rejected the mapped content or property types. Refresh the preview and check the database schema."
       : "Notion is unavailable. Saved progress is retained.";
-    throw new NotionError(message, response.status >= 500 ? 503 : response.status, undefined, mutation && response.status >= 500);
+    const transient = response.status === 409 || response.status >= 500;
+    const rejectedConflict = response.status === 409 && detail.code === "conflict_error";
+    const error = new NotionError(response.status === 409 ? "Notion reported a temporary save collision. Checking saved progress…" : message,
+      response.status >= 500 ? 503 : response.status, undefined, mutation && (response.status >= 500 || response.status === 409 && !rejectedConflict), transient ? "transient" : undefined);
+    // Provider codes and request IDs help diagnosis without retaining provider text or content.
+    Object.assign(error, { providerCode: detail.code?.slice(0, 100), providerRequestId: detail.request_id?.slice(0, 100) });
+    throw error;
   }
   try { return await response.json() as T; }
   catch { throw new NotionError("Notion returned an unreadable response. Reconcile the operation before retrying.", 503, undefined, mutation); }

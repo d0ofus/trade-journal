@@ -9,7 +9,7 @@ import { jsonHash, NotionError, notionRequest, type JsonObject } from "./notion-
 import { htmlToNotionBlocks } from "./notion-format";
 import { planNotionProperties, type RemoteProperty } from "./notion-properties";
 import type { TradeDocument } from "@/lib/workstation/types";
-import { notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait } from "@/lib/workstation/notion-publication-state";
+import { notionPageUrl, unfinishedPublication, type PublicationContext, type PublicationReviewCompletion, type TemplateWait, type PublicationConflict } from "@/lib/workstation/notion-publication-state";
 import type { ImageAssetReference } from "@/lib/workstation/image-assets";
 import { effectivePresentation } from "./notion-presentation";
 
@@ -73,7 +73,7 @@ export async function createNotionPreview(groupKey: string, revision: number, so
   const digest = jsonHash(doc), snapshot: PublishSnapshot = { doc: { ...doc, drawings: [], evidence: [], legacy: null }, symbol: trade.symbol, digest, assets };
   // Re-read after upstream I/O; never preview a silently superseded revision.
   if (jsonHash(await readWorkstationDocument(groupKey)) !== digest) throw new WorkstationError("The review changed while preparing the preview. Open it again.");
-  const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors, presentation: presentationVersion, pageId: targetPageId });
+  const requestKey = jsonHash({ groupKey, digest, layout: layout.id, schema: plan.schemaHash, properties: plan.properties, errors, presentation: presentationVersion, pageId: targetPageId, baseline: existing?.updatedAt.toISOString() ?? null });
   await prisma.notionPublication.upsert({ where: { groupKey }, create: { groupKey, dataSourceId: NOTION_DATA_SOURCE_ID }, update: {} });
   const job = await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
@@ -108,17 +108,22 @@ export async function publicationContext(groupKey: string): Promise<PublicationC
   return { savedRevision: doc.revision, savedNoteUpdatedAt: doc.noteUpdatedAt ?? null, savedJournalUpdatedAt: doc.journalUpdatedAt ?? null, lastPublishedRevision: publication?.lastRevision ?? null,
     pageUrl: notionPageUrl(publication?.pageId), activeJobId: publication?.activeJobId ?? null, presentationVersion: await effectivePresentation(publication) };
 }
-export function publicationStatus(job: { id: string; groupKey: string; revision: number; state: string; error: string | null; retryAt: Date | null; plan: unknown; progress: unknown; snapshot: unknown }, details = false) {
-  const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; templateWait?: TemplateWait; reviewCompletion?: PublicationReviewCompletion; sections?: Record<string, { done?: boolean }> };
+export function publicationStatus(job: { id: string; groupKey: string; revision: number; state: string; error: string | null; retryAt: Date | null; plan: unknown; progress: unknown; snapshot: unknown; leaseUntil?: Date | null }, details = false) {
+  const plan = job.plan as PublishPlan, progress = job.progress as { pageId?: string; retryReason?: string; conflicts?: PublicationConflict[]; templateWait?: TemplateWait; reviewCompletion?: PublicationReviewCompletion; sections?: Record<string, { done?: boolean; unchanged?: boolean }> };
   const snapshot = job.snapshot as PublishSnapshot;
   const includeDetails = details && job.state === "preview";
+  const continuation: { retryReason?: string; leaseUntil?: Date | null; conflicts?: PublicationConflict[]; overwriteToken?: string | null } = {
+    retryReason: progress.retryReason, leaseUntil: job.leaseUntil ?? null,
+    conflicts: progress.conflicts ?? [], overwriteToken: job.state === "conflict" && progress.conflicts?.length ? jsonHash(progress.conflicts) : null,
+  };
   return { id: job.id, groupKey: job.groupKey, revision: job.revision, state: job.state, error: job.error, retryAt: job.retryAt,
+    ...continuation,
     ...(job.state === "succeeded" && progress.reviewCompletion ? { reviewCompletion: progress.reviewCompletion } : {}),
     pageUrl: notionPageUrl(progress.pageId),
     phase: progress.templateWait?.timedOut ? "template_timeout" : progress.templateWait && ["ready", "running", "waiting"].includes(job.state) ? "template_wait" : job.state,
     missingSections: progress.templateWait?.missing ?? [],
     presentationVersion: plan.presentationVersion ?? 1, templateVersion: plan.layout.id, properties: plan.propertyDisplay, omitted: plan.omitted, errors: plan.errors,
-    sections: plan.sections.map(section => ({ key: section.key, label: [...section.groups, section.label].join(" · "), images: section.images.length, blocks: section.blocks.length, done: progress.sections?.[section.key]?.done ?? false,
+    sections: plan.sections.map(section => ({ key: section.key, label: [...section.groups, section.label].join(" · "), images: section.images.length, blocks: section.blocks.length, done: progress.sections?.[section.key]?.done ?? false, ...progress.sections?.[section.key]?.unchanged ? { unchanged: true } : {},
       html: includeDetails ? richHtml(sectionText(snapshot.doc.review, section.key)) : undefined, imageIds: includeDetails ? section.images : undefined })),
     assets: includeDetails ? snapshot.assets.map(asset => ({ id: asset.id, image: asset.image, asset: asset.asset, name: asset.name, caption: asset.caption })) : undefined,
   };

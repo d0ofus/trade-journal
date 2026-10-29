@@ -11,6 +11,6 @@ export async function notionRouteAuth(request: NextRequest, mutation = false) {
 }
 export function notionRouteError(error: unknown) {
   const known = error instanceof NotionError || error instanceof WorkstationError;
-  return NextResponse.json({ error: known ? error.message : "Notion integration is unavailable. Check its migration and server configuration.", retryAt: error instanceof NotionError ? error.retryAt?.toISOString() : undefined },
+  return NextResponse.json({ error: known ? error.message : "Notion integration is unavailable. Check its migration and server configuration.", retryAt: error instanceof NotionError ? error.retryAt?.toISOString() : undefined, reason: error instanceof NotionError ? error.reason : undefined },
     { status: known ? error.status : 503, headers: { "Cache-Control": "no-store" } });
 }

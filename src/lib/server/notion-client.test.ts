@@ -25,4 +25,13 @@ describe("Notion transport safety", () => {
     vi.stubEnv("NOTION_PUBLISH_ENABLED", "1"); vi.stubEnv("E2E_DEMO_ONLY_WRITES", "1");
     await expect(notionRequest("/pages", "POST", {})).rejects.toThrow(/test mode/); expect(fetch).not.toHaveBeenCalled();
   });
+  it("distinguishes provider collisions from local content conflicts and never blindly repeats a mutation", async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({ code: "conflict_error", request_id: "synthetic-request" }, { status: 409 })); vi.stubGlobal("fetch", fetch);
+    await expect(notionRequest("/pages/test", "PATCH", {})).rejects.toMatchObject({ status: 409, reason: "transient", uncertain: false, providerCode: "conflict_error", providerRequestId: "synthetic-request" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("does not auto-retry a blocked connection", async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({ additional_data: { rate_limit_reason: "public_api_request_blocked" } }, { status: 429 })); vi.stubGlobal("fetch", fetch);
+    await expect(notionRequest("/users/me")).rejects.toMatchObject({ status: 403, reason: "blocked" });
+  });
 });

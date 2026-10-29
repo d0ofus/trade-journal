@@ -24,7 +24,7 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
   await context.request.post("/api/auth/callback/credentials", { form: { csrfToken, username: "phase2-reviewer", password: "phase2-local-test-only", json: "true" } });
   expect((await (await context.request.get("/api/auth/session")).json()).user.name).toBe("phase2-reviewer");
   const read = async () => await (await context.request.get(endpoint)).json() as TradeDocument;
-  let job: PublicationResult["job"] = null, lastPublished: number | null = null, publishedText = "", confirms = 0, resumes = 0;
+  let job: PublicationResult["job"] = null, lastPublished: number | null = null, publishedText = "", confirms = 0, resumes = 0, stage = 0, overwrites = 0;
   let frozen: TradeDocument;
   const pageUrl = "https://notion.invalid/synthetic-page";
   await context.route("**/api/workstation/notion/template", route => route.fulfill({ json: { layout: fallbackLayout } }));
@@ -36,14 +36,24 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     if (body?.action === "preview") {
       frozen = structuredClone(doc);
       expect(body.revision).toBe(doc.revision);
-      if (job?.state !== "succeeded" || job.revision !== doc.revision || job.presentationVersion !== presentationVersion) job = { id: `job-${doc.revision}`, groupKey, revision: doc.revision, state: "preview", phase: "preview", error: null, retryAt: null, pageUrl: lastPublished === null ? null : pageUrl, missingSections: [], presentationVersion, templateVersion: "test", properties: [], omitted: [], errors: [], assets: [], sections: [{ key: "takeaways", label: "Takeaways", blocks: 1, images: 0, done: false, html: doc.review.takeaway, imageIds: [] }] };
+      job = { id: `job-${doc.revision}`, groupKey, revision: doc.revision, state: "preview", phase: "preview", error: null, retryAt: null, pageUrl: lastPublished === null ? null : pageUrl, missingSections: [], presentationVersion, templateVersion: "test", properties: [], omitted: [], errors: [], assets: [], sections: [{ key: "takeaways", label: "Takeaways", blocks: 1, images: 0, done: false, html: doc.review.takeaway, imageIds: [] }] };
     } else if (body?.action === "publish") {
       expect(body.id).toBe(job?.id); confirms++;
-      job = { ...job!, state: "waiting", phase: "template_wait", retryAt: new Date(Date.now() + 2000), pageUrl };
+      stage = 0;
+      job = confirms === 3 ? { ...job!, state: "conflict", phase: "conflict", pageUrl, conflicts: [{ key: "takeaways", label: "Takeaways", fingerprint: "b".repeat(64) }], overwriteToken: "a".repeat(64), error: "Takeaways was edited directly in Notion." }
+        : { ...job!, state: "waiting", phase: "template_wait", retryAt: new Date(Date.now() + 2000), pageUrl };
     } else if (body?.action === "resume") {
-      resumes++; lastPublished = job!.revision; publishedText = job!.sections[0].html!;
-      const reviewCompletion = await prisma.$transaction(tx => completePublishedReview(tx, groupKey, job!.revision, jsonHash(frozen)));
-      job = { ...job!, state: "succeeded", phase: "succeeded", retryAt: null, reviewCompletion };
+      resumes++;
+      if (body.overwrite) { expect(body.overwrite).toBe("a".repeat(64)); overwrites++; }
+      if (stage < 2) job = { ...job!, state: "waiting", phase: "waiting", retryReason: stage++ === 0 ? "budget" : "cooldown", retryAt: new Date(Date.now() + 300), error: null, conflicts: [], overwriteToken: null };
+      else if (stage++ === 2) job = { ...job!, state: "running", phase: "running", leaseUntil: new Date(Date.now() + 10000), retryAt: null };
+      else {
+        lastPublished = job!.revision; publishedText = job!.sections[0].html!;
+        const reviewCompletion = await prisma.$transaction(tx => completePublishedReview(tx, groupKey, job!.revision, jsonHash(frozen)));
+        job = { ...job!, state: "succeeded", phase: "succeeded", retryAt: null, reviewCompletion };
+      }
+    } else if (!body && job?.state === "running") {
+      job = { ...job, state: "waiting", phase: "waiting", leaseUntil: null };
     }
     const saved = await read();
     await route.fulfill({ json: { enabled: true, job, publication: { savedRevision: saved.revision, savedNoteUpdatedAt: saved.noteUpdatedAt ?? null, savedJournalUpdatedAt: saved.journalUpdatedAt ?? null, presentationVersion: job?.presentationVersion ?? presentationVersion, lastPublishedRevision: lastPublished, pageUrl: job?.pageUrl ?? null, activeJobId: job?.state === "waiting" ? job.id : null } } });
@@ -54,6 +64,7 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
   await page.locator("summary").filter({ hasText: /^Takeaways$/ }).click();
   const note = page.getByRole("textbox", { name: "Takeaways", exact: true }), dialog = page.getByRole("dialog", { name: "Publish/update in Notion", exact: true });
   for (const [index, text] of ["Fresh first journal content", "Edited journal content reaches the same page"].entries()) {
+    await page.bringToFront();
     await note.fill(text);
     await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
     await expect(dialog.getByRole("button", { name: new RegExp(`^Confirm ${index ? "update" : "publish"} revision`) })).toBeEnabled();
@@ -65,11 +76,13 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     await expect(otherTab.getByLabel("Review status", { exact: true })).toHaveValue(index ? "Reviewed" : "In progress");
     const draftTab = index === 0 ? await context.newPage() : null;
     if (draftTab) {
+      await draftTab.bringToFront();
       await draftTab.route("**/workstation", route => route.request().method() === "PATCH" ? route.fulfill({ status: 503, json: { error: "Draft held for publication test" } }) : route.continue());
       await draftTab.goto(`/trades?account=DEMO-WORKSTATION&groupKey=${groupKey}`);
       await draftTab.locator("summary").filter({ hasText: /^Takeaways$/ }).click();
       await draftTab.getByRole("textbox", { name: "Takeaways", exact: true }).fill("Unsaved draft stays in this tab");
     }
+    await page.bringToFront();
     const savesBeforePublication = editorSaves;
     await dialog.getByRole("button", { name: /^Confirm / }).click();
     await expect(dialog.getByText(/Waiting for Notion to apply/)).toBeVisible();
@@ -79,6 +92,7 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     for (const tab of [page, otherTab]) await expect(tab.locator(".ws-trade-card").filter({ has: tab.locator("strong", { hasText: "NTST" }) }).locator(".ws-review-dot")).toHaveAttribute("data-review-state", "reviewed");
     expect(editorSaves).toBe(savesBeforePublication);
     if (draftTab) {
+      await draftTab.bringToFront();
       await expect(draftTab.getByRole("textbox", { name: "Takeaways", exact: true })).toContainText("Unsaved draft stays in this tab");
       await expect(draftTab.getByLabel("Review status", { exact: true })).toHaveValue("In progress");
       await expect(draftTab.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
@@ -88,23 +102,16 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     }
     expect((await read()).review.status).toBe("Reviewed");
     await otherTab.close();
-    expect(confirms).toBe(index + 1); expect(resumes).toBe(index + 1); expect(publishedText).toContain(text);
+    expect(confirms).toBe(index + 1); expect(resumes).toBe((index + 1) * 4); expect(publishedText).toContain(text);
     await expect(dialog.getByRole("link", { name: "Open app-owned Notion page" })).toHaveAttribute("href", pageUrl);
     await dialog.getByRole("button", { name: "Close Publish/update in Notion", exact: true }).click();
   }
   await page.reload(); expect((await read()).review.takeaway).toContain("Edited journal content reaches the same page");
   await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
-  await expect(dialog.getByText("This saved review has already been published.")).toBeVisible(); expect(confirms).toBe(2);
-  await dialog.getByRole("button", { name: "Close Publish/update in Notion", exact: true }).click();
-  // A previously published older page remains pinned, without a cleanup preview.
-  if (presentationVersion === 3) {
-    if (!job) throw new Error("Missing completed fixture");
-    (job as NonNullable<PublicationResult["job"]>).presentationVersion = 1;
-    await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
-    await expect(dialog.getByText("This saved review has already been published.")).toBeVisible();
-    await expect(dialog.getByText(/Publication format update:/)).toHaveCount(0);
-    await expect(dialog.getByRole("button", { name: /^Confirm update/ })).toHaveCount(0);
-    expect(confirms).toBe(2);
-    expect((await read()).review.status).toBe("Reviewed");
-  }
+  await expect(dialog.getByRole("button", { name: /^Confirm update/ })).toBeEnabled(); expect(confirms).toBe(2);
+  await dialog.getByRole("button", { name: /^Confirm update/ }).click();
+  await expect(dialog.getByText(/Notion edits detected in: Takeaways/)).toBeVisible(); expect(overwrites).toBe(0);
+  await dialog.getByRole("button", { name: "Replace with saved app data", exact: true }).click();
+  await expect(dialog.getByText("This saved review has already been published.")).toBeVisible();
+  expect(overwrites).toBe(1); expect(confirms).toBe(3); expect((await read()).review.status).toBe("Reviewed");
 });

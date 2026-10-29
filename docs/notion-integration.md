@@ -16,11 +16,36 @@ The read-only production audit found 12 real saved trade-review records plus thr
 
 ## Publishing protocol
 
+Reliability update: confirmed publications now continue through normal bounded-step
+pauses, provider cooldowns and publisher contention while the dialog stays open.
+Active leases are polled; uncertain writes are reconciled before further writes.
+Five consecutive transient interruptions without durable progress pause for Resume;
+ordinary budget yields do not consume that allowance. Closing retains the same
+frozen job, and reopening requires one Resume action. Verification and cleanup have
+durable cursors, including verification inside large block subtrees.
+
+The app is authoritative for the existing mapped properties, active template
+sections and assigned screenshots. New jobs verify remote content even when the
+saved revision is unchanged. Verified unchanged sections retain their blocks and
+uploads; only differing properties are patched. Explicit empty values remove their
+previous mapped content. Existing records gain section content hashes on successful
+publication without a backfill. Page formats and excluded app-only material keep
+their existing policies.
+
+Manual edits to owned content produce a section/property conflict with a
+**Replace with saved app data** action. This acknowledges the exact observed remote
+fingerprint for that frozen job. A later Notion edit requires renewed review;
+closing cancels continuation without reporting success. Structural/ownership errors
+and ambiguous writes cannot be bypassed with this action. All mapped content must
+verify before publishing advances the revision or marks the review Reviewed.
+These additions use the existing JSON fields and endpoint; no migration, queue or
+background worker is required.
+
 `GET/POST /api/workstation/notion/template` reads/refreshes section definitions. `GET /api/workstation/notion/publications?groupKey=…` returns saved progress; POST accepts `preview` with a saved revision, then `publish` or `resume` with a job ID. All routes require the existing application session; POST additionally requires the same origin. The browser cannot supply a token, destination page ID, arbitrary Notion URL, or unsaved review body.
 
 Preview freezes the saved review and template, resolves property/relation mappings and lists section/image placement and omissions. Confirmation rechecks the saved review and live template/schema. Only an explicitly confirmed job may write to Notion, and `NOTION_PUBLISH_ENABLED=1` is additionally required. Browser-test mode rejects live publishing regardless of that flag.
 
-New pages use the registered template once. The job persists a unique creation title before sending the request and reconciles a lost response by that title and connection creator identity. It never adopts a manually created page or blindly repeats an unconfirmed page/section/content append. Template processing is shown as waiting, not a content conflict: checks follow 2, 4, 8, then 10-second delays for up to two minutes, respecting provider cooldowns. A timeout pauses for explicit Resume on the same page; the app does not reapply the template or erase page content. Partial/mismatched structure is never written into. Permission failures, uncertain writes and content conflicts still require attention rather than automatic retries.
+New pages use the registered template once. The job persists a unique creation title before sending the request and reconciles a lost response by that title and connection creator identity. It never adopts a manually created page or blindly repeats an unconfirmed page/section/content append. Template processing is shown as waiting, not a content conflict: checks follow 2, 4, 8, then 10-second delays for up to two minutes, respecting provider cooldowns. A timeout pauses for explicit Resume on the same page; the app does not reapply the template or erase page content. Partial/mismatched structure is never written into. Permission failures, ambiguous writes and content conflicts require attention. Uncertain responses are reconciled before further writes.
 
 Opening **Publish/update in Notion** first flushes the app save coordinator, then automatically prepares the latest saved-review preview. **Confirm publish/update** is still required before any Notion write. The dialog shows saved, frozen-job and last-published revisions plus the linked page. An unfinished job takes precedence over newer previews; resuming never changes its frozen content. Once it succeeds, newer saved edits receive their own preview and confirmation. Opening an unchanged completed review does not republish it. Closing the dialog or navigating cancels pending retry timers and ignores late responses, while accepted server work remains durable.
 
@@ -48,7 +73,7 @@ Version-4 validation on 1 October 2026 passed: 126 focused publisher, API, forma
 
 Each image upload is keyed by content hash and reused in every assigned section. Notion-managed file storage is used; no public image hosting is added. Existing legacy jobs continue to use their linked callout containers and original retry protocol.
 
-Updates compare fingerprints of app-managed sections/properties and preserve other content. Replacement content is written and verified before archiving its previous owned blocks (or its callout on legacy pages). Plain-block removals have individual durable intentions, and retries recheck replacements and remaining originals. Content edits, moved/deleted owned blocks, or ambiguous insertion boundaries pause for conflict review. Resolve the discrepancy in Notion and explicitly resume. If an existing published page lacks an anchor for a newly introduced/recreated template section, publishing pauses for a reviewed page-layout migration; it does not guess a destination or reapply the template. Existing pages are not automatically rebuilt to match later template structures.
+Updates compare fingerprints of app-managed sections/properties and preserve other content. Replacement content is written and verified before archiving its previous owned blocks (or its callout on legacy pages). Plain-block removals have individual durable intentions, and retries recheck replacements and remaining originals. Content edits, moved/deleted owned blocks, or ambiguous insertion boundaries pause for conflict review. Review detected content edits and confirm Replace with saved app data, or close to leave the job paused. Structural discrepancies still need correction before Resume. If an existing published page lacks an anchor for a newly introduced/recreated template section, publishing pauses for a reviewed page-layout migration; it does not guess a destination or reapply the template. Existing pages are not automatically rebuilt to match later template structures.
 
 Entry/Exit are actual average execution prices. S/L is planned stop. Entry Date is the interpreted execution range in America/New_York; unresolved timestamps block publishing. Formulas/rollups and unrelated properties are never written. Missing/ambiguous related-page matches and undefined select options block publication.
 
