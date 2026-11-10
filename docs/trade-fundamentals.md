@@ -2,15 +2,15 @@
 
 The `/trades` journal's Fundamentals section retains its commentary and adds Revenue / Net income previews, **View fundamentals**, and **Attach snapshot**. The popup follows the market-overview earnings profile. The miniature preview and viewing toggle are transient UI state; they do not become Notion page content, CSV properties, or review text. Attaching a snapshot is a deliberate review edit and follows the existing review-status behavior.
 
-Hover anywhere in a quarter column in either popup chart to inspect that period's full USD amounts, YoY/QoQ growth and derived-Q4 labels; both charts highlight the selected quarter. The mini charts show the same details for their individual metric. Missing values are labelled **Unavailable**. Touch selects a period, and keyboard users can focus a chart and use Left/Right, Home/End and Escape. Tooltips are kept within the viewport, clear when the trade or cutoff changes, and use already-loaded data without additional fetching or journal edits. Summary cards continue to show the latest eligible quarter. The separate static capture SVG excludes all hover highlights and interaction controls.
+Hover anywhere in a quarter column in either popup chart to inspect that period's full reported-currency amounts, YoY/QoQ growth and derived-Q4 labels; both charts highlight the selected quarter. The mini charts show the same details for their individual metric. Missing values are labelled **Unavailable**. Touch selects a period, and keyboard users can focus a chart and use Left/Right, Home/End and Escape. Tooltips are kept within the viewport, clear when the trade or cutoff changes, and use already-loaded data without additional fetching or journal edits. Summary cards continue to show the latest eligible quarter. The separate static capture SVG excludes all hover highlights and interaction controls.
 
 ## Historical data
 
 Before entry defaults on for each selected trade. Its boundary is the earliest verified execution's America/New_York calendar date. SEC facts must have both a completed period and a filing date strictly before that boundary. Same-day filings are excluded because Company Facts supplies filing dates rather than reliable intraday availability. An unresolved execution date produces an explicit unavailable state. The toggle is separate from price-chart and replay controls.
 
-The parser adapts `market-overview/worker/src/fundamentals-service.ts`: SEC ticker directory → CIK → Company Facts, USD US-GAAP revenue/net-income tag fallbacks, direct fiscal-quarter facts, FY less Q1–Q3 for Q4, and growth against the absolute prior value. It retains per-metric source accession, tag, form and filing date. Source facts are filtered before fiscal-calendar construction, version selection, Q4 subtraction, and growth. Growth uses earlier history before the display is trimmed to eight quarters; gaps and missing metrics remain unavailable. Non-calendar fiscal years use disclosed year ends, and incomplete transition periods are not subtracted into Q4.
+The parser adapts `market-overview/worker/src/fundamentals-service.ts`: SEC ticker directory → CIK → Company Facts, US-GAAP/IFRS revenue/net-income concepts in reported currency, direct fiscal-quarter facts, FY less Q1–Q3 for Q4, and growth against the absolute prior value. It retains per-metric source accession, tag, form and filing date. Source facts are filtered before fiscal-calendar construction, version selection, Q4 subtraction, and growth. Growth uses earlier history before the display is trimmed to eight quarters; gaps and missing metrics remain unavailable. Non-calendar fiscal years use disclosed year ends, and incomplete transition periods are not subtracted into Q4.
 
-Coverage matches standard USD revenue/net-income facts in 10-Q, 10-K and their amendments. Foreign reporting forms, custom issuer taxonomies and historical ticker changes are not inferred. Latest mode explicitly includes later filings and restatements.
+Coverage includes 10-Q, 10-K, 20-F, 40-F, 6-K, 8-K and their amendments, with US-GAAP and IFRS concepts in the issuer's reported currency. Company Facts remains primary. Incomplete quarterly coverage invokes the shared filing reader described below. Historical ticker changes are not inferred. Latest mode explicitly includes later filings and restatements.
 
 Older stock imports classified as `OTHER` (or without a classification) use the existing legacy-share compatibility rule and resolve their ticker through SEC. This does not change broker classifications or accounting. Explicit non-stock instruments, ETFs and recognized option-contract symbols are excluded before SEC requests.
 
@@ -84,3 +84,93 @@ The initial live SEC probe returned HTTP 403 while `SEC_USER_AGENT` was unset. A
 A fresh complete production database-and-images backup was downloaded and checksum-verified using the existing authenticated backup workflow. The backup was restored into a separate local PostgreSQL database, with every original image checked against its recorded hash and dimensions. Applying `20260928100000_sec_fundamentals_cache` there left every backed-up user-data table's row count and row-content fingerprint unchanged; the new cache table was empty. Backup files and authenticated validation state remain in ignored local directories.
 
 The verified `SEC_USER_AGENT` was also configured as a Production secret in the existing Vercel project. Production rollout uses the existing Vercel build migration flow after the current journal reports **All changes saved**. Deployment verification must check the migration, existing journal content, live automatic fundamentals loading and snapshot attachment. No Notion publication is part of this release check.
+
+
+## Shared SEC filing reader (10 November 2026)
+
+The feature now normalizes supported domestic/foreign forms, US-GAAP and IFRS
+concepts, source currency, accounting standard and owner-attributable versus
+consolidated profit. Revenue includes both assessed-tax variants. A twelve-month
+period in an interim report is not automatically a fiscal-year anchor. Source
+versions are selected before compatible cumulative-period subtraction; growth is
+unavailable when currency, accounting standard or profit basis differs.
+
+Company Facts is still the primary data source. When its last eight quarters have
+missing metrics, gaps or outdated reporting periods, the service discovers SEC
+filings from the preceding 36 months, including historical submissions files. It
+also checks newer, unrepresented filings once another quarter could have ended
+(75 days after the latest period), even if eight older structured quarters look
+complete. That check scans only recent filings after the latest period.
+The reader reads filing-level standard XBRL and then consolidated HTML statement tables.
+The same reader serves every issuer: there is no ticker/CIK allowlist. Custom tags
+are understood only through unambiguous consolidated statement labels. Guidance,
+adjusted figures, segment tables and percentage columns are excluded. Table units
+and column currencies override unrelated amounts in surrounding prose. Net
+revenues take precedence over a net-sales component.
+
+Quarters may be obtained by subtracting compatible disclosed periods; a half-year
+alone is never split into invented quarters. Every source and inferred calendar
+is filtered by the before-entry boundary first. Currency selection uses eligible
+primary statements or their comparative coverage, rather than occasional USD
+convenience translations. Ambiguous currency identification is an explicit
+unsupported state. Financial reports only available as PDFs/scans are not parsed.
+
+The response and optional capture metadata now include reporting currency,
+coverage, accounting/profit basis and direct document provenance. Summaries,
+axes, mini charts, hover details and complete PNG captures use the selected
+currency. Partial coverage is also labelled inside the captured SVG. Saved older
+captures remain valid and retain their USD interpretation.
+
+The normalized Company Facts key is `facts:v2:<CIK>`; old empty `v1` results are
+bypassed. Submission listings revalidate after 15 minutes; successfully classified
+filings and completed document observations are cached by accession for one year
+because amendments receive new accessions. Cache keys also include the inferred
+currency, accounting standard and fiscal calendar, preventing later context from
+leaking into historical requests. All records use the existing compressed SEC cache and its allocation
+limits. The shared SEC client handles JSON and bounded HTML/XML responses through
+one rate gate, cooldown and cancellation policy. Retrieval is bounded to 105
+seconds within the route's 120-second limit. Available completed documents survive
+partial retrieval, including a later attachment failure in the same filing; Retry
+reuses that work. Missing/oversized documents do not
+block every older filing. There is no database migration, backfill or scheduler.
+
+`fixtures/sec-fundamentals/manifest.json` records public SEC Company Facts and
+financial-table fixtures for TSEM, MNDY, STM, WPM, SAP, TSM, AAPL and BE. Regression
+tests compare actual amounts and source dates and also relabel source accessions
+so success cannot depend on issuer identity. Separate browser tests mount the
+real component with mocked HTTP for USD/EUR/TWD charts, tooltips, direct filing
+links and captured metadata; they never open an application database.
+
+Read-only live verification:
+
+```
+npx tsx scripts/audit-sec-fundamentals.ts --live --symbols=TSEM,MNDY,STM,WPM,SAP,TSM,AAPL,BE --cutoff=2026-01-13
+npx tsx scripts/audit-sec-fundamentals.ts --live --journal --quiet
+```
+
+The journal audit selects distinct eligible imported share tickers inside a
+PostgreSQL read-only transaction. It does not read journal prose or evidence and
+never writes application cache, trades or reviews. SEC responses and resumable
+verification artifacts are stored only in the ignored local
+`artifacts/sec-fundamentals` directory. `--reparse` ignores previously parsed local
+verification records; `--facts-only` explicitly reports when filing fallback has
+not yet been checked. Unknown/renamed tickers and misclassified non-company
+instruments remain separate from extraction failures.
+
+Local validation on 10 November 2026 passed 97 focused tests across 11 suites,
+11 browser scenarios (including USD/EUR/TWD capture round trips), the workstation
+TypeScript check, affected-file ESLint, the repository safety scan and the
+production build. Live source comparisons cover the six affected sample issuers
+plus AAPL and BE, including the 13 January 2026 historical boundary. The journal
+audit covers 239 distinct eligible imported share tickers: 206 have eight
+contiguous quarters with both metrics, 21 have partial coverage, six have
+unsupported reporting layouts/context and six have no current SEC ticker match.
+Filing fallback and the corrected shared rules recovered complete coverage for
+33 tickers beyond the initial structured-data audit. Resuming the interrupted
+SATS/SQM checks reused completed work and resolved the retrieval interruptions;
+SATS still has coverage gaps. The local report at
+`artifacts/sec-fundamentals/journal-audit-final.md` lists remaining gaps by ticker
+and period, with full observations in its companion JSON. Audit coverage describes successful
+normalization, not an independent financial audit of every journal amount.
+Production database records, application cache and external publications were
+not modified during verification. No deployment or database migration was made.

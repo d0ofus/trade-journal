@@ -11,19 +11,19 @@ function domain(values: (number | null | undefined)[]) {
   return { min: min < 0 ? min - pad : 0, max: max + pad };
 }
 const scale = (v: number, d: { min: number; max: number }, top: number, height: number) => top + (d.max - v) / (d.max - d.min) * height;
-const moneyAxis = (v: number) => fundamentalMoney(v);
+
 type MetricName = "revenue" | "netIncome";
 export function FundamentalsMini({ quarters, metric }: { quarters: FundamentalQuarter[]; metric: MetricName }) {
   const hover = useFundamentalsHover(quarters, metric);
   const latest = quarters.at(-1), values = quarters.map(q => q[metric]?.value), d = domain(values);
   const label = metric === "revenue" ? "Revenue" : "Net income", value = latest?.[metric === "revenue" ? "revenueYoY" : "netIncomeYoY"];
   const zero = scale(0, d, 3, 54), slot = 150 / Math.max(quarters.length, 1);
-  return <div className="ws-fundamentals-mini"><div><span>{label}</span><strong>{fundamentalMoney(latest?.[metric]?.value)}</strong><small className={value == null ? "" : value >= 0 ? "positive" : "negative"}>{fundamentalPercent(value)} <span>YoY</span></small></div>
+  return <div className="ws-fundamentals-mini"><div><span>{label}</span><strong>{fundamentalMoney(latest?.[metric]?.value, latest?.[metric]?.currency)}</strong><small className={value == null ? "" : value >= 0 ? "positive" : "negative"}>{fundamentalPercent(value)} <span>YoY</span></small></div>
     <svg viewBox="0 0 150 60" role="group" aria-label={`${label}, last ${quarters.length} quarters`}>
       {hover.index != null && <rect data-fundamentals-highlight={hover.index} x={hover.index * slot} y={0} width={slot} height={60} fill="#b69cff" fillOpacity=".16" pointerEvents="none" />}
       <line x1="0" x2="150" y1={zero} y2={zero} stroke="#64748b" strokeOpacity=".35" />{quarters.map((q, i) => {
       const v = q[metric]?.value, y = scale(v ?? 0, d, 3, 54);
-      return <rect key={q.periodEnd} x={i * slot + 1} y={v == null ? zero - 1 : Math.min(y, zero)} width={Math.max(1, slot - 3)} height={Math.max(2, Math.abs(y - zero))} fill={v == null ? "#64748b" : v < 0 ? "#fb7185" : colours[metric]}><title>{`${fundamentalPeriod(q)}: ${fundamentalMoney(v)}`}</title></rect>;
+      return <rect key={q.periodEnd} x={i * slot + 1} y={v == null ? zero - 1 : Math.min(y, zero)} width={Math.max(1, slot - 3)} height={Math.max(2, Math.abs(y - zero))} fill={v == null ? "#64748b" : v < 0 ? "#fb7185" : colours[metric]}><title>{`${fundamentalPeriod(q)}: ${fundamentalMoney(v, q[metric]?.currency)}`}</title></rect>;
     })}{hover.hitArea(`${label} mini chart`, { x: 0, y: 0, width: 150, height: 60 })}</svg>{hover.tooltip}
   </div>;
 }
@@ -34,6 +34,7 @@ export function FundamentalsProfile({ data, demo = false, interactive = false, s
 }) {
   const hover = useFundamentalsHover(data.quarters, undefined, seriesVisibility);
   const rows = data.quarters, latest = rows.at(-1);
+  const moneyAxis = (v: number) => fundamentalMoney(v, data.currency);
   const width = 1120, left = 78, right = 1040, plotWidth = right - left;
   const slot = plotWidth / Math.max(rows.length, 1), x = (i: number) => left + slot * (i + .5);
   const bars = fundamentalsBarSeries.filter(s => seriesVisibility[s]), growth = fundamentalsGrowthSeries.filter(s => seriesVisibility[s]);
@@ -42,7 +43,8 @@ export function FundamentalsProfile({ data, demo = false, interactive = false, s
   const income = fundamentalsSeriesDomain(rows, growth.filter(s => s === "netIncomeYoY" || s === "netIncomeQoQ"));
   const latestSources = latest ? fundamentalSources(latest) : [];
   const filed = latestSources.map(s => s.filed).sort().at(-1) ?? "—";
-  const summary = [["LATEST QUARTER", latest ? fundamentalPeriod(latest) : "—"], ["REVENUE", fundamentalMoney(latest?.revenue?.value)], ["NET INCOME", fundamentalMoney(latest?.netIncome?.value)], ["SEC FILED", filed], ["SOURCE", [...new Set(latestSources.map(s => s.form))].join(" / ") || "—"]];
+  const incomeLabel = latest?.netIncome?.incomeBasis === "consolidated" ? "NET INCOME · CONSOLIDATED" : latest?.netIncome?.incomeBasis === "owners" ? "NET INCOME · OWNERS" : "NET INCOME";
+  const summary = [["LATEST QUARTER", latest ? fundamentalPeriod(latest) : "—"], ["REVENUE", fundamentalMoney(latest?.revenue?.value, data.currency)], [incomeLabel, fundamentalMoney(latest?.netIncome?.value, data.currency)], ["SEC FILED", filed], ["SOURCE", [...new Set(latestSources.map(s => s.form))].join(" / ") || "—"]];
   function axes(d: { min: number; max: number }, top: number, height: number, format: (v: number) => string, side = "left", grid = side === "left") {
     return Array.from({ length: 4 }, (_, i) => {
       const v = d.min + (d.max - d.min) * i / 3, y = scale(v, d, top, height);
@@ -71,17 +73,17 @@ export function FundamentalsProfile({ data, demo = false, interactive = false, s
     <text x="24" y="28" fill="#94a3b8" fontSize="11" letterSpacing="2">{demo ? "DEMO FUNDAMENTALS · ILLUSTRATIVE" : "SEC FUNDAMENTALS"}</text>
     <text x="24" y="54" fill="#f1f5f9" fontSize="20" fontWeight="700">{data.symbol} · {(data.issuer?.name ?? "").slice(0, 65)}</text>
     <text x="24" y="78" fill="#cbd5e1" fontSize="12">{data.mode === "before-entry" ? `Before entry · filings before ${data.cutoff} (New York)` : "Latest available · includes filings after entry"}</text>
-    <text x="24" y="99" fill={data.stale ? "#fbbf24" : "#94a3b8"} fontSize="11">{data.stale ? "Cached data · SEC unavailable · " : "Retrieved "}{data.fetchedAt?.replace("T", " ").slice(0, 19) ?? "—"} UTC</text>
+    <text x="24" y="99" fill={data.stale || data.coverage === "partial" ? "#fbbf24" : "#94a3b8"} fontSize="11">{data.coverage === "partial" ? "Partial coverage · " : ""}{data.stale ? "Cached data · SEC unavailable · " : "Retrieved "}{data.fetchedAt?.replace("T", " ").slice(0, 19) ?? "—"} UTC</text>
     {summary.map(([label, value], i) => <g key={label}><rect x={24 + i * 216} y="116" width="207" height="56" rx="10" fill="#131e2d" stroke="#263344" /><text x={36 + i * 216} y="136" fill="#94a3b8" fontSize="9" letterSpacing="1">{label}</text><text x={36 + i * 216} y="157" fill="#f1f5f9" fontSize="14" fontWeight="600">{value}</text></g>)}
     <rect x="16" y="186" width="1088" height="287" rx="14" fill="none" stroke="#263344" />
     <text x="32" y="211" fill="#f1f5f9" fontSize="14" fontWeight="600">Quarterly Revenue + Net Income</text>
-    <text x="32" y="232" fill="#94a3b8" fontSize="11">USD · {rows.length} fiscal quarters · gaps indicate unavailable values</text>
+    <text x="32" y="232" fill="#94a3b8" fontSize="11">{data.currency ?? "USD"} · {rows.length} fiscal quarters · gaps indicate unavailable values</text>
     {interactive && hover.index != null && [ { top: 256, height: 171, enabled: !!money }, { top: 556, height: 151, enabled: !!(revenue || income) } ].filter(plot => plot.enabled).map(plot => <g key={plot.top} data-fundamentals-highlight={hover.index} pointerEvents="none"><rect x={left + hover.index! * slot} y={plot.top} width={slot} height={plot.height} fill="#b69cff" fillOpacity=".09" /><line x1={x(hover.index!)} x2={x(hover.index!)} y1={plot.top} y2={plot.top + plot.height} stroke="#b69cff" strokeOpacity=".7" strokeDasharray="3 4" /></g>)}
     {money ? <g data-fundamentals-axis="bars">{axes(money, 256, 171, moneyAxis)}<line x1={left} x2={right} y1={scale(0, money, 256, 171)} y2={scale(0, money, 256, 171)} stroke="#64748b" strokeOpacity=".5" /></g> : empty("bars", 341, bars.length)}
     {money && rows.flatMap((q, i) => bars.map((metric, j) => {
       const v = q[metric]?.value; if (v == null || !Number.isFinite(v)) return null;
       const y = scale(v, money, 256, 171), zero = scale(0, money, 256, 171), barWidth = Math.min(40, slot * .35);
-      return <rect data-fundamentals-series={metric} key={`${q.periodEnd}:${metric}`} x={x(i) + (bars.length === 1 ? -barWidth / 2 : j === 0 ? -barWidth - 2 : 2)} y={Math.min(y, zero)} width={barWidth} height={Math.max(1, Math.abs(y - zero))} rx="2" fill={colours[metric]}><title>{`${fundamentalPeriod(q)} ${metric === "revenue" ? "Revenue" : "Net income"}: ${fundamentalMoney(v)}${q[metric]?.derived ? " (derived Q4)" : ""}`}</title></rect>;
+      return <rect data-fundamentals-series={metric} key={`${q.periodEnd}:${metric}`} x={x(i) + (bars.length === 1 ? -barWidth / 2 : j === 0 ? -barWidth - 2 : 2)} y={Math.min(y, zero)} width={barWidth} height={Math.max(1, Math.abs(y - zero))} rx="2" fill={colours[metric]}><title>{`${fundamentalPeriod(q)} ${metric === "revenue" ? "Revenue" : "Net income"}: ${fundamentalMoney(v, q[metric]?.currency)}${q[metric]?.derived ? " (derived quarter)" : ""}`}</title></rect>;
     }))}
     {labels(447)}
     {legend("revenue", "Revenue", 800, 212)}{legend("netIncome", "Net income", 925, 212)}
@@ -98,7 +100,7 @@ export function FundamentalsProfile({ data, demo = false, interactive = false, s
     })}
     {labels(729)}
     {series.map((s, i) => legend(s, seriesNames[i], 310 + i * 140, 759))}
-    <text x="24" y="801" fill="#94a3b8" fontSize="10">Source: SEC Company Facts · Q4 may be derived from annual results less Q1–Q3 · Growth uses the absolute prior value</text>
+    <text x="24" y="801" fill="#94a3b8" fontSize="10">Source: SEC {rows.some(q => [q.revenue, q.netIncome].some(m => m?.sources.some(s => s.kind === "statement" || s.kind === "xbrl"))) ? "filings and financial statements" : "Company Facts"} · Derived quarters use compatible disclosed periods · Growth uses the absolute prior value</text>
     {interactive && <>{money && hover.hitArea("Quarterly revenue and net income chart", { x: left, y: 256, width: plotWidth, height: 198 })}{(revenue || income) && hover.hitArea("Growth chart", { x: left, y: 556, width: plotWidth, height: 180 })}</>}
   </svg>{interactive && hover.tooltip}</>;
 }

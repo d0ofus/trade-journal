@@ -3,8 +3,9 @@ import { loadTradeFundamentals } from "./sec-fundamentals";
 import { testCompanyFacts } from "./sec-fundamentals-fixtures";
 import { demoTrades } from "@/lib/workstation/demo";
 import type { SecCacheEntry } from "./sec-fundamentals-cache";
+import { SecRequestError } from "./sec-client";
 vi.mock("./sec-fundamentals-cache", () => ({ readSecCache: vi.fn(), writeSecCache: vi.fn() }));
-vi.mock("./sec-client", () => ({ secJson: vi.fn() }));
+vi.mock("./sec-client", async importOriginal => ({ ...await importOriginal<typeof import("./sec-client")>(), secJson: vi.fn(), secText: vi.fn() }));
 vi.mock("./workstation-cache-store", () => ({ claimCacheLease: vi.fn(), releaseCacheLease: vi.fn() }));
 const trade = (date = "2025-05-01T13:30:00Z") => ({ ...demoTrades[0], symbol: "TEST", assetType: "STOCK", executions: [{ ...demoTrades[0].executions[0], time: Date.parse(date) / 1000 }] });
 function setup() {
@@ -54,6 +55,42 @@ it("rechecks confirmed missing financial facts after one hour", async () => {
   expect((await loadTradeFundamentals(trade(), "before-entry", signal, deps)).status).toBe("unsupported");
   vi.setSystemTime(new Date("2026-09-28T01:01:00Z"));
   await loadTradeFundamentals(trade(), "before-entry", signal, deps); expect(deps.fetch).toHaveBeenCalledTimes(4);
+});
+it("falls back after a valid empty/404 Company Facts response, with native currency and versioned caches", async () => {
+  const { deps, cache } = setup();
+  cache.set("facts:v1:0000000001", { value: {}, fetchedAt: new Date().toISOString() });
+  const text = vi.fn(async () => '<h2>Consolidated statements of income</h2><p>IFRS, EUR in millions</p><table><tr><th></th><th>Three months ended March 31, 2025</th></tr><tr><td>Revenue</td><td>120</td></tr><tr><td>Profit for the period</td><td>10</td></tr></table>');
+  deps.fetch.mockImplementation(async url => {
+    if (url.includes("company_tickers")) return { "0": { ticker: "TEST", cik_str: 1, title: "Test" } };
+    if (url.includes("companyfacts")) throw new SecRequestError("Not found", false, 404);
+    return { filings: { recent: { form: ["20-F", "6-K"], filingDate: ["2025-04-01", "2025-04-15"], accessionNumber: ["0000000001-25-000001", "0000000001-25-000002"], primaryDocument: ["annual.htm", "quarter.htm"] }, files: [] } } as never;
+  });
+  const result = await loadTradeFundamentals(trade(), "before-entry", new AbortController().signal, { ...deps, text });
+  // The fixture has only a quarterly report and no verified year-end anchor.
+  expect(result.currency).toBe("EUR"); expect(result.message).not.toContain("10-Q/10-K");
+  expect(cache.has("facts:v2:0000000001")).toBe(true); expect(text).toHaveBeenCalled();
+});
+it("returns partial available history with Retry when filing retrieval fails", async () => {
+  const { deps } = setup();
+  const fetch = vi.fn(async (url: string) => {
+    if (url.includes("submissions")) throw new Error("provider failure");
+    return deps.fetch(url);
+  });
+  const result = await loadTradeFundamentals(trade(), "before-entry", new AbortController().signal, { ...deps, fetch, text: vi.fn() });
+  expect(result).toMatchObject({ status: "ready", retryable: true, coverage: "partial" });
+  expect(result.quarters).toHaveLength(4); expect(result.message).toContain("retrieval is incomplete");
+});
+it("keeps previously cached filing quarters visible when Company Facts refresh fails", async () => {
+  const { deps } = setup();
+  const fetch = vi.fn(async (url: string): Promise<unknown> => url.includes("submissions") ? { filings: { recent: { form: ["6-K"], filingDate: ["2025-04-15"], accessionNumber: ["0000000001-25-000009"], primaryDocument: ["quarter.htm"] }, files: [] } } : deps.fetch(url));
+  const text = vi.fn(async () => '<h2>Consolidated statements of income</h2><p>USD in millions</p><table><tr><th></th><th>Three months ended March 31, 2025</th></tr><tr><td>Revenue</td><td>777</td></tr><tr><td>Net income</td><td>10</td></tr></table>');
+  const signal = new AbortController().signal;
+  const first = await loadTradeFundamentals(trade(), "before-entry", signal, { ...deps, fetch, text });
+  expect(first.quarters.at(-1)?.revenue?.value).toBe(777000000);
+  vi.setSystemTime(new Date("2026-09-30T00:00:00Z")); fetch.mockRejectedValue(new Error("SEC unavailable"));
+  const stale = await loadTradeFundamentals(trade(), "before-entry", signal, { ...deps, fetch, text });
+  expect(stale).toMatchObject({ status: "ready", stale: true, retryable: true, quarters: first.quarters });
+  expect(text).toHaveBeenCalledTimes(1);
 });
 it("uses the New York day rather than UTC and never fetches unresolved historical data", async () => {
   const { deps } = setup();

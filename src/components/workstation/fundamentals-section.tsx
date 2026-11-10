@@ -59,8 +59,8 @@ export function FundamentalsSection({ trade, mode: applicationMode, onAttach }: 
     try {
       const canvas = await captureFundamentalsSvg(svg);
       if (!alive.current || current !== generation.current) throw new Error("Snapshot cancelled because the selected trade or view changed.");
-      const { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale } = frozen;
-      await onAttach(canvas, { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale, seriesVisibility: frozenVisibility, capturedAt: new Date().toISOString() });
+      const { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale, currency, coverage } = frozen;
+      await onAttach(canvas, { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale, ...(currency ? { currency } : {}), ...(coverage ? { coverage } : {}), seriesVisibility: frozenVisibility, capturedAt: new Date().toISOString() });
       if (alive.current) setMessage("Snapshot attached to Fundamentals.");
     } catch (e) { if (alive.current) setMessage(e instanceof Error ? e.message : "Snapshot could not be attached."); }
     finally { capturing.current = false; if (alive.current) setBusy(false); }
@@ -78,7 +78,7 @@ export function FundamentalsSection({ trade, mode: applicationMode, onAttach }: 
     {open && <ReviewDialog title={`${trade.symbol} fundamentals`} onClose={() => setOpen(false)}><div className="ws-fundamentals-dialog">
       <div className="ws-fundamentals-dialog-toolbar">{toggle("dialog")}<button type="button" className="ws-primary" disabled={!canAttach} onClick={() => void attach()}><Camera size={14} />{busy ? "Attaching…" : "Attach snapshot"}</button></div>
       {feedback}
-      {!!data?.quarters.length && <><FundamentalsProfile data={data} demo={applicationMode === "demo"} interactive seriesVisibility={seriesVisibility} onToggleSeries={toggleSeries} disabled={busy} /><details className="ws-fundamentals-sources"><summary>Quarterly filing sources</summary>{data.quarters.map(q => <div key={q.periodEnd}><strong>{fundamentalPeriod(q)} · {q.periodEnd}</strong>{fundamentalSources(q).map(s => <a key={`${s.accession}:${s.tag}`} href={applicationMode === "demo" ? undefined : `https://www.sec.gov/Archives/edgar/data/${Number(data.issuer?.cik)}/${s.accession.replaceAll("-", "")}/${s.accession}-index.html`} target="_blank" rel="noreferrer">{s.form} · {s.filed} · {s.tag}</a>)}</div>)}</details></>}
+      {!!data?.quarters.length && <><FundamentalsProfile data={data} demo={applicationMode === "demo"} interactive seriesVisibility={seriesVisibility} onToggleSeries={toggleSeries} disabled={busy} /><details className="ws-fundamentals-sources"><summary>Quarterly filing sources</summary>{data.quarters.map(q => <div key={q.periodEnd}><strong>{fundamentalPeriod(q)} · {q.periodEnd}</strong>{fundamentalSources(q).map(s => <a key={`${s.accession}:${s.document ?? ""}:${s.tag}`} href={applicationMode === "demo" ? undefined : `https://www.sec.gov/Archives/edgar/data/${Number(data.issuer?.cik)}/${s.accession.replaceAll("-", "")}/${s.document ?? `${s.accession}-index.html`}`} target="_blank" rel="noreferrer">{s.form} · {s.filed} · {s.label ?? s.tag}</a>)}</div>)}</details></>}
     </div></ReviewDialog>}
   </div>;
 }

@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { secJson } from "./sec-client";
+import { secJson, secText } from "./sec-client";
 const mocks = vi.hoisted(() => ({ claim: vi.fn(), read: vi.fn(), write: vi.fn(), wait: vi.fn() }));
 vi.mock("./workstation-cache-store", () => ({ claimCacheLease: mocks.claim }));
 vi.mock("@/lib/prisma", () => ({ prisma: { workstationCandleLease: { findUnique: mocks.read, upsert: mocks.write } } }));
 vi.mock("@/lib/workstation/shared-requests", () => ({ waitForHistory: mocks.wait }));
 beforeEach(() => { vi.resetAllMocks(); mocks.claim.mockResolvedValue({ key: "rate:sec", token: "one" }); mocks.read.mockResolvedValue(null); mocks.wait.mockResolvedValue(undefined); });
 afterEach(() => vi.unstubAllGlobals());
+it("reads SEC HTML through the same gate and bounds document sizes", async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response("<table>financials</table>")); vi.stubGlobal("fetch", fetcher);
+  expect(await secText("https://www.sec.gov/Archives/document.htm", new AbortController().signal)).toBe("<table>financials</table>");
+  expect(mocks.claim).toHaveBeenCalledWith("rate:sec", 500);
+  expect(fetcher.mock.calls[0][1].headers.Accept).toContain("text/html");
+  fetcher.mockResolvedValue(new Response("x".repeat(8_000_001)));
+  await expect(secText("https://www.sec.gov/Archives/large.htm", new AbortController().signal)).rejects.toThrow("size");
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
 it("automatically retries transient HTTP failures through the shared SEC gate", async () => {
   const fetcher = vi.fn().mockResolvedValueOnce(new Response("", { status: 503 })).mockResolvedValue(new Response('{"facts":{}}', { status: 200 })); vi.stubGlobal("fetch", fetcher);
   expect(await secJson("https://data.sec.gov/test", new AbortController().signal)).toEqual({ facts: {} });

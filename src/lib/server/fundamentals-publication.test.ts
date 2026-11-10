@@ -23,7 +23,7 @@ it("direct Notion publishing plans only authored Fundamentals prose and explicit
   mocks.properties.mockResolvedValue({ values: {}, display: [], errors: [], schemaHashInput: [] });
   mocks.assets.mockResolvedValue([{ ...asset, notionHash: "b".repeat(64) }]);
   mocks.request.mockImplementation(async (path: string) => path === "/users/me" ? { bot: { workspace_limits: { max_file_upload_size_in_bytes: 20000000 } } } : { properties: { Name: { id: "title", name: "Name", type: "title" } } });
-  mocks.transaction.mockImplementation(async work => work({ $queryRaw: vi.fn(), notionPublication: { findUniqueOrThrow: async () => ({ activeJobId: null }) }, notionPublishJob: { upsert: async ({ create }: { create: object }) => ({ ...create, id: "preview-job", state: "preview", progress: {}, error: null, retryAt: null }) }, evidenceAsset: { findFirst: async () => asset, update: vi.fn() }, evidenceAssetReference: { upsert: vi.fn() } }));
+  mocks.transaction.mockImplementation(async work => work({ $queryRaw: vi.fn(), notionPublication: { findUniqueOrThrow: async () => ({ activeJobId: null, pageId: null }) }, notionPublishJob: { upsert: async ({ create }: { create: object }) => ({ ...create, id: "preview-job", state: "preview", progress: {}, error: null, retryAt: null }) }, evidenceAsset: { findFirst: async () => asset, update: vi.fn() }, evidenceAssetReference: { upsert: vi.fn() } }));
   const result = await createNotionPreview(demoTrades[0].id, 0, "https://journal.example.test");
   expect(result.sections).toHaveLength(1);
   expect(result.sections[0]).toMatchObject({ key: "fundamentals", images: 1, html: "<p>My analysis before entry</p>", imageIds: ["fundamentals-one"] });

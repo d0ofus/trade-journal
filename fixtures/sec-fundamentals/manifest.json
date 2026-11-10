@@ -1,0 +1,199 @@
+{
+  "cutoff": "2026-01-13",
+  "recorded": "2026-11-10",
+  "issuers": [
+    {
+      "symbol": "TSEM",
+      "cik": "0000928876",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000928876.json",
+      "documents": [
+        {
+          "file": "TSEM-1.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/928876/000117891325003706/exhibit_99-1.htm",
+          "context": {
+            "accn": "0001178913-25-003706",
+            "filed": "2025-11-10",
+            "form": "6-K",
+            "document": "exhibit_99-1.htm",
+            "currency": "USD",
+            "standard": "us-gaap",
+            "fiscalYearEnd": "1231"
+          }
+        }
+      ],
+      "currency": "USD",
+      "expected": {
+        "period": "2025-09-30",
+        "revenue": 395667000,
+        "netIncome": 53645000
+      }
+    },
+    {
+      "symbol": "MNDY",
+      "cik": "0001845338",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001845338.json",
+      "documents": [
+        {
+          "file": "MNDY-1.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/1845338/000117891325003708/exhibit_99-1.htm",
+          "context": {
+            "accn": "0001178913-25-003708",
+            "filed": "2025-11-10",
+            "form": "6-K",
+            "document": "exhibit_99-1.htm",
+            "currency": "USD",
+            "standard": "us-gaap",
+            "fiscalYearEnd": "1231"
+          }
+        }
+      ],
+      "currency": "USD",
+      "expected": {
+        "period": "2025-09-30",
+        "revenue": 316855000,
+        "netIncome": 13052000
+      }
+    },
+    {
+      "symbol": "STM",
+      "cik": "0000932787",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000932787.json",
+      "documents": [
+        {
+          "file": "STM-1.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/932787/000093278725000027/stm-6k_q3x2025.htm",
+          "context": {
+            "accn": "0000932787-25-000027",
+            "filed": "2025-11-05",
+            "form": "6-K",
+            "document": "stm-6k_q3x2025.htm",
+            "currency": "USD",
+            "standard": "us-gaap",
+            "fiscalYearEnd": "1231"
+          }
+        }
+      ],
+      "currency": "USD",
+      "expected": {
+        "period": "2025-09-27",
+        "revenue": 3187000000,
+        "netIncome": 239000000
+      }
+    },
+    {
+      "symbol": "WPM",
+      "cik": "0001323404",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001323404.json",
+      "documents": [
+        {
+          "file": "WPM-1.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/1323404/000119312525270452/d801415dex991.htm",
+          "context": {
+            "accn": "0001193125-25-270452",
+            "filed": "2025-11-07",
+            "form": "6-K",
+            "document": "d801415dex991.htm",
+            "currency": "USD",
+            "standard": "ifrs-full",
+            "fiscalYearEnd": "1231"
+          }
+        }
+      ],
+      "currency": "USD",
+      "expected": {
+        "period": "2025-09-30",
+        "revenue": 476257000,
+        "netIncome": 367216000
+      }
+    },
+    {
+      "symbol": "SAP",
+      "cik": "0001000184",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001000184.json",
+      "documents": [
+        {
+          "file": "SAP-1.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/1000184/000110465925102307/tm2529346d1_ex99-1.htm",
+          "context": {
+            "accn": "0001104659-25-102307",
+            "filed": "2025-10-27",
+            "form": "6-K",
+            "document": "tm2529346d1_ex99-1.htm",
+            "currency": "EUR",
+            "standard": "ifrs-full",
+            "fiscalYearEnd": "1231"
+          }
+        }
+      ],
+      "currency": "EUR",
+      "expected": {
+        "period": "2025-09-30",
+        "revenue": 9076000000,
+        "netIncome": 2051000000
+      }
+    },
+    {
+      "symbol": "TSM",
+      "cik": "0001046179",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001046179.json",
+      "documents": [
+        {
+          "file": "TSM-1.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/1046179/000104617925000126/tsm-boardx20251111x6k.htm",
+          "context": {
+            "accn": "0001046179-25-000126",
+            "filed": "2025-11-12",
+            "form": "6-K",
+            "document": "tsm-boardx20251111x6k.htm",
+            "currency": "TWD",
+            "standard": "ifrs-full",
+            "fiscalYearEnd": "1231"
+          }
+        },
+        {
+          "file": "TSM-2.html",
+          "url": "https://www.sec.gov/Archives/edgar/data/1046179/000104617925000093/tsm-boardx20250812x6k.htm",
+          "context": {
+            "accn": "0001046179-25-000093",
+            "filed": "2025-08-12",
+            "form": "6-K",
+            "document": "tsm-boardx20250812x6k.htm",
+            "currency": "TWD",
+            "standard": "ifrs-full",
+            "fiscalYearEnd": "1231"
+          }
+        }
+      ],
+      "currency": "TWD",
+      "expected": {
+        "period": "2025-09-30",
+        "revenue": 989918318000,
+        "netIncome": 452301407000
+      }
+    },
+    {
+      "symbol": "AAPL",
+      "cik": "0000320193",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json",
+      "documents": [],
+      "currency": "USD",
+      "expected": {
+        "period": "2025-09-27",
+        "revenue": 102466000000,
+        "netIncome": 27466000000
+      }
+    },
+    {
+      "symbol": "BE",
+      "cik": "0001664703",
+      "companyfactsURL": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001664703.json",
+      "documents": [],
+      "currency": "USD",
+      "expected": {
+        "period": "2025-09-30",
+        "revenue": 513331000,
+        "netIncome": -22960000
+      }
+    }
+  ]
+}

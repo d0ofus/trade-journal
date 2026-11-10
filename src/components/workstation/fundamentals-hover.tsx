@@ -14,7 +14,6 @@ type Selection = {
   target: SVGRectElement;
   visibilityKey: string;
 };
-const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const percent = (value: number | null) => value == null ? "Unavailable" : fundamentalPercent(value);
 
 function QuarterTooltip({ selection, metric, id, visibility }: { selection: Selection; metric?: Metric; id: string; visibility: FundamentalsSeriesVisibility }) {
@@ -45,8 +44,9 @@ function QuarterTooltip({ selection, metric, id, visibility }: { selection: Sele
       const yoy = name === "revenue" ? "revenueYoY" : "netIncomeYoY", qoq = name === "revenue" ? "revenueQoQ" : "netIncomeQoQ";
       if (!visibility[name] && !visibility[yoy] && !visibility[qoq]) return null;
       return <div className="ws-fundamentals-tooltip-metric" key={name}>
-      <div className="ws-fundamentals-tooltip-value"><span className={`ws-fundamentals-tooltip-${name}`}>{name === "revenue" ? "Revenue" : "Net income"}</span>{visibility[name] && <b>{quarter[name] == null ? "Unavailable" : dollars.format(quarter[name].value)}</b>}</div>
-      {quarter[name]?.derived && <small>Derived Q4</small>}
+      <div className="ws-fundamentals-tooltip-value"><span className={`ws-fundamentals-tooltip-${name}`}>{name === "revenue" ? "Revenue" : "Net income"}</span>{visibility[name] && <b>{quarter[name] == null ? "Unavailable" : new Intl.NumberFormat("en-US", { style: "currency", currency: quarter[name].currency ?? "USD", currencyDisplay: (quarter[name].currency ?? "USD") === "USD" ? "symbol" : "code", maximumFractionDigits: 2 }).format(quarter[name].value)}</b>}</div>
+      {quarter[name]?.incomeBasis && <small>{quarter[name].incomeBasis === "owners" ? "Attributable to owners" : "Consolidated profit"}</small>}
+      {quarter[name]?.derived && <small>Derived {fundamentalPeriod(quarter).split(" ").at(-1)}</small>}
       {(visibility[yoy] || visibility[qoq]) && <dl>{visibility[yoy] && <div><dt>YoY</dt><dd>{percent(quarter[yoy])}</dd></div>}{visibility[qoq] && <div><dt>QoQ</dt><dd>{percent(quarter[qoq])}</dd></div>}</dl>}
     </div>; })}
   </div>, host);

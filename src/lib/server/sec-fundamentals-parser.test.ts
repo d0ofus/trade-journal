@@ -3,6 +3,35 @@ import { extractFundamentalFacts, parseFundamentalQuarters } from "./sec-fundame
 import { testCompanyFacts, testFact, testFundamentalFacts } from "./sec-fundamentals-fixtures";
 
 describe("point-in-time SEC fundamentals", () => {
+  it("does not mistake trailing twelve-month facts in a quarterly report for fiscal year ends", () => {
+    const f = testFundamentalFacts();
+    f.Revenues.push({ ...testFact(999, "2024-04-01", "2025-03-31", "2025-05-01", "Q1", 2025), form: "10-Q" });
+    const rows = parseFundamentalQuarters(f, null);
+    expect(rows.map(q => [q.fiscalYear, q.fiscalQuarter])).toEqual([[2024, 1], [2024, 2], [2024, 3], [2024, 4], [2025, 1], [2025, 2]]);
+    expect(rows[4].revenue?.value).toBe(150);
+  });
+  it.each(["20-F", "20-F/A", "40-F", "6-K", "6-K/A", "8-K"])("accepts valid foreign and current-report facts in %s", form => {
+    const f = testFact(100, "2024-01-01", "2024-12-31", "2025-04-30", "FY");
+    const extracted = extractFundamentalFacts({ facts: { "ifrs-full": { Revenue: { units: { EUR: [{ ...f, form }] } } } } });
+    expect(extracted.Revenue[0]).toMatchObject({ currency: "EUR", taxonomy: "ifrs-full", form, val: 100 });
+  });
+  it("derives Q1 from a half-year and disclosed Q2, without splitting an undisclosed half-year", () => {
+    const annual = { ...testFact(500, "2024-01-01", "2024-12-31", "2025-04-30", "FY"), form: "20-F" };
+    const half = { ...testFact(240, "2025-01-01", "2025-06-30", "2025-08-01", ""), form: "6-K", fy: undefined };
+    const q2 = { ...half, start: "2025-04-01", val: 130 };
+    const rows = parseFundamentalQuarters({ Revenues: [annual, half, q2] }, null);
+    expect(rows.map(q => [q.fiscalQuarter, q.revenue?.value])).toEqual([[1, 110], [2, 130]]);
+    expect(rows[0].revenue?.derived).toBe(true);
+    expect(parseFundamentalQuarters({ Revenues: [annual, half] }, null)).toEqual([]);
+  });
+  it("does not compute growth or subtraction across accounting and income bases", () => {
+    const f = testFundamentalFacts();
+    f.NetIncomeLoss = f.NetIncomeLoss.map((f, i) => ({ ...f, currency: "USD", taxonomy: i < 4 ? "ifrs-full" : "us-gaap", incomeBasis: "owners" }));
+    const rows = parseFundamentalQuarters(f, null);
+    expect(rows[4].netIncomeYoY).toBeNull(); expect(rows[4].netIncomeQoQ).toBeNull();
+    f.NetIncomeLoss[5].incomeBasis = "consolidated";
+    expect(parseFundamentalQuarters(f, null)[5].netIncomeQoQ).toBeNull();
+  });
   it("derives Q4 and growth with all earlier inputs, including negative/zero net income", () => {
     const rows = parseFundamentalQuarters(testFundamentalFacts(), null);
     expect(rows).toHaveLength(6);

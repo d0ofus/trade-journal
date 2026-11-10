@@ -15,6 +15,17 @@ function snapshot(): Evidence {
   return { id: "fundamentals-one", name: "NVDA fundamentals before entry", image: "data:image/png;base64,aGVsbG8=", time: 1, revision: 0, timeframe: "quarterly", fundamentalsCapture: { symbol, mode, cutoff, issuer, quarters, fetchedAt, stale, capturedAt: "2026-09-28T00:00:00.000Z" } };
 }
 describe("fundamentals evidence", () => {
+  it.each(["USD", "EUR", "TWD"])("round-trips %s figures and filing provenance without changing older captures", currency => {
+    const doc = attachEvidence(emptyDocument(), snapshot(), "fundamentals"), capture = doc.evidence[0].fundamentalsCapture!;
+    capture.currency = currency; capture.coverage = "partial";
+    for (const q of capture.quarters) for (const metric of [q.revenue, q.netIncome]) if (metric) {
+      metric.currency = currency; metric.accountingStandard = "ifrs-full";
+      metric.sources[0] = { ...metric.sources[0], kind: "statement", document: "earnings.htm", label: "Revenue" };
+    }
+    expect(workstationDocumentSchema.parse(JSON.parse(JSON.stringify(doc))).evidence[0].fundamentalsCapture).toEqual(capture);
+    capture.quarters[0].revenue!.currency = currency === "USD" ? "EUR" : "USD";
+    expect(workstationDocumentSchema.safeParse(doc).success).toBe(false);
+  });
   it("round-trips the selected series while accepting older captures without visibility metadata", () => {
     const doc = attachEvidence(emptyDocument(), snapshot(), "fundamentals");
     expect(workstationDocumentSchema.parse(doc).evidence[0].fundamentalsCapture?.seriesVisibility).toBeUndefined();
