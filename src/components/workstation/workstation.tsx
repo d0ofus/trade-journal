@@ -26,7 +26,8 @@ import dynamic from "next/dynamic";
 import { notionImportCsv, notionPageArchive } from "@/lib/workstation/notion-import";
 import { initialHistoryRange } from "@/lib/workstation/history";
 import { chartLabelMode, restoreChartLabels, type ChartSlot, type LabelMode } from "@/lib/workstation/chart-labels";
-import { splitAdjustedDrawing, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
+import { type SplitAdjustment } from "@/lib/workstation/split-adjustment";
+import { drawingTargetLabel, projectDrawing, type BenchmarkDrawingContext } from "@/lib/workstation/drawing-target";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import { restoreChartDisplay, restoreChartPanels, restoreMovingAveragePeriods } from "@/lib/workstation/chart-preferences";
 import { MovingAverageSettings } from "./moving-average-settings";
@@ -757,6 +758,11 @@ export function TradesWorkstation({
     );
   };
   const [chartAdjustments, setChartAdjustments] = useState<Record<string, SplitAdjustment | undefined>>({});
+  const [benchmarkAdjustments, setBenchmarkAdjustments] = useState<Record<string, { tradeKey: string; context: BenchmarkDrawingContext | null }>>({});
+  const benchmarkForDrawing = (drawing: Drawing) => {
+    const panels = drawing.panel ? [drawing.panel] : [activeChart, ...preferences.panels.map(panel => panel.id)];
+    return panels.map(id => benchmarkAdjustments[id]).find(record => record?.tradeKey === `${trade?.id}:${trade?.timeInterpretationVersion ?? ""}` && record.context?.ready && record.context.symbol === drawing.target?.symbol)?.context;
+  };
   const titleFor = (id: string, label: string) => {
     const binding = shortcuts.value.bindings[id];
     return `${label}${binding ? ` (${shortcutLabel(binding)})` : ""}`;
@@ -1479,6 +1485,10 @@ export function TradesWorkstation({
               style={styles[index]}
               onToggleLabels={() => toggleLabels(panel.id)}
               onPriceAdjustment={adjustment => setChartAdjustments(current => current[panel.id] === adjustment ? current : { ...current, [panel.id]: adjustment })}
+              onBenchmarkAdjustment={context => setBenchmarkAdjustments(current => {
+                const tradeKey = `${trade.id}:${trade.timeInterpretationVersion ?? ""}`, previous = current[panel.id];
+                return previous?.tradeKey === tradeKey && previous.context?.symbol === context?.symbol && previous.context?.ready === context?.ready && previous.context?.adjustment === context?.adjustment ? current : { ...current, [panel.id]: { tradeKey, context } };
+              })}
               labelMode={chartLabelMode(preferences, panel.id)}
               onHistoryReady={prefetchNext}
               panel={panel}
@@ -1531,7 +1541,8 @@ export function TradesWorkstation({
       {chosenDrawing && (
         <div className="ws-drawing-properties">
           <span>{tools.find((t) => t.id === chosenDrawing.tool)?.label}</span>
-          <DrawingCoordinates drawing={splitAdjustedDrawing(chosenDrawing, chartAdjustments[activeChart])} onChange={drawing => saveDrawing(splitAdjustedDrawing(drawing, chartAdjustments[activeChart], true))} />
+          {chosenDrawing.target && <span>{drawingTargetLabel(chosenDrawing)}</span>}
+          <DrawingCoordinates unavailable={!!chosenDrawing.target && !benchmarkForDrawing(chosenDrawing)} disabled={trade.stale} drawing={projectDrawing(chosenDrawing, chartAdjustments[chosenDrawing.panel ?? activeChart], benchmarkForDrawing(chosenDrawing))} onChange={drawing => saveDrawing(projectDrawing(drawing, chartAdjustments[drawing.panel ?? activeChart], benchmarkForDrawing(drawing), true))} />
           <AnnotationTextInput
             key={chosenDrawing.id}
             autoFocus={chosenDrawing.tool === "text"}
@@ -1914,7 +1925,7 @@ export function TradesWorkstation({
       {documentState?.drawings
         .filter((d) => replay === null || d.createdAt <= replay)
         .map((d) => {
-          const shown = splitAdjustedDrawing(d, chartAdjustments[d.panel ?? activeChart]);
+          const context = benchmarkForDrawing(d), shown = projectDrawing(d, chartAdjustments[d.panel ?? activeChart], context);
           return (
           <div key={d.id} data-drawing-id={d.id} className={d.id === selectedDrawing ? "active" : ""}>
             <button
@@ -1927,12 +1938,13 @@ export function TradesWorkstation({
               <i style={{ background: d.color }} />
               <span>
                 {d.text || tools.find((t) => t.id === d.tool)?.label}
+                {d.target && <small>{drawingTargetLabel(d)}</small>}
                 <small>
                   {d.tool === "measure" && d.points[1]
                     ? measureText(shown.points[0], shown.points[1])
                     : d.tool === "long" || d.tool === "short"
                       ? `${riskReward(shown)?.ratio?.toFixed(2) ?? "—"}R`
-                      : `${shown.points[0]?.price.toFixed(2)} · ${d.panel ?? "All trade charts"}`}
+                      : `${d.target && !context ? "Index data unavailable" : shown.points[0]?.price.toFixed(2)} · ${d.panel ?? "All trade charts"}`}
                 </small>
               </span>
             </button>

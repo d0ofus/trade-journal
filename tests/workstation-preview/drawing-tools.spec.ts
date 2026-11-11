@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 import { DEMO_PREFIX, demoTrades, initialDemoDocument } from "../../src/lib/workstation/demo";
 import { defaultPreferences, type Drawing, type TradeDocument, type WorkspacePreferences } from "../../src/lib/workstation/types";
 
@@ -9,6 +10,7 @@ declare global {
   interface Window {
     drawingLiveText: PaintedText[];
     drawingExportText: string[];
+    drawingPng?: Blob;
     drawingRayLine?: { x: number; y: number };
     drawingTriangle?: { x: number; y: number };
     measurementStroke?: { x: number; y: number; endX: number; endY: number };
@@ -27,6 +29,8 @@ async function open(page: Page, drawings?: Drawing[], legacyStyle?: { color: str
     if (!localStorage.getItem(preferenceKey)) localStorage.setItem(preferenceKey, JSON.stringify(preferences));
     if (!localStorage.getItem(documentKey)) localStorage.setItem(documentKey, JSON.stringify(doc));
     window.drawingLiveText = []; window.drawingExportText = [];
+    const create = URL.createObjectURL;
+    URL.createObjectURL = function(value) { if (value instanceof Blob && value.type === "image/png") window.drawingPng = value; return create.call(URL, value); };
     const prototype = CanvasRenderingContext2D.prototype;
     const clear = prototype.clearRect, fill = prototype.fillText, move = prototype.moveTo, line = prototype.lineTo, close = prototype.closePath, begin = prototype.beginPath;
     const moves = new WeakMap<CanvasRenderingContext2D, { x: number; y: number }>();
@@ -381,7 +385,9 @@ test("measurement notes render above values, remain selectable, and appear in PN
     await page.getByRole("button", { name: "Export chart-1", exact: true }).click();
     const download = page.waitForEvent("download");
     await page.getByRole("button", { name: "Active chart PNG", exact: true }).click();
-    await (await download).saveAs(info.outputPath(`measurement-${light ? "light" : "dark"}.png`));
+    expect((await download).suggestedFilename()).toMatch(/\.png$/);
+    const png = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await window.drawingPng!.arrayBuffer()))));
+    await writeFile(info.outputPath(`measurement-${light ? "light" : "dark"}.png`), png);
     const exported = await page.evaluate(() => window.drawingExportText);
     expect(exported).toContain("Measured retest");
     expect(exported.join("")).toMatch(/\+2\.00 .*30m.*bars/);

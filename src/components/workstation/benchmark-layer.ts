@@ -59,6 +59,7 @@ export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
       refresh();
     },
     refresh,
+    drawingSurface: () => mode === "pane" && series && comparison.candles.length && (symbol === "SPY" || symbol === "QQQ") ? { series, candles: comparison.candles, symbol } : null,
     inspect(time: number) { const candle = comparison.originals.get(time); if (candle && primary.length && time <= primary[primary.length - 1].time && time >= primary[0].time && candle !== inspected) display(candle); },
     snapshot: () => ({ ...comparison, symbol, legend: written, mode, priceRange: series?.priceScale().getVisibleRange?.() ?? null }),
     dispose() { if (series) api.removeSeries(series); series = null; legend.textContent = ""; },

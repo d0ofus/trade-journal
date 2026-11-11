@@ -107,6 +107,7 @@ type Props = {
   style?: CSSProperties;
   onToggleLabels: () => void;
   onPriceAdjustment?: (adjustment: SplitAdjustment | undefined) => void;
+  onBenchmarkAdjustment?: (context: BenchmarkDrawingContext | null) => void;
   onHistoryReady?: (tradeId: string) => void;
   initialRange?: HistoryRange | null;
   onViewChange?: (range: HistoryRange) => void;
@@ -121,9 +122,11 @@ import { beforeEntryBoundary, beforeEntryCandles, beforeEntryDrawings } from "@/
 import { executionColors, benchmarkColor, selectBenchmark, toggleBenchmark } from "@/lib/workstation/comparison";
 import { createBenchmarkLayer, benchmarkStyle, benchmarkScale, benchmarkPaneScale, sizeBenchmarkPanes } from "./benchmark-layer";
 import { useBenchmark } from "./use-benchmark";
-import { splitAdjustedDrawing, splitAdjustedTrade, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
+import { splitAdjustedTrade, type SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { tradeChartSession } from "@/lib/workstation/chart-session";
 import type { DrawingStore } from "./annotation-text-input";
+import { matchesDrawingTarget, projectDrawing, supportsBenchmarkDrawing, type BenchmarkDrawingContext } from "@/lib/workstation/drawing-target";
+import { drawingPane, insideDrawingPane, panePoint, offsetPaneHits } from "./drawing-pane";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
@@ -134,10 +137,11 @@ export function TradeChart(input: Props) {
   const [historyState, setHistoryState] = useState<HistoryState | null>(null);
   const result = historyState?.result ?? { candles: [], warning: "", source: "" };
   const adjustedTrade = useMemo(() => splitAdjustedTrade(trade, result.splitAdjustment), [trade, result.splitAdjustment]);
-  const drawings = useMemo(() => input.drawings.map(d => splitAdjustedDrawing(d, result.splitAdjustment)), [input.drawings, result.splitAdjustment]);
+  const benchmarkContext = useRef<BenchmarkDrawingContext | null>(null);
+  const drawings = input.drawings.map(d => projectDrawing(d, result.splitAdjustment, benchmarkContext.current));
   const props = { ...input, trade: adjustedTrade, drawings,
-    currentDrawings: () => input.drawingStore ? (input.drawingStore.getSnapshot()?.value.drawings ?? input.drawings).map(d => splitAdjustedDrawing(d, result.splitAdjustment)) : drawings,
-    onDrawing: (drawing: Drawing) => input.onDrawing(splitAdjustedDrawing(drawing, result.splitAdjustment, true)) };
+    currentDrawings: () => (input.drawingStore?.getSnapshot()?.value.drawings ?? input.drawings).map(d => projectDrawing(d, result.splitAdjustment, benchmarkContext.current)),
+    onDrawing: (drawing: Drawing) => input.onDrawing(projectDrawing(drawing, result.splitAdjustment, benchmarkContext.current, true)) };
   const adjustmentCallback = useRef(input.onPriceAdjustment); adjustmentCallback.current = input.onPriceAdjustment;
   useEffect(() => { adjustmentCallback.current?.(result.splitAdjustment); }, [result.splitAdjustment]);
   const container = useRef<HTMLElement>(null);
@@ -513,7 +517,15 @@ export function TradeChart(input: Props) {
           const o = options();
           if (container.current) container.current.dataset.primaryPaneHeight = String(o.plotHeight);
           const rows = executionVisibility({ ...o, executions: o.trade.executions });
-          hits.current = paintChart(ctx, o, rows);
+          hits.current = paintChart(ctx, { ...o, drawings: o.drawings.filter(d => !d.target) }, rows);
+          const benchmark = benchmarkLayer.current?.drawingSurface(), pane = host.current && drawingPane(api, 1, host.current);
+          if (benchmark && pane && latest.current.panel.benchmarkMode === "pane" && latest.current.panel.benchmark === benchmark.symbol && benchmarkContext.current?.ready && benchmarkContext.current.symbol === benchmark.symbol) {
+            const target = { kind: "benchmark" as const, symbol: benchmark.symbol };
+            ctx.save(); ctx.translate(0, pane.top);
+            const paneHits = paintChart(ctx, { ...o, height: pane.height, plotHeight: pane.height, plotWidth: pane.width, drawings: o.drawings.filter(d => matchesDrawingTarget(d, target)), y: price => benchmark.series.priceToCoordinate(price), candles: benchmark.candles, trade: { ...o.trade, executions: [] }, labels: "hidden", selectedExecution: null }, []);
+            ctx.restore(); hits.current.push(...offsetPaneHits(paneHits, pane.top));
+            if (container.current) { container.current.dataset.benchmarkPaneTop = String(pane.top); container.current.dataset.benchmarkPaneHeight = String(pane.height); }
+          } else if (container.current) { delete container.current.dataset.benchmarkPaneTop; delete container.current.dataset.benchmarkPaneHeight; }
           container.current?.querySelectorAll<HTMLButtonElement>("[data-pin-target]").forEach(button => {
             const hit = hits.current.find(h => h.id === button.dataset.pinTarget && h.kind === "drawing" && h.point === undefined);
             button.hidden = !hit;
@@ -874,6 +886,8 @@ export function TradeChart(input: Props) {
             ...api.timeScale().options(),
             borderVisible: false,
             timeVisible: true,
+            // Font scaling alone does not scale the axis's fixed padding.
+            minimumHeight: Math.ceil(api.timeScale().height() * render.y),
             barSpacing: api.timeScale().options().barSpacing * render.x,
             minBarSpacing: api.timeScale().options().minBarSpacing * render.x,
           },
@@ -894,8 +908,9 @@ export function TradeChart(input: Props) {
             lastValueVisible: false,
           });
           cs.setData(snapshotBars.map((b) => ({ ...b, time: asTime(b.time) })));
+          let comparison: ISeriesApi<"Candlestick"> | null = null;
           if (frozenBenchmark?.symbol) {
-            const comparison = clone.addSeries(CandlestickSeries, benchmarkStyle(light, prefs.benchmarkColor, prefs.benchmarkTransparency, frozenBenchmark.mode), frozenBenchmark.mode === "pane" ? 1 : 0);
+            comparison = clone.addSeries(CandlestickSeries, benchmarkStyle(light, prefs.benchmarkColor, prefs.benchmarkTransparency, frozenBenchmark.mode), frozenBenchmark.mode === "pane" ? 1 : 0);
             comparison.priceScale().applyOptions(frozenBenchmark.mode === "pane" ? benchmarkPaneScale : benchmarkScale);
             comparison.setData(frozenBenchmark.candles.map(b => ({ ...b, time: asTime(b.time) })));
             if (frozenBenchmark.mode === "pane") {
@@ -954,6 +969,10 @@ export function TradeChart(input: Props) {
           await new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
           );
+          if (frozenBenchmark?.mode === "pane" && clone.panes().length > 1) {
+            clone.panes()[0].setHeight(paneHeights[0] * render.y);
+            await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+          }
           const native = clone.takeScreenshot(true, false),
             output = document.createElement("canvas");
           const headerPixels = Math.ceil(header * scale);
@@ -968,7 +987,14 @@ export function TradeChart(input: Props) {
           ctx.translate(0, headerPixels);
           ctx.scale(native.width / width, native.height / height);
           const exportOptions: PaintOptions = { ...frozen, width, height, plotWidth: clone.timeScale().width() / render.x, plotHeight: clone.paneSize(0).height / render.y, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / render.x; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / render.y; } };
-          paintChart(ctx, exportOptions);
+          paintChart(ctx, { ...exportOptions, drawings: frozen.drawings.filter(d => !d.target) });
+          const indexPane = frozenBenchmark?.mode === "pane" && comparison ? drawingPane(clone, 1, container) : null;
+          if (indexPane && comparison && frozenBenchmark) {
+            const indexSeries = comparison;
+            ctx.save(); ctx.translate(0, indexPane.top / render.y);
+            paintChart(ctx, { ...exportOptions, height: indexPane.height / render.y, plotHeight: indexPane.height / render.y, plotWidth: indexPane.width / render.x, drawings: frozen.drawings.filter(d => d.target?.symbol === frozenBenchmark.symbol), y: price => { const y = indexSeries.priceToCoordinate(price); return y === null ? null : y / render.y; }, candles: frozenBenchmark.candles, trade: { ...frozen.trade, executions: [] }, labels: "hidden", selectedExecution: null }, []);
+            ctx.restore();
+          }
           ctx.restore();
           ctx.scale(scale, scale);
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
@@ -1193,6 +1219,14 @@ export function TradeChart(input: Props) {
     ohlcLegend.current?.reconcile(renderedData.current, visibleWindow?.to);
   }, [result.candles, props.panel.interval, props.replay, beforeEntry, visibleWindow, loading, failure]);
   const benchmark = useBenchmark(props.adapter, trade, props.panel, visibleWindow ?? props.initialRange ?? null);
+  const benchmarkCallback = useRef(input.onBenchmarkAdjustment); benchmarkCallback.current = input.onBenchmarkAdjustment;
+  useEffect(() => {
+    const symbol = props.panel.benchmark;
+    const context = symbol === "SPY" || symbol === "QQQ" ? { symbol, ready: benchmark.ready, adjustment: benchmark.splitAdjustment } : null;
+    benchmarkContext.current = context;
+    benchmarkCallback.current?.(context);
+    paintRef.current();
+  }, [props.panel.benchmark, benchmark.ready, benchmark.splitAdjustment, props.trade.id, props.trade.timeInterpretationVersion]);
   useEffect(() => {
     if (!chart.current || loading || changingData.current) return;
     benchmarkLayer.current?.update({ primary: renderedData.current, benchmark: benchmark.candles, symbol: props.panel.benchmark === "off" ? "" : props.panel.benchmark ?? "", light: props.preferences.theme === "light", color: props.preferences.benchmarkColor, transparency: props.preferences.benchmarkTransparency, mode: props.panel.benchmarkMode, paneRatio: props.panel.benchmarkPaneRatio });
@@ -1234,15 +1268,24 @@ export function TradeChart(input: Props) {
     drag.current = null;
     previewPin.current = null; touchPin.current = null;
     paintRef.current();
-  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, beforeEntry, props.replay, props.temporarilyHiddenIds, result.splitAdjustment]);
+  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, props.panel.benchmark, props.panel.benchmarkMode, benchmark.ready, benchmark.splitAdjustment, beforeEntry, props.replay, props.temporarilyHiddenIds, result.splitAdjustment, loading, failure]);
 
   const pointer = (event: React.PointerEvent) => {
     const rect = host.current!.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
-  const pointAt = (pos: { x: number; y: number }, free = false): Point | null => {
-    const logical = chart.current?.timeScale().coordinateToLogical(pos.x),
-      price = series.current?.coordinateToPrice(pos.y);
+  const surfaceFor = (target?: Drawing["target"]) => {
+    if (!chart.current || !host.current || !series.current) return null;
+    if (!target) { const pane = drawingPane(chart.current, 0, host.current); return pane ? { ...pane, series: series.current, candles: bars.current } : null; }
+    const benchmark = benchmarkLayer.current?.drawingSurface(), context = benchmarkContext.current;
+    const pane = drawingPane(chart.current, 1, host.current);
+    return pane && benchmark && props.panel.benchmarkMode === "pane" && props.panel.benchmark === target.symbol && benchmark.symbol === target.symbol && context?.symbol === target.symbol && context.ready ? { ...pane, ...benchmark } : null;
+  };
+  const pointAt = (pos: { x: number; y: number }, free = false, target?: Drawing["target"]): Point | null => {
+    const surface = surfaceFor(target); if (!surface) return null;
+    const local = target ? panePoint(pos, surface) : { x: pos.x, y: pos.y - surface.top };
+    let logical = chart.current?.timeScale().coordinateToLogical(local.x);
+    const price = surface.series.coordinateToPrice(local.y);
     if (
       logical === null ||
       logical === undefined ||
@@ -1251,6 +1294,7 @@ export function TradeChart(input: Props) {
       !bars.current.length
     )
       return null;
+    if (target && (beforeEntry || props.replay !== null)) logical = Math.min(logical, logicalTimeIndex(surface.candles.at(-1)!.time, bars.current, props.panel.interval)) as typeof logical;
     if (free) {
       const list = bars.current, index = Math.floor(logical);
       const time = logical < 0 ? list[0].time + logical * seconds[props.panel.interval]
@@ -1262,7 +1306,8 @@ export function TradeChart(input: Props) {
         0,
         Math.min(bars.current.length - 1, Math.round(logical)),
       ),
-      bar = bars.current[index];
+      primaryBar = bars.current[index], bar = target ? surface.candles.find(c => c.time === primaryBar.time) : primaryBar;
+    if (!bar) return null;
     return {
       time: bar.time,
       price: props.preferences.magnet
@@ -1272,10 +1317,11 @@ export function TradeChart(input: Props) {
         : Math.round(price * 10000) / 10000,
     };
   };
-  const makeDrawing = (points: Point[]): Drawing => ({
+  const makeDrawing = (points: Point[], target?: Drawing["target"]): Drawing => ({
     id: crypto.randomUUID(),
     tool: props.tool === "cursor" ? "text" : props.tool,
     points,
+    ...(target ? { target } : {}),
     text: "",
     ...drawingStyleFor(props.tool === "cursor" ? "text" : props.tool, props.preferences.drawingStyles),
     locked: false,
@@ -1290,12 +1336,13 @@ export function TradeChart(input: Props) {
     props.onActive();
     if (!dataReady.current || loading || failure || event.button !== 0) return;
     const pos = pointer(event);
-    if (
-      pos.x > (chart.current?.timeScale().width() ?? 0) ||
-      pos.y > (chart.current?.paneSize(0).height ?? 0)
-    )
-      return;
-    const hit = hitAt(hits.current, pos);
+    const symbol = props.panel.benchmark;
+    const benchmarkTarget = symbol === "SPY" || symbol === "QQQ" ? { kind: "benchmark" as const, symbol } : undefined;
+    const primary = surfaceFor(), index = benchmarkTarget && surfaceFor(benchmarkTarget);
+    const target = primary && insideDrawingPane(pos, primary) ? undefined : index && insideDrawingPane(pos, index) ? benchmarkTarget : null;
+    if (target === null) return;
+    const displayed = new Map(props.currentDrawings().map(drawing => [drawing.id, drawing]));
+    const hit = hitAt(hits.current.filter(h => { const drawing = displayed.get(h.id); return h.kind === "execution" ? !target : !!drawing && matchesDrawingTarget(drawing, target); }), pos);
     if (event.pointerType === "touch") {
       const pin = props.drawings.find(d => d.id === hit?.id && d.tool === "pin");
       touchPin.current = pin && touchPin.current !== pin.id ? pin.id : null;
@@ -1315,27 +1362,27 @@ export function TradeChart(input: Props) {
           };
         else {
           props.onSelect(hit.id);
-          const wholeDrawing = props.drawings.find(d => d.id === hit.id);
+          const wholeDrawing = props.currentDrawings().find(d => d.id === hit.id);
           if (hit.resizeNote && wholeDrawing && !wholeDrawing.locked && !props.trade.stale) {
             drag.current = { drawing: wholeDrawing, resizeNote: { ...hit.resizeNote, startX: pos.x } };
             event.currentTarget.setPointerCapture(event.pointerId);
             return;
           }
-          if (hit.point === undefined && wholeDrawing && ["measure", "ray", "pin"].includes(wholeDrawing.tool) && !wholeDrawing.locked && !props.trade.stale) {
-            const logical = chart.current?.timeScale().coordinateToLogical(pos.x), price = series.current?.coordinateToPrice(pos.y);
+          if (hit.point === undefined && wholeDrawing && (["measure", "ray", "pin"].includes(wholeDrawing.tool) || !!wholeDrawing.target && wholeDrawing.tool === "horizontal") && !wholeDrawing.locked && !props.trade.stale) {
+            const logical = chart.current?.timeScale().coordinateToLogical(pos.x), price = pointAt(pos, true, wholeDrawing.target)?.price;
             if (logical != null && price != null) {
               drag.current = { drawing: wholeDrawing, whole: { start: pos, candles: [...bars.current] } };
               event.currentTarget.setPointerCapture(event.pointerId);
             }
           }
           if (hit.point !== undefined) {
-            let drawing = props.drawings.find((d) => d.id === hit.id);
+            let drawing = props.currentDrawings().find((d) => d.id === hit.id);
             if (drawing && !drawing.locked && !props.trade.stale) {
               const note = drawing.tool === "text" || drawing.tool === "price-note";
               // Materialize a legacy note's implicit box anchor only when it is moved.
               const box = note ? hits.current.find(h => h.id === hit.id && h.point === 1 && h.anchor)?.anchor : undefined;
               if (box && !drawing.points[1]) {
-                const end = pointAt(box, true);
+                const end = pointAt(box, true, drawing.target);
                 if (end) drawing = { ...drawing, points: [drawing.points[0], end] };
               }
               const anchor = hit.anchor ?? (note ? { x: hit.x + hit.w / 2, y: hit.y + hit.h / 2 } : undefined);
@@ -1347,7 +1394,7 @@ export function TradeChart(input: Props) {
       } else {
         props.onSelect(null);
         const time = chart.current?.timeScale().coordinateToTime(pos.x);
-        if (typeof time === "number" && event.isPrimary)
+        if (!target && typeof time === "number" && event.isPrimary)
           clickGesture.current = {
             pointerId: event.pointerId,
             x: event.clientX,
@@ -1358,9 +1405,10 @@ export function TradeChart(input: Props) {
       }
       return;
     }
+    if (props.trade.stale || target && !supportsBenchmarkDrawing(props.tool)) return;
     event.preventDefault();
     event.stopPropagation();
-    const point = pointAt(pos);
+    const point = pointAt(pos, false, target);
     if (!point) return;
     const twoPoint = [
       "trend",
@@ -1377,7 +1425,7 @@ export function TradeChart(input: Props) {
       return;
     }
     const drawing = makeDrawing(
-      pending.current ? [pending.current, point] : [point],
+      pending.current ? [pending.current, point] : [point], target,
     );
     if (drawing.tool === "long" || drawing.tool === "short") {
       const direction = drawing.tool === "long" ? 1 : -1;
@@ -1423,26 +1471,30 @@ export function TradeChart(input: Props) {
       event.preventDefault(); event.stopPropagation();
       const pos = pointer(event), state = current.whole;
       if (Math.hypot(pos.x - state.start.x, pos.y - state.start.y) < 4 && !draft.current) return;
-      const logical = chart.current?.timeScale().coordinateToLogical(pos.x), price = series.current?.coordinateToPrice(pos.y);
+      const surface = surfaceFor(current.drawing.target); if (!surface) return;
+      const location = current.drawing.target ? panePoint(pos, surface) : pos, start = current.drawing.target ? panePoint(state.start, surface) : state.start;
+      const logical = chart.current?.timeScale().coordinateToLogical(location.x), price = pointAt(pos, true, current.drawing.target)?.price;
       // Selection may resize the plot when the properties banner opens. Compute
       // both pointer coordinates against the current scale to avoid a jump.
-      const startLogical = chart.current?.timeScale().coordinateToLogical(state.start.x), startPrice = series.current?.coordinateToPrice(state.start.y);
+      const startLogical = chart.current?.timeScale().coordinateToLogical(start.x), startPrice = pointAt(state.start, true, current.drawing.target)?.price;
       if (logical == null || price == null || startLogical == null || startPrice == null) return;
       let logicalDelta = logical - startLogical, priceDelta = price - startPrice;
       if (props.preferences.magnet) {
         const referenceIndex = logicalTimeIndex(current.drawing.points[0].time, state.candles, props.panel.interval);
         const snapped = Math.max(0, Math.min(state.candles.length - 1, Math.round(referenceIndex + logicalDelta)));
         logicalDelta = snapped - referenceIndex;
-        const bar = state.candles[snapped], desired = current.drawing.points[0].price + priceDelta;
+        const primaryBar = state.candles[snapped], bar = current.drawing.target ? surfaceFor(current.drawing.target)?.candles.find(c => c.time === primaryBar.time) : primaryBar;
+        if (!bar) return;
+        const desired = current.drawing.points[0].price + priceDelta;
         priceDelta = [bar.open, bar.high, bar.low, bar.close].sort((a, b) => Math.abs(a - desired) - Math.abs(b - desired))[0] - current.drawing.points[0].price;
       }
-      const maximum = beforeEntry || props.replay !== null ? state.candles.at(-1)?.time : undefined;
+      const maximum = beforeEntry || props.replay !== null ? (current.drawing.target ? surfaceFor(current.drawing.target)?.candles : state.candles)?.at(-1)?.time : undefined;
       draft.current = { ...current.drawing, points: translateMeasurement(current.drawing.points, state.candles, props.panel.interval, logicalDelta, priceDelta, maximum) };
       paintRef.current();
       return;
     }
     const pos = pointer(event), offset = drag.current?.offset;
-    const point = pointAt(offset ? { x: pos.x - offset.x, y: pos.y - offset.y } : pos, !!offset);
+    const point = pointAt(offset ? { x: pos.x - offset.x, y: pos.y - offset.y } : pos, !!offset, current?.drawing.target ?? draft.current?.target);
     if (!point) return;
     if (drag.current) {
       draft.current = {

@@ -73,6 +73,8 @@ export type Tool = (typeof drawingTools)[number];
 export type Point = { time: number; price: number };
 export type Drawing = {
   id: string;
+  /** Absent for existing stock-chart drawings. Independent of chart-panel scope. */
+  target?: { kind: "benchmark"; symbol: "SPY" | "QQQ" };
   tool: Exclude<Tool, "cursor">;
   points: Point[];
   text: string;

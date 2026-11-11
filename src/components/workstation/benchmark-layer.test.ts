@@ -14,6 +14,7 @@ it("validates transparency and moves the index to a separately scaled resizable 
   const layer = createBenchmarkLayer(api as unknown as IChartApi, { textContent: "" } as HTMLElement);
   const input = { primary: [], benchmark: [], symbol: "SPY", light: false };
   layer.update(input); layer.update({ ...input, mode: "pane", paneRatio: .3, transparency: 50 });
+  expect(layer.drawingSurface()).toBeNull(); // Empty data cannot provide drawing prices.
   expect(api.removeSeries).toHaveBeenCalledOnce();
   expect(api.addSeries.mock.lastCall).toEqual([expect.anything(), expect.objectContaining({ priceScaleId: "right" }), 1]);
   expect(scale.applyOptions).toHaveBeenLastCalledWith(expect.objectContaining({ visible: true }));
@@ -47,4 +48,16 @@ it("isolates actual benchmark prices and autoscaling from the trade scale throug
   expect(setData).toHaveBeenCalledTimes(updates);
   layer.update({ primary, benchmark: [], symbol: "", light: true });
   expect(api.removeSeries).toHaveBeenCalledOnce(); expect(legend.textContent).toBe("");
+});
+
+it("exposes drawing coordinates only for a populated separate pane and the current symbol", () => {
+  const series = { setData: vi.fn(), applyOptions: vi.fn(), priceScale: () => ({ applyOptions: vi.fn() }) };
+  const api = { addSeries: () => series, removeSeries: vi.fn(), panes: () => [{ setStretchFactor: vi.fn() }, { setStretchFactor: vi.fn() }], timeScale: () => ({ getVisibleRange: () => null }) };
+  const layer = createBenchmarkLayer(api as unknown as IChartApi, { textContent: "" } as HTMLElement);
+  const bar = { time: 100, open: 500, high: 501, low: 499, close: 500, volume: 1 };
+  const data = { primary: [bar], benchmark: [bar], symbol: "SPY", light: false };
+  layer.update(data); expect(layer.drawingSurface()).toBeNull();
+  layer.update({ ...data, mode: "pane" }); expect(layer.drawingSurface()).toMatchObject({ symbol: "SPY", series, candles: [bar] });
+  layer.update({ ...data, mode: "pane", symbol: "QQQ", benchmark: [] }); expect(layer.drawingSurface()).toBeNull();
+  layer.update({ ...data, mode: "overlay" }); expect(layer.drawingSurface()).toBeNull();
 });

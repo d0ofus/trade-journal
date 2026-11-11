@@ -1,17 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
-import { readFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { defaultPreferences, type TradeDocument } from "../../src/lib/workstation/types";
 import { DEMO_PREFIX, demoTrades, initialDemoDocument } from "../../src/lib/workstation/demo";
 import { showTakeaways } from "./review-helpers";
 
 const preferenceKey = "execution-lab:workstation:preferences:demo:v1";
 const documentKey = DEMO_PREFIX + demoTrades[0].id;
+declare global { interface Window { comparisonPng?: Blob; } }
 async function open(page: Page, panels = 1) {
   const errors: string[] = [], requests: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/**", route => { requests.push(route.request().url()); return route.abort(); });
   await page.addInitScript(({ preferences, key, panels }) => {
     if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ ...preferences, labels: "hidden", journal: panels > 1, panels: ["5m", "1h"].slice(0, panels).map((interval, i) => ({ id: `chart-${i + 1}`, interval })) }));
+    const create = URL.createObjectURL;
+    URL.createObjectURL = function(value) { if (value instanceof Blob && value.type === "image/png") window.comparisonPng = value; return create.call(URL, value); };
   }, { preferences: defaultPreferences(), key: preferenceKey, panels });
   await page.goto("/preview/trades?groupKey=demo-nvda");
   for (const chart of await page.locator(".ws-chart").all()) await expect(chart).toHaveAttribute("data-visible-from", /\d+/);
@@ -67,7 +70,10 @@ test("custom comparison colour survives reload and is used in live and exported 
     await chart.getByRole("button", { name: "Export chart-1", exact: true }).click();
     const download = page.waitForEvent("download");
     await page.getByRole("button", { name: "Active chart PNG", exact: true }).click();
-    const file = await download; const path = info.outputPath(`comparison-colour-${light ? "light" : "dark"}.png`); await file.saveAs(path);
+    expect((await download).suggestedFilename()).toMatch(/\.png$/);
+    // Inspect the actual generated Blob; Windows may lock Chromium's download artifact.
+    const png = Buffer.from(await page.evaluate(async () => Array.from(new Uint8Array(await window.comparisonPng!.arrayBuffer()))));
+    await writeFile(info.outputPath(`comparison-colour-${light ? "light" : "dark"}.png`), png);
     const pixels = await page.evaluate(async encoded => {
       const image = new Image(); image.src = `data:image/png;base64,${encoded}`; await image.decode();
       const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
@@ -76,7 +82,7 @@ test("custom comparison colour survives reload and is used in live and exported 
       const data = ctx.getImageData(0, 100, canvas.width, canvas.height - 100).data; let count = 0;
       for (let i = 0; i < data.length; i += 4) if (data[i] === 232 && data[i + 1] === 121 && data[i + 2] === 249) count++;
       return count;
-    }, (await readFile(path)).toString("base64"));
+    }, png.toString("base64"));
     expect(pixels).toBeGreaterThan(20);
     await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
   }

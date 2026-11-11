@@ -36,5 +36,6 @@ export function useBenchmark(adapter: WorkstationAdapter, trade: Trade, panel: C
     // Trade identity includes its timestamp interpretation; primary data never depends on this hook.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adapter, key, from, to, retry]);
-  return { candles: result?.key === key ? result.result.candles : empty, error, retry: () => setRetry(n => n + 1) };
+  const current = result?.key === key ? result.result : null;
+  return { candles: current?.candles ?? empty, ready: !!current?.candles.length, splitAdjustment: current?.splitAdjustment, error, retry: () => setRetry(n => n + 1) };
 }

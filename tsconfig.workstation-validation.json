@@ -106,7 +106,11 @@
     "src/lib/journal/autosave.test.ts",
     "src/lib/journal/recovery.test.ts",
     "src/lib/workstation/share-eligibility.test.ts",
-    "tests/workstation-preview/journal-recovery.spec.ts"
+    "tests/workstation-preview/journal-recovery.spec.ts",
+    "src/lib/workstation/drawing-target.test.ts",
+    "src/lib/workstation/drawing-persistence.test.ts",
+    "src/components/workstation/drawing-pane.test.ts",
+    "tests/workstation-preview/index-pane-drawings.spec.ts"
   ],
   "exclude": [
     "node_modules"
