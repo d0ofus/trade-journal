@@ -7,12 +7,15 @@ import { captureResolution } from "@/lib/workstation/capture-resolution";
 import { PeerChart, type PeerChartHandle } from "./peer-chart";
 import type { PeerGroupSelection } from "./peer-groups";
 import { PeerMemory, fetchPeerCandles, type PeerFetcher } from "@/lib/workstation/peer-memory";
-import { peerContextSchema, peerEntryTime, peerMembers, peerSymbolIssue, peerVirtualWindow, peerWarmupRange, selectPeerGroup, type PeerCapture, type PeerCandleQuery, type PeerSeries, type PeerView } from "@/lib/workstation/peers";
+import { peerContextSchema, peerEntryTime, peerMembers, peerSymbolIssue, peerWarmupRange, selectPeerGroup, type PeerCapture, type PeerCandleQuery, type PeerSeries, type PeerView } from "@/lib/workstation/peers";
 import { drawingTools, intervals, seconds, type Drawing, type Tool, type Trade, type WorkspacePreferences } from "@/lib/workstation/types";
 import type { HistoryRange } from "@/lib/workstation/history";
 import { compositeCharts } from "@/lib/workstation/export";
 import { peerReplayRange } from "@/lib/workstation/peers";
-import { arrangePeers, emptyPeerComparison, movePeer, type PeerComparisonState, type PeerArrangement } from "@/lib/workstation/peer-arrangement";
+import { arrangePeers, emptyPeerComparison, movePeer, type PeerComparisonState, type PeerArrangement, type PeerFrameSize } from "@/lib/workstation/peer-arrangement";
+import { constrainPeerFrame, layoutPeerFrames, visiblePeerFrames, type PeerFrameRect } from "@/lib/workstation/peer-frame-layout";
+import { PeerFrameSizeEditor } from "./peer-frame-size-editor";
+import { peerHistoryResults } from "@/lib/workstation/peer-history-results";
 import type { SplitAdjustment } from "@/lib/workstation/split-adjustment";
 import { assertCaptureSize } from "@/lib/workstation/capture-resolution";
 
@@ -34,8 +37,8 @@ export function PeerComparison(props: Props) {
   const captureSetting = useContext(CaptureQualityContext);
   const [selection, setSelection] = useState(props.selection), [view, setView] = useState(props.initial), [linked, setLinked] = useState(true);
   const [independent, setIndependent] = useState<Record<string, HistoryRange>>({}), [search, setSearch] = useState(""), [membershipError, setMembershipError] = useState(""), [refresh, setRefresh] = useState(0), [membershipLoading, setMembershipLoading] = useState(props.mode !== "demo");
-  const [scroll, setScroll] = useState({ top: 0, height: 600, columns: 2 });
-  const [results, setResults] = useState<{ key: string; basis: string; values: Record<string, PeerSeries>; error: string }>({ key: "", basis: "", values: {}, error: "" });
+  const [scroll, setScroll] = useState({ top: 0, height: 600, width: 1000 });
+  const [results, setResults] = useState<{ key: string; basis: string; values: Record<string, PeerSeries>; failures: Record<string, string>; pending: boolean; error: string }>({ key: "", basis: "", values: {}, failures: {}, pending: true, error: "" });
   const [retry, setRetry] = useState(0), [captureError, setCaptureError] = useState(""), [capturing, setCapturing] = useState(false), [cooldown, setCooldown] = useState(0);
   const dialog = useRef<HTMLDivElement>(null), scroller = useRef<HTMLDivElement>(null), handles = useRef(new Map<string, PeerChartHandle>()), alive = useRef(true);
   const [membershipValid, setMembershipValid] = useState(props.mode === "demo");
@@ -52,6 +55,9 @@ export function PeerComparison(props: Props) {
   const history = useRef<{ past: PeerComparisonState["drawings"][]; future: PeerComparisonState["drawings"][] }>({ past: [], future: [] });
   const allMembers = useMemo(() => peerMembers(selection.group, props.trade.symbol), [selection.group, props.trade.symbol]);
   const arrangement = comparison.arrangements[selection.group.id];
+  const [frameDraft, setFrameDraft] = useState<{ symbol: string; size: PeerFrameSize } | null>(null);
+  const resize = useRef<{ symbol: string; size: PeerFrameSize; view: PeerView; independent: Record<string, HistoryRange> } | null>(null);
+  const pointerResize = useRef<{ id: number; x: number; y: number; size: PeerFrameSize; node: HTMLButtonElement } | null>(null);
   const members = useMemo(() => arrangePeers(allMembers, arrangement).filter(member => `${member.ticker} ${member.name ?? ""}`.toLowerCase().includes(search.trim().toLowerCase())), [allMembers, arrangement, search]);
   const saveComparison = (next: PeerComparisonState) => { if (props.readOnly) return; comparisonRef.current = next; setComparison(next); props.onComparisonChange(next); };
   const changeDrawings = (next: PeerComparisonState["drawings"], record = true) => {
@@ -61,12 +67,43 @@ export function PeerComparison(props: Props) {
   };
   const updateDrawing = (symbol: string, drawing: Drawing) => { const current = comparisonRef.current.drawings; changeDrawings({ ...current, [symbol]: [...(current[symbol] ?? []).filter(d => d.id !== drawing.id), { ...drawing, panel: null }] }); };
   const undo = (redo = false) => { const source = redo ? history.current.future : history.current.past, target = redo ? history.current.past : history.current.future, next = source.pop(); if (next && !props.readOnly) { target.push(comparisonRef.current.drawings); changeDrawings(next, false); } };
-  const changeArrangement = (next: PeerArrangement | null) => { const arrangements = { ...comparisonRef.current.arrangements }; if (next) arrangements[selection.group.id] = next; else delete arrangements[selection.group.id]; saveComparison({ ...comparisonRef.current, arrangements }); };
+  const changeArrangement = (next: PeerArrangement | null) => { if (capturing) return; const arrangements = { ...comparisonRef.current.arrangements }; if (next) arrangements[selection.group.id] = next; else delete arrangements[selection.group.id]; saveComparison({ ...comparisonRef.current, arrangements }); };
   const arrangedOrder = arrangePeers(allMembers, { order: arrangement?.order ?? [], hidden: [] }).map(m => m.ticker);
-  const move = (symbol: string, target: string) => { if (!search.trim()) changeArrangement({ hidden: arrangement?.hidden ?? [], order: movePeer(arrangedOrder, symbol, target) }); };
+  const move = (symbol: string, target: string) => { if (!search.trim()) changeArrangement({ ...arrangement, hidden: arrangement?.hidden ?? [], order: movePeer(arrangedOrder, symbol, target) }); };
   const selected = (comparison.drawings[activeSymbol] ?? []).find(d => d.id === selectedDrawing);
-  const window = peerVirtualWindow(members.length, scroll.columns, scroll.top, scroll.height);
-  const visible = members.slice(window.start, window.end);
+  const layout = useMemo(() => layoutPeerFrames([props.trade.symbol, ...members.map(member => member.ticker)], scroll.width, { ...arrangement?.sizes, ...(frameDraft ? { [frameDraft.symbol]: frameDraft.size } : {}) }), [props.trade.symbol, members, scroll.width, arrangement?.sizes, frameDraft]);
+  const mounted = visiblePeerFrames(layout, scroll.top, scroll.height, [props.trade.symbol, ...(frameDraft ? [frameDraft.symbol] : [])]);
+  const mountedSymbols = new Set(mounted.map(rect => rect.symbol));
+  const visible = members.filter(member => mountedSymbols.has(member.ticker));
+  const activeFrame = layout.rects.find(rect => rect.symbol === activeSymbol);
+  const beginFrameResize = (symbol: string) => {
+    if (capturing || props.readOnly || resize.current) return false;
+    const rect = layout.rects.find(rect => rect.symbol === symbol); if (!rect) return false;
+    handles.current.forEach(handle => handle.cancelDrawing()); setActiveSymbol(symbol);
+    const size = { width: rect.width, height: rect.height };
+    resize.current = { symbol, size, view, independent };
+    handles.current.get(symbol)?.beginResize(); setFrameDraft({ symbol, size }); return true;
+  };
+  const updateFrameResize = (size: PeerFrameSize) => {
+    const current = resize.current; if (!current) return;
+    const clamped = constrainPeerFrame(size, scroll.width);
+    current.size = scroll.width < 800 ? { ...clamped, width: arrangement?.sizes?.[current.symbol]?.width ?? Math.max(320, clamped.width) } : clamped;
+    setFrameDraft({ symbol: current.symbol, size: current.size });
+  };
+  const finishFrameResize = (cancel = false) => {
+    const current = resize.current; if (!current) return;
+    resize.current = null;
+    const pointer = pointerResize.current; pointerResize.current = null;
+    if (pointer?.node.hasPointerCapture(pointer.id)) pointer.node.releasePointerCapture(pointer.id);
+    if (cancel) { handles.current.get(current.symbol)?.endResize(true); setView(current.view); setIndependent(current.independent); }
+    else {
+      const previous = comparisonRef.current.arrangements[selection.group.id];
+      changeArrangement({ ...previous, order: previous?.order ?? [], hidden: previous?.hidden ?? [], sizes: { ...previous?.sizes, [current.symbol]: { ...current.size, width: Math.max(320, current.size.width) } } });
+      requestAnimationFrame(() => requestAnimationFrame(() => handles.current.get(current.symbol)?.endResize()));
+    }
+    setFrameDraft(null);
+  };
+  const commitFrameSize = (symbol: string, size: PeerFrameSize) => { if (beginFrameResize(symbol)) { updateFrameResize(size); finishFrameResize(); } };
   const splitSymbols = [props.trade.symbol, ...visible.map(m => m.ticker)].filter(symbol => view.adjustment === "split" && (symbol === activeSymbol || comparison.drawings[symbol]?.length) && !splits[symbol]?.adjustment);
   const splitKey = JSON.stringify(splitSymbols);
   useEffect(() => {
@@ -86,10 +123,11 @@ export function PeerComparison(props: Props) {
     return { symbol, query: { ...peerWarmupRange(ownView, periods), timeframe: view.interval, session: view.session, adjustment: view.adjustment } };
   });
   const requestKey = JSON.stringify(requested);
-  const captureIdentity = `${props.trade.id}:${selection.group.id}:${requestKey}`;
+  const captureIdentity = useMemo(() => ({ tradeId: props.trade.id, groupId: selection.group.id, requestKey, layout }), [props.trade.id, selection.group.id, requestKey, layout]);
   const identity = useRef(captureIdentity);
   useEffect(() => { identity.current = captureIdentity; }, [captureIdentity]);
   const basis = `${view.interval}:${view.session}:${view.adjustment}`;
+  const chartReady = (symbol: string) => results.key === requestKey && !results.pending && !results.failures[symbol] && results.values[symbol]?.status === "ready";
   const entryTime = peerEntryTime(props.trade);
   const register = useCallback((symbol: string, handle: PeerChartHandle | null) => { if (handle) handles.current.set(symbol, handle); else handles.current.delete(symbol); }, []);
   const onRange = useCallback((symbol: string, range: HistoryRange) => {
@@ -109,7 +147,7 @@ export function PeerComparison(props: Props) {
   useEffect(() => {
     if (!scroller.current) return;
     const node = scroller.current;
-    const observer = new ResizeObserver(([entry]) => setScroll(v => ({ ...v, height: entry.contentRect.height, columns: entry.contentRect.width < 760 ? 1 : 2 })));
+    const observer = new ResizeObserver(([entry]) => setScroll(v => ({ ...v, height: entry.contentRect.height, width: Math.floor(entry.contentRect.width) })));
     observer.observe(node); return () => observer.disconnect();
   }, []);
   useEffect(() => { if (scroller.current) scroller.current.scrollTop = 0; setScroll(v => ({ ...v, top: 0 })); }, [search, selection.group.id]);
@@ -135,16 +173,16 @@ export function PeerComparison(props: Props) {
     const batches = new Map<string, PeerCandleQuery>();
     for (const { symbol, query } of queries) { const key = JSON.stringify(query); const batch = batches.get(key) ?? { ...query, symbols: [] }; batch.symbols.push(symbol); batches.set(key, batch); }
     const timer = setTimeout(() => {
-      const values: Record<string, PeerSeries> = {};
-      for (const query of batches.values()) for (const symbol of query.symbols) { const cached = memory.get(query, symbol); if (cached) values[symbol] = cached; }
-      setResults({ key: requestKey, basis, values, error: "" });
+      const cached: Record<string, PeerSeries> = {};
+      for (const query of batches.values()) for (const symbol of query.symbols) { const value = memory.get(query, symbol); if (value) cached[symbol] = value; }
+      setResults(previous => ({ key: requestKey, basis, values: { ...(previous.basis === basis ? previous.values : {}), ...cached }, failures: {}, pending: true, error: "" }));
       void Promise.all([...batches.values()].map(query => memory.load(query, controller.signal))).then(rows => {
         if (controller.signal.aborted) return;
         const all = rows.flat();
-        setResults({ key: requestKey, basis, values: Object.fromEntries(all.map(s => [s.symbol, s])), error: "" });
+        setResults(previous => ({ key: requestKey, basis, ...peerHistoryResults(all, previous.basis === basis ? previous.values : {}), pending: false, error: "" }));
         const wait = Math.max(0, ...all.map(s => s.retryAfter ?? 0));
         if (wait) setCooldown(wait);
-      }).catch(e => { if (!controller.signal.aborted) setResults({ key: requestKey, basis, values, error: e instanceof Error ? e.message : "Peer charts unavailable." }); });
+      }).catch(e => { if (!controller.signal.aborted) { const error = e instanceof Error ? e.message : "Peer charts unavailable."; setResults(previous => ({ ...previous, key: requestKey, basis, failures: Object.fromEntries(queries.map(query => [query.symbol, error])), pending: false, error })); } });
     }, 250);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [requestKey, basis, memory, retry, membershipLoading, membershipValid, selection.group.id]);
@@ -154,19 +192,20 @@ export function PeerComparison(props: Props) {
   const visibleCapture = () => {
     const viewport = scroller.current?.getBoundingClientRect(), main = handles.current.get(props.trade.symbol), charts: { symbol: string; handle: PeerChartHandle; bounds: DOMRect }[] = [], excluded: string[] = [];
     if (!membershipValid) return { charts, excluded: ["Curated memberships are not ready."] };
-    if (main && results.key === requestKey && results.values[props.trade.symbol]?.status === "ready" && annotationsReady(props.trade.symbol)) charts.push({ symbol: props.trade.symbol, handle: main, bounds: main.bounds() });
-    else excluded.push(`${props.trade.symbol}: chart or annotation adjustments not ready`);
+    const mainBounds = main?.bounds(), fullyVisible = (bounds: DOMRect) => !!viewport && bounds.top >= viewport.top - .5 && bounds.bottom <= viewport.bottom + .5 && bounds.left >= viewport.left - .5 && bounds.right <= viewport.right + .5;
+    if (main && mainBounds && fullyVisible(mainBounds) && chartReady(props.trade.symbol) && annotationsReady(props.trade.symbol)) charts.push({ symbol: props.trade.symbol, handle: main, bounds: mainBounds });
+    else excluded.push(`${props.trade.symbol}: ${mainBounds && !fullyVisible(mainBounds) ? "not fully visible" : "chart or annotation adjustments not ready"}`);
     for (const member of members) {
       const handle = handles.current.get(member.ticker), bounds = handle?.bounds();
       if (!bounds || !viewport || bounds.top < viewport.top - .5 || bounds.bottom > viewport.bottom + .5 || bounds.left < viewport.left - .5 || bounds.right > viewport.right + .5) { excluded.push(`${member.ticker}: not fully visible`); continue; }
-      if (results.key !== requestKey || results.values[member.ticker]?.status !== "ready") { excluded.push(`${member.ticker}: not ready`); continue; }
+      if (!chartReady(member.ticker)) { excluded.push(`${member.ticker}: not ready`); continue; }
       if (!annotationsReady(member.ticker)) { excluded.push(`${member.ticker}: annotation split adjustments not verified`); continue; }
       charts.push({ symbol: member.ticker, handle: handle!, bounds });
     }
     return { charts, excluded };
   };
   const captureAll = async () => {
-    if (capturing || props.readOnly) return;
+    if (capturing || props.readOnly || resize.current) return;
     setCapturing(true); setCaptureError("");
     try {
       const { charts } = visibleCapture();
@@ -191,13 +230,13 @@ export function PeerComparison(props: Props) {
     finally { if (alive.current) setCapturing(false); }
   };
   const capture = async (symbol: string, paired: boolean) => {
-    if (capturing || props.readOnly) return;
+    if (capturing || props.readOnly || resize.current) return;
     setCapturing(true); setCaptureError("");
     try {
       const chosen = paired && symbol !== props.trade.symbol ? [props.trade.symbol, symbol] : [symbol];
       if (!membershipValid || chosen.some(ticker => !annotationsReady(ticker))) throw new Error("Wait for curated memberships and ticker-specific annotation adjustments before capturing.");
       const capturedAt = new Date().toISOString();
-      const charts = chosen.map(ticker => { const handle = handles.current.get(ticker); if (!handle || !results.values[ticker]?.candles.length || results.key !== requestKey) throw new Error("Wait for the selected charts to finish loading."); return { ticker, handle, frame: handle.frame(), range: handle.range() ?? view.range }; });
+      const charts = chosen.map(ticker => { const handle = handles.current.get(ticker); if (!handle || !chartReady(ticker)) throw new Error("Wait for the selected charts to finish loading."); return { ticker, handle, frame: handle.frame(), range: handle.range() ?? view.range }; });
       const scale = captureResolution({ width: charts.reduce((sum, c) => sum + c.frame.width, 0) + (charts.length - 1) * 12, height: Math.max(...charts.map(c => c.frame.height)) }, captureSetting.quality, globalThis.devicePixelRatio).scale;
       const canvases = await Promise.all(charts.map(c => c.handle.capture(scale)));
       if (!alive.current || identity.current !== captureIdentity) throw new Error("Capture cancelled because the comparison changed.");
@@ -208,28 +247,41 @@ export function PeerComparison(props: Props) {
     } catch (e) { if (alive.current) setCaptureError(e instanceof Error ? e.message : "Chart capture failed."); }
     finally { if (alive.current) setCapturing(false); }
   };
-  const card = (symbol: string, primary = false, exchange?: string | null) => {
+  const card = (rect: PeerFrameRect) => {
+    const symbol = rect.symbol, primary = symbol === props.trade.symbol, exchange = members.find(member => member.ticker === symbol)?.exchange;
     const issue = peerSymbolIssue({ ticker: symbol, exchange }) ?? (view.beforeEntry && entryTime === null ? "Before entry is unavailable until the execution timestamp is resolved." : null);
-    const series = issue || results.basis !== basis ? undefined : results.values[symbol], current = results.key === requestKey, range = linked ? view.range : independent[symbol] ?? view.range;
-    return <article className={`ws-peer-card${primary ? " ws-peer-primary" : ""}${activeSymbol === symbol ? " ws-peer-selected" : ""}`} data-peer-symbol={symbol} key={symbol} onDragOver={event => { if (!primary && !search.trim()) event.preventDefault(); }} onDrop={event => { event.preventDefault(); if (!primary) move(event.dataTransfer.getData("text/x-peer-symbol"), symbol); }}>
+    const series = issue || results.basis !== basis ? undefined : results.values[symbol], range = linked ? view.range : independent[symbol] ?? view.range;
+    return <article className={`ws-peer-card${primary ? " ws-peer-primary" : ""}${activeSymbol === symbol ? " ws-peer-selected" : ""}`} data-peer-symbol={symbol} data-peer-ready={chartReady(symbol)} key={symbol} style={{ position: "absolute", left: rect.x, top: rect.y, width: rect.width, height: rect.height }} onPointerDown={() => setActiveSymbol(symbol)} onDragOver={event => { if (!primary && !search.trim() && !capturing && !resize.current) event.preventDefault(); }} onDrop={event => { event.preventDefault(); if (!primary && !capturing && !resize.current) move(event.dataTransfer.getData("text/x-peer-symbol"), symbol); }}>
       <header><strong>{symbol}<small className="ws-peer-role">{primary ? "Traded ticker" : exchange ?? "Peer"}</small></strong><span><CaptureQualityControls dimensionsOnly label="PNG" frame={() => handles.current.get(symbol)?.frame() ?? null} />{!primary && <CaptureQualityControls dimensionsOnly label="Pair" frame={() => { const own = handles.current.get(symbol)?.frame(), main = handles.current.get(props.trade.symbol)?.frame(); return own && main ? { width: own.width + main.width + 12, height: Math.max(own.height, main.height) } : null; }} />}</span></header>
-      {!primary && <button className="ws-peer-drag-handle" type="button" draggable={!search.trim() && !props.readOnly} aria-label={`Arrange ${symbol}`} title={`Drag to rearrange ${symbol}; click for accessible controls`} onClick={() => setPopover("arrange")} onDragStart={event => event.dataTransfer.setData("text/x-peer-symbol", symbol)}>⠿</button>}
-      {series?.status === "ready" ? <PeerChart drawingStore={props.drawingStore} symbol={symbol} trade={props.trade} view={{ ...view, range }} series={series} preferences={peerPreferences} onRange={onRange} register={register} drawingControls={{ active: activeSymbol === symbol, tool, selected: activeSymbol === symbol ? selectedDrawing : null, drawings: comparison.drawings[symbol] ?? noDrawings, hidden: hiddenDrawings, readOnly: props.readOnly, adjustment: splits[symbol]?.adjustment, adjustmentReady: view.adjustment === "raw" || !!splits[symbol]?.adjustment, context: `${selection.group.id}:${view.interval}:${view.session}:${view.adjustment}:${view.beforeEntry}:${view.replayAt}`, activate: () => setActiveSymbol(symbol), select: setSelectedDrawing, commit: drawing => updateDrawing(symbol, drawing), edit: id => { setActiveSymbol(symbol); setSelectedDrawing(id); setPopover("drawings"); requestAnimationFrame(() => dialog.current?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Annotation"]')?.focus()); }, done: () => setTool("cursor") }} /> : <div className="ws-peer-chart ws-peer-placeholder" role="status">{issue ?? (series?.status === "error" ? series.error : series?.status === "empty" ? "No eligible history in this range." : results.error || "Loading chart…")}</div>}
-      <footer><button type="button" disabled={props.readOnly || capturing || !current || !annotationsReady(symbol) || series?.status !== "ready"} onClick={() => void capture(symbol, false)}>Attach current chart</button>{!primary && <button type="button" disabled={props.readOnly || capturing || !current || !annotationsReady(symbol) || series?.status !== "ready" || !annotationsReady(props.trade.symbol) || results.values[props.trade.symbol]?.status !== "ready"} onClick={() => void capture(symbol, true)}>Attach comparison</button>}</footer>
+      {!primary && <button className="ws-peer-drag-handle" type="button" disabled={capturing || props.readOnly || !!frameDraft} draggable={!search.trim() && !props.readOnly && !capturing && !frameDraft} aria-label={`Arrange ${symbol}`} title={`Drag to rearrange ${symbol}; click for accessible controls`} onClick={() => { setActiveSymbol(symbol); setPopover("arrange"); }} onDragStart={event => event.dataTransfer.setData("text/x-peer-symbol", symbol)}>⠿</button>}
+      {series?.status === "ready" ? <PeerChart drawingStore={props.drawingStore} symbol={symbol} trade={props.trade} view={{ ...view, range }} series={series} preferences={peerPreferences} onRange={onRange} register={register} drawingControls={{ active: activeSymbol === symbol, tool, selected: activeSymbol === symbol ? selectedDrawing : null, drawings: comparison.drawings[symbol] ?? noDrawings, hidden: hiddenDrawings, readOnly: props.readOnly || capturing || !!frameDraft, adjustment: splits[symbol]?.adjustment, adjustmentReady: view.adjustment === "raw" || !!splits[symbol]?.adjustment, context: `${selection.group.id}:${view.interval}:${view.session}:${view.adjustment}:${view.beforeEntry}:${view.replayAt}`, activate: () => setActiveSymbol(symbol), select: setSelectedDrawing, commit: drawing => updateDrawing(symbol, drawing), edit: id => { setActiveSymbol(symbol); setSelectedDrawing(id); setPopover("drawings"); requestAnimationFrame(() => dialog.current?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Annotation"]')?.focus()); }, done: () => setTool("cursor") }} /> : <div className="ws-peer-chart ws-peer-placeholder" role="status">{issue ?? (series?.status === "error" ? series.error : series?.status === "empty" ? "No eligible history in this range." : results.error || "Loading chart…")}</div>}
+      <footer><button type="button" disabled={props.readOnly || capturing || !!frameDraft || !chartReady(symbol) || !annotationsReady(symbol)} onClick={() => void capture(symbol, false)}>Attach current chart</button>{!primary && <button type="button" disabled={props.readOnly || capturing || !!frameDraft || !chartReady(symbol) || !annotationsReady(symbol) || !annotationsReady(props.trade.symbol) || !chartReady(props.trade.symbol)} onClick={() => void capture(symbol, true)}>Attach comparison</button>}</footer>
+      {series?.status === "ready" && (results.key !== requestKey || results.pending || results.failures[symbol]) && <span className="ws-peer-history-status" role="status">{results.key === requestKey && results.failures[symbol] ? `${results.failures[symbol]} Existing candles retained; Retry charts.` : "Loading additional history…"}</span>}
       {series?.status === "ready" && !annotationsReady(symbol) && <span className="ws-peer-adjustment-warning" role="status">{splits[symbol]?.error ? "Annotations unavailable: split verification failed. Retry in Drawings." : "Verifying ticker-specific split adjustments for annotations…"}</span>}
+      <button type="button" className="ws-peer-resize-handle" aria-label={`Resize ${symbol} frame`} title={`${Math.round(rect.width)} × ${Math.round(rect.height)} px · Drag or use arrow keys; Escape cancels`} disabled={capturing || props.readOnly} onPointerDown={event => {
+        if (event.button !== 0 || !beginFrameResize(symbol)) return;
+        event.preventDefault(); event.stopPropagation(); event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId);
+        pointerResize.current = { id: event.pointerId, x: event.clientX, y: event.clientY, size: { width: rect.width, height: rect.height }, node: event.currentTarget };
+      }} onPointerMove={event => { const pointer = pointerResize.current; if (pointer?.id === event.pointerId && resize.current?.symbol === symbol) updateFrameResize({ width: pointer.size.width + event.clientX - pointer.x, height: pointer.size.height + event.clientY - pointer.y }); }} onPointerUp={event => { if (pointerResize.current?.id === event.pointerId) finishFrameResize(); }} onPointerCancel={() => finishFrameResize(true)} onLostPointerCapture={() => { if (pointerResize.current) finishFrameResize(true); }} onKeyDown={event => {
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+        event.preventDefault(); event.stopPropagation(); const step = event.shiftKey ? 100 : 20;
+        commitFrameSize(symbol, { width: rect.width + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0), height: rect.height + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0) });
+      }}>◢</button>
     </article>;
   };
   return <div className="ws-peer-backdrop"><div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Peer comparison" className="ws-peer-dialog" onKeyDown={e => {
     e.stopPropagation();
+    if (capturing) { e.preventDefault(); return; }
+    if (e.key === "Escape" && resize.current) { e.preventDefault(); finishFrameResize(true); return; }
     if (e.key === "Escape" && !capturing) { if (popover) setPopover(null); else props.onClose(); }
     const typing = (e.target as HTMLElement).closest('input,textarea,select,[contenteditable="true"]');
     if (!typing && !props.readOnly && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(e.shiftKey); }
     if (!typing && !props.readOnly && (e.key === "Delete" || e.key === "Backspace") && selected && !selected.locked) { e.preventDefault(); changeDrawings({ ...comparison.drawings, [activeSymbol]: comparison.drawings[activeSymbol].filter(d => d.id !== selected.id) }); setSelectedDrawing(null); }
     if (e.key === "Tab") { const elements = [...dialog.current!.querySelectorAll<HTMLElement>('button:not([disabled]),select:not([disabled]),input:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]')].filter(node => node.getClientRects().length && !node.closest('[hidden],[inert]')); const first = elements[0], last = elements.at(-1); if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { e.preventDefault(); last?.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
   }}>
-    <header className="ws-peer-heading"><div><h2>Peer comparison · {props.trade.symbol}</h2><span>{props.mode === "demo" ? "Synthetic demo · " : ""}Entry: {entryTime === null ? "timestamp unresolved" : new Date(entryTime * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC"} · {view.adjustment} prices</span></div><button type="button" onClick={props.onClose} aria-label="Close peer comparison">✕</button></header>
-    <div className="ws-peer-extra-controls"><button type="button" aria-expanded={popover === "drawings"} onClick={() => setPopover(v => v === "drawings" ? null : "drawings")}>Drawings</button><button type="button" aria-expanded={popover === "arrange"} onClick={() => setPopover(v => v === "arrange" ? null : "arrange")}>Arrange</button><button type="button" disabled={capturing || props.readOnly} onClick={() => setPopover(v => v === "capture" ? null : "capture")}>Attach visible charts</button></div>
-    {popover && <aside className="ws-peer-popover" aria-label={popover === "drawings" ? "Comparison drawing controls" : popover === "arrange" ? "Peer arrangement" : "Visible capture preview"}>
+    <header className="ws-peer-heading"><div><h2>Peer comparison · {props.trade.symbol}</h2><span>{props.mode === "demo" ? "Synthetic demo · " : ""}Entry: {entryTime === null ? "timestamp unresolved" : new Date(entryTime * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC"} · {view.adjustment} prices</span></div><button type="button" disabled={capturing || !!frameDraft} onClick={props.onClose} aria-label="Close peer comparison">✕</button></header>
+    <div className="ws-peer-extra-controls"><button type="button" disabled={capturing || !!frameDraft} aria-expanded={popover === "drawings"} onClick={() => setPopover(v => v === "drawings" ? null : "drawings")}>Drawings</button><button type="button" disabled={capturing || !!frameDraft} aria-expanded={popover === "arrange"} onClick={() => setPopover(v => v === "arrange" ? null : "arrange")}>Arrange</button><button type="button" disabled={capturing || props.readOnly || !!frameDraft} onClick={() => setPopover(v => v === "capture" ? null : "capture")}>Attach visible charts</button></div>
+    {popover && <aside className="ws-peer-popover" inert={capturing} aria-label={popover === "drawings" ? "Comparison drawing controls" : popover === "arrange" ? "Peer arrangement" : "Visible capture preview"}>
       <button className="ws-peer-popover-close" aria-label="Close comparison controls" onClick={() => setPopover(null)}>×</button>
       {popover === "drawings" && <>
         <h3>{activeSymbol} · Comparison drawings</h3><p className="ws-help">Select a chart, then a tool. Comparison annotations are separate from workspace drawings.</p>
@@ -249,13 +301,15 @@ export function PeerComparison(props: Props) {
           <button type="button" onClick={() => { const id = crypto.randomUUID(); updateDrawing(activeSymbol, { ...selected, id, locked: false, hidden: false }); setSelectedDrawing(id); }}>Duplicate</button><button type="button" disabled={selected.locked} onClick={() => { changeDrawings({ ...comparison.drawings, [activeSymbol]: comparison.drawings[activeSymbol].filter(d => d.id !== selected.id) }); setSelectedDrawing(null); }}>Delete</button>
         </fieldset>}
       </>}
-      {popover === "arrange" && <><h3>Peer arrangement</h3><p>Primary ticker stays pinned. Hide empty charts to reclaim their grid slots.</p>{search.trim() && <p>Clear search to rearrange peers.</p>}
-        <button type="button" disabled={props.readOnly || !arrangement?.hidden.length} onClick={() => changeArrangement({ order: arrangedOrder, hidden: [] })}>Restore hidden peers</button><button type="button" disabled={props.readOnly} onClick={() => changeArrangement(null)}>Reset arrangement</button>
-        <ol className="ws-peer-arrangement-list">{arrangedOrder.map((symbol, index) => <li key={symbol}><strong>{symbol}</strong><button type="button" disabled={props.readOnly || !!search.trim() || index === 0} aria-label={`Move ${symbol} up`} onClick={() => move(symbol, arrangedOrder[index - 1])}>↑</button><button type="button" disabled={props.readOnly || !!search.trim() || index === arrangedOrder.length - 1} aria-label={`Move ${symbol} down`} onClick={() => move(symbol, arrangedOrder[index + 1])}>↓</button><button type="button" disabled={props.readOnly} onClick={() => changeArrangement({ order: arrangedOrder, hidden: arrangement?.hidden.includes(symbol) ? arrangement.hidden.filter(s => s !== symbol) : [...arrangement?.hidden ?? [], symbol] })}>{arrangement?.hidden.includes(symbol) ? "Restore" : "Hide"}</button></li>)}</ol>
+      {popover === "arrange" && <><h3>Peer arrangement</h3><p>The traded ticker stays first. Select any chart to edit its frame, or drag its bottom-right corner.</p>{search.trim() && <p>Clear search to rearrange peers.</p>}
+        {activeFrame && <PeerFrameSizeEditor key={`${activeSymbol}:${activeFrame.width}:${activeFrame.height}`} symbol={activeSymbol} size={activeFrame} maximumWidth={scroll.width} narrow={scroll.width < 800} disabled={props.readOnly || capturing || !!frameDraft} onCommit={size => commitFrameSize(activeSymbol, size)} />}
+        <button type="button" disabled={props.readOnly || !!frameDraft || !arrangement?.sizes} onClick={() => { const next = { ...arrangement!, order: arrangement?.order ?? [], hidden: arrangement?.hidden ?? [] }; delete next.sizes; changeArrangement(next); }}>Reset frame sizes</button>
+        <button type="button" disabled={props.readOnly || !!frameDraft || !arrangement?.hidden.length} onClick={() => changeArrangement({ ...arrangement, order: arrangement?.order ?? [], hidden: [] })}>Restore hidden peers</button><button type="button" disabled={props.readOnly || !!frameDraft} onClick={() => changeArrangement(null)}>Reset arrangement</button>
+        <ol className="ws-peer-arrangement-list">{arrangedOrder.map((symbol, index) => <li key={symbol}><strong>{symbol}</strong><button type="button" disabled={props.readOnly || !!frameDraft || !!search.trim() || index === 0} aria-label={`Move ${symbol} up`} onClick={() => move(symbol, arrangedOrder[index - 1])}>↑</button><button type="button" disabled={props.readOnly || !!frameDraft || !!search.trim() || index === arrangedOrder.length - 1} aria-label={`Move ${symbol} down`} onClick={() => move(symbol, arrangedOrder[index + 1])}>↓</button><button type="button" disabled={props.readOnly || !!frameDraft} onClick={() => changeArrangement({ ...arrangement, order: arrangement?.order ?? [], hidden: arrangement?.hidden.includes(symbol) ? arrangement.hidden.filter(s => s !== symbol) : [...arrangement?.hidden ?? [], symbol] })}>{arrangement?.hidden.includes(symbol) ? "Restore" : "Hide"}</button></li>)}</ol>
       </>}
       {popover === "capture" && (() => { const { charts, excluded } = visibleCapture(); const bounds = charts.map(c => c.bounds); const frame = bounds.length ? { width: Math.max(...bounds.map(b => b.right)) - Math.min(...bounds.map(b => b.left)), height: Math.max(...bounds.map(b => b.bottom)) - Math.min(...bounds.map(b => b.top)) + 28 } : null; return <><h3>Attach visible charts</h3><p>Included: {charts.map(c => c.symbol).join(", ") || "None ready"}</p><CaptureQualityControls label="Complete image quality" frame={() => frame} /><p>Only fully visible, ready plots are included. Headers, controls and drawing handles are excluded.</p><details><summary>Excluded ({excluded.length})</summary>{excluded.map(value => <div key={value}>{value}</div>)}</details><button type="button" disabled={capturing || charts.length < 2 || charts[0]?.symbol !== props.trade.symbol || props.readOnly} onClick={() => void captureAll()}>Confirm attachment to Peers</button></>; })()}
     </aside>}
-    <div className="ws-peer-controls">
+    <fieldset className="ws-peer-controls" disabled={capturing || !!frameDraft}>
       <CaptureQualityControls label="Peer capture quality" frame={() => handles.current.get(props.trade.symbol)?.frame() ?? null} />
       <select aria-label="Comparison peer group" value={selection.group.id} onChange={e => { const group = selection.groups.find(g => g.id === e.target.value)!; setSelection(v => ({ ...v, group })); props.onSelectGroup(group.id); setIndependent({}); }}>{selection.groups.map(g => <option value={g.id} key={g.id}>{g.name}</option>)}</select>
       <select aria-label="Peer timeframe" value={view.interval} onChange={e => { setView(v => ({ ...v, interval: e.target.value as PeerView["interval"] })); setIndependent({}); }}>{intervals.map(interval => <option key={interval}>{interval}</option>)}</select>
@@ -265,13 +319,14 @@ export function PeerComparison(props: Props) {
       <button type="button" disabled={entryTime === null} aria-pressed={view.beforeEntry} onClick={() => setView(v => ({ ...v, beforeEntry: !v.beforeEntry }))}>Before entry {view.beforeEntry ? "on" : "off"}</button>
       <input aria-label="Search peers" placeholder="Find a peer…" value={search} onChange={e => setSearch(e.target.value)} />
       <button type="button" disabled={cooldown > 0} onClick={() => { memory.clear(); setRetry(v => v + 1); }}>{cooldown ? `Retry in ${cooldown}s` : "Retry charts"}</button>
-    </div>
+    </fieldset>
     {(membershipLoading || membershipError) && <div className="ws-peer-message" role="status">{membershipLoading ? "Refreshing curated memberships…" : membershipError} {!membershipLoading && <button type="button" onClick={() => setRefresh(v => v + 1)}>Retry groups</button>}</div>}
     {view.replayAt !== undefined && <div className="ws-peer-message" role="note">Replay paused · completed candles through {new Date(view.replayAt * 1000).toISOString()}</div>}
     {captureError && <div className="ws-peer-message" role="alert">{captureError}</div>}
-    {capturing && <div className="ws-peer-message" role="status">Saving chart to Peers…</div>}
-    <div className="ws-peer-body" hidden={!membershipValid}>{membershipValid && card(props.trade.symbol, true)}<div className="ws-peer-scroll" ref={scroller} onScroll={e => { const top = e.currentTarget.scrollTop; setScroll(v => ({ ...v, top })); }}>
-      {!members.length ? <p className="ws-help">No peers match this selection.</p> : <div className="ws-peer-virtual" style={{ height: window.height }}><div className="ws-peer-grid" style={{ transform: `translateY(${window.top}px)`, gridTemplateColumns: `repeat(${scroll.columns}, minmax(0, 1fr))` }}>{membershipValid && visible.map(member => card(member.ticker, false, member.exchange))}</div></div>}
+    {capturing && <div className="ws-peer-message ws-peer-capture-status" role="status">Saving chart to Peers…</div>}
+    <div className="ws-peer-body" hidden={!membershipValid}><div className="ws-peer-scroll" inert={capturing} ref={scroller} onScroll={e => { const top = e.currentTarget.scrollTop; setScroll(v => ({ ...v, top })); }}>
+      {!members.length && <p className="ws-help">No peers match this selection.</p>}
+      <div className="ws-peer-virtual" style={{ height: layout.height }}><div className="ws-peer-grid">{membershipValid && mounted.map(rect => card(rect))}</div></div>
     </div></div>
     <footer className="ws-peer-footnote"><span>{members.length} peers · {view.session} session · history held in memory only</span><a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView Lightweight Charts</a></footer>
   </div></div>;

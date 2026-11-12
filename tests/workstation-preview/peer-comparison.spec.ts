@@ -31,12 +31,12 @@ test("50-peer virtualization, isolated linked navigation, paired capture, reuse,
     }
     return ["245,158,11", "96,165,250", "192,132,252", "244,114,182"].every(rgb => colours.has(rgb));
   })).toBe(true);
-  expect(await dialog.locator("[data-peer-canvas]").count()).toBeLessThanOrEqual(11);
+  expect(await dialog.locator("[data-peer-canvas]").count()).toBeLessThanOrEqual(14);
   await expect(dialog).toContainText("50 peers");
   await dialog.locator(".ws-peer-scroll").evaluate(e => { e.scrollTop = e.scrollHeight; });
   await expect(dialog.locator('[data-peer-symbol="PEER50"] [data-peer-canvas]')).toBeVisible();
   await expect(dialog.locator('[data-peer-symbol="PEER01"]')).toHaveCount(0);
-  expect(await dialog.locator("[data-peer-canvas]").count()).toBeLessThanOrEqual(11);
+  expect(await dialog.locator("[data-peer-canvas]").count()).toBeLessThanOrEqual(14);
   await dialog.getByLabel("Search peers").fill("PEER03");
   const peer = dialog.locator('[data-peer-symbol="PEER03"]');
   await expect(peer.getByRole("button", { name: "Attach comparison", exact: true })).toBeEnabled();
@@ -84,15 +84,15 @@ test("50-peer virtualization, isolated linked navigation, paired capture, reuse,
   await expect.poll(async () => (await doc(page))?.review.notion.sectionEvidence?.takeaways).toEqual([]);
   expect((await doc(page)).evidence).toHaveLength(1); expect(errors).toEqual([]);
 });
-test("mobile uses a compact pinned primary and a single scrollable peer column", async ({ page }) => {
+test("mobile uses ordinary primary and peer frames in one scrollable column", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await open(page);
   await page.getByRole("button", { name: "Compare peers", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Peer comparison", exact: true });
   await expect(dialog.locator('[data-peer-symbol="PEER01"] [data-peer-canvas]')).toBeVisible();
   const primary = (await dialog.locator(".ws-peer-primary").boundingBox())!, scroll = (await dialog.locator(".ws-peer-scroll").boundingBox())!;
-  expect(primary.y + primary.height).toBeLessThanOrEqual(scroll.y); expect(primary.height).toBeLessThan(260);
-  expect(await dialog.locator(".ws-peer-grid").evaluate(e => getComputedStyle(e).gridTemplateColumns.split(" ").length)).toBe(1);
+  expect(primary.y).toBeGreaterThanOrEqual(scroll.y); expect(primary.height).toBe(328);
+  const peer = (await dialog.locator('[data-peer-symbol="PEER01"]').boundingBox())!; expect(peer.x).toBe(primary.x); expect(peer.y).toBeGreaterThan(primary.y + primary.height);
   const plot = dialog.locator(".ws-peer-primary [data-peer-canvas]"), before = await plot.boundingBox();
   await dialog.getByRole("button", { name: "Drawings", exact: true }).click();
   expect(await plot.boundingBox()).toEqual(before);
@@ -168,7 +168,7 @@ test("peer annotations, arrangements and complete visible capture remain isolate
   await dialog.getByRole("button", { name: "Arrange", exact: true }).click();
   const row = dialog.locator(".ws-peer-arrangement-list li").filter({ has: page.locator("strong", { hasText: /^PEER01$/ }) });
   await row.getByRole("button", { name: "Move PEER01 down" }).click();
-  await expect(dialog.locator(".ws-peer-grid article").first()).toHaveAttribute("data-peer-symbol", "PEER02");
+  await expect(dialog.locator(".ws-peer-grid article:not(.ws-peer-primary)").first()).toHaveAttribute("data-peer-symbol", "PEER02");
   await row.getByRole("button", { name: "Hide", exact: true }).click();
   await expect(peer).toHaveCount(0);
   await dialog.getByRole("button", { name: "Close comparison controls" }).click();

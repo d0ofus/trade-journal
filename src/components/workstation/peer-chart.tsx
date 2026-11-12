@@ -13,8 +13,10 @@ import { assertCaptureSize, captureRenderFrame, chartBitmapRatio, type CaptureFr
 import { createPeerDrawingLayer, type PeerDrawingControls } from "./peer-drawing-layer";
 import { paintChart } from "./chart-paint";
 import { logicalTimeIndex } from "@/lib/workstation/math";
+import { preserveHistoryViewport } from "@/lib/workstation/history";
+import { peerTimeAtLogical } from "@/lib/workstation/peer-frame-layout";
 
-export type PeerChartHandle = { capture: (scale: number, plotOnly?: boolean) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; bounds: () => DOMRect; range: () => HistoryRange | null; cancelDrawing: () => void };
+export type PeerChartHandle = { capture: (scale: number, plotOnly?: boolean) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; bounds: () => DOMRect; range: () => HistoryRange | null; cancelDrawing: () => void; beginResize: () => void; endResize: (cancel?: boolean) => void };
 type Props = { drawingStore: DrawingStore; drawingControls: PeerDrawingControls; symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
 const numericRange = (chart: IChartApi): HistoryRange | null => {
   const range = chart.timeScale().getVisibleRange();
@@ -39,20 +41,41 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
     if (!host.current) return;
     const node = host.current, preferences = props.preferences;
     const light = preferences.theme === "light", bg = light ? "#f8fafc" : "#101722", text = light ? "#334155" : "#cbd5e1";
-    const chart = createChart(node, { autoSize: true, layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 10, attributionLogo: false }, grid: { vertLines: { visible: preferences.gridlines.vertical, color: light ? "#e2e8f0" : "#1e293b" }, horzLines: { visible: preferences.gridlines.horizontal, color: light ? "#e2e8f0" : "#1e293b" } }, timeScale: { timeVisible: !["1d", "1wk"].includes(props.view.interval), secondsVisible: false, borderVisible: false }, rightPriceScale: { borderVisible: false, scaleMargins: { top: .12, bottom: preferences.volume ? .23 : .06 } } });
+    const chart = createChart(node, { autoSize: false, width: node.clientWidth, height: node.clientHeight, layout: { background: { type: ColorType.Solid, color: bg }, textColor: text, fontSize: 10, attributionLogo: false }, grid: { vertLines: { visible: preferences.gridlines.vertical, color: light ? "#e2e8f0" : "#1e293b" }, horzLines: { visible: preferences.gridlines.horizontal, color: light ? "#e2e8f0" : "#1e293b" } }, timeScale: { lockVisibleTimeRangeOnResize: true, timeVisible: !["1d", "1wk"].includes(props.view.interval), secondsVisible: false, borderVisible: false }, rightPriceScale: { borderVisible: false, scaleMargins: { top: .12, bottom: preferences.volume ? .23 : .06 } } });
     const price = chart.addSeries(CandlestickSeries, { upColor: "#34d399", downColor: "#fb7185", wickUpColor: "#34d399", wickDownColor: "#fb7185", borderVisible: false, priceLineVisible: false });
     const volume = preferences.volume ? chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "volume", priceLineVisible: false, lastValueVisible: false }) : null;
     volume?.priceScale().applyOptions({ scaleMargins: { top: .82, bottom: 0 } });
     const volumeAverage = volume && preferences.volumeAverage.enabled ? chart.addSeries(LineSeries, { priceScaleId: "volume", color: volumeColor(preferences.volumeStyle, "average", light, "peer"), lineWidth: 1, lastValueVisible: false, priceLineVisible: false }) : null;
     const averages = preferences.averages.map((period, i) => ({ period, series: chart.addSeries(LineSeries, { color: ["#f59e0b", "#60a5fa", "#c084fc", "#f472b6"][i % 4], lineWidth: 1, lastValueVisible: false, priceLineVisible: false }) }));
     const markers = createSeriesMarkers(price, []);
-    let applying = true, frame = 0, candles: Candle[] = [];
+    let applying = true, frame = 0, resizeFrame = 0, candles: Candle[] = [];
+    let resizing: { candles: Candle[]; logical: HistoryRange; range: HistoryRange; spacing: number; frameWidth: number; context: string; active: boolean; published?: HistoryRange } | null = null;
     const drawingLayer = createPeerDrawingLayer(node, chart, price, () => ({ controls: { ...latest.current.drawingControls, drawings: latest.current.drawingStore.getSnapshot()?.value.comparison?.drawings[latest.current.symbol] ?? latest.current.drawingControls.drawings }, candles, view: latest.current.view, trade: latest.current.trade, preferences: latest.current.preferences }));
+    const historyNotice = document.createElement("span"); historyNotice.className = "ws-peer-history-notice"; historyNotice.setAttribute("role", "status"); historyNotice.textContent = "Earlier dates extend beyond available history."; historyNotice.hidden = true; node.append(historyNotice);
     const describeRange = () => { const range = numericRange(chart); if (range) { node.dataset.visibleFrom = String(range.from); node.dataset.visibleTo = String(range.to); } return range; };
     const beginSync = () => { applying = true; cancelAnimationFrame(frame); };
     const finishSync = () => { describeRange(); drawingLayer.draw(); frame = requestAnimationFrame(() => { applying = false; }); };
+    const resizeViewport = () => {
+      if (!resizing || !candles.length || node.clientWidth === resizing.frameWidth) { historyNotice.hidden = true; return false; }
+      const anchored = preserveHistoryViewport(resizing.candles, candles, resizing.logical);
+      const logical = { from: anchored.to - chart.timeScale().width() / resizing.spacing, to: anchored.to };
+      historyNotice.hidden = logical.from >= -1;
+      chart.timeScale().setVisibleLogicalRange(logical);
+      const range = { from: Math.max(1, Math.floor(peerTimeAtLogical(logical.from, candles, latest.current.view.interval))), to: resizing.range.to };
+      // Keep the original rightmost disclosed candle, including in historical modes.
+      range.from = Math.min(range.from, range.to - 1);
+      const bounded = peerReplayRange(range, latest.current.view.replayAt);
+      if (!resizing.published || Math.abs(resizing.published.from - bounded.from) >= 1 || resizing.published.to !== bounded.to) {
+        resizing.published = bounded;
+        latest.current.onRange(props.symbol, bounded);
+      }
+      return true;
+    };
     const sync = () => {
       if (!candles.length) return;
+      if (resizing && (resizing.active || resizing.published?.from === latest.current.view.range.from && resizing.published.to === latest.current.view.range.to)) return;
+      resizing = null;
+      historyNotice.hidden = true;
       const range = peerReplayRange(latest.current.view.range, latest.current.view.replayAt), current = numericRange(chart);
       if (current && Math.abs(current.from - range.from) < 1 && Math.abs(current.to - range.to) < 1) return;
       beginSync();
@@ -62,6 +85,8 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
     };
     const update = () => {
       const { trade, view, series } = latest.current;
+      if (resizing?.context !== latest.current.drawingControls.context) resizing = null;
+      if (resizing && !resizing.active && resizing.published && (resizing.published.from !== view.range.from || resizing.published.to !== view.range.to)) resizing = null;
       const filtered = peerChartData(series?.candles ?? [], trade, view);
       const session = filtered.session; candles = filtered.candles;
       node.dataset.lastCandleTime = String(candles.at(-1)?.time ?? "");
@@ -74,12 +99,13 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
       const entry = peerEntryTime(trade), entryBar = entry === null ? undefined : candles.find(c => { const p = candlePeriod(c.time, view.interval, session); return entry >= p.start && entry < p.end; });
       markers.setMarkers(entryBar ? [{ time: entryBar.time as UTCTimestamp, position: "aboveBar", shape: "arrowDown", color: "#fbbf24", text: `${trade.symbol} entry` }] : []);
       const range = peerReplayRange(view.range, view.replayAt);
-      if (candles.length) chart.timeScale().setVisibleRange({ from: range.from as UTCTimestamp, to: range.to as UTCTimestamp });
+      if (candles.length && !resizeViewport()) chart.timeScale().setVisibleRange({ from: range.from as UTCTimestamp, to: range.to as UTCTimestamp });
       finishSync();
     };
     const changed = () => {
       const range = describeRange();
       if (applying || !range || range.to <= range.from) return;
+      resizing = null;
       const bounded = peerReplayRange(range, latest.current.view.replayAt);
       if (bounded.from !== range.from || bounded.to !== range.to) {
         beginSync();
@@ -89,11 +115,37 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
       latest.current.onRange(props.symbol, bounded);
     };
     chart.timeScale().subscribeVisibleTimeRangeChange(changed);
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        if (!node.clientWidth || !node.clientHeight) return;
+        // A later window resize must not reuse a completed manual gesture.
+        if (resizing && !resizing.active) resizing = null;
+        beginSync();
+        chart.resize(node.clientWidth, node.clientHeight);
+        if (!resizeViewport() && candles.length) {
+          const range = latest.current.view.range;
+          chart.timeScale().setVisibleRange({ from: range.from as UTCTimestamp, to: range.to as UTCTimestamp });
+        }
+        finishSync();
+      });
+    });
+    observer.observe(node);
     model.current = { update, sync, draw: drawingLayer.draw, cancel: drawingLayer.cancel }; update();
     props.register(props.symbol, {
       range: () => numericRange(chart),
       bounds: () => node.getBoundingClientRect(),
       cancelDrawing: drawingLayer.cancel,
+      beginResize: () => {
+        drawingLayer.cancel();
+        const logical = chart.timeScale().getVisibleLogicalRange(), range = numericRange(chart);
+        resizing = logical && range ? { candles: [...candles], logical: { ...logical }, range, spacing: chart.timeScale().options().barSpacing, frameWidth: node.clientWidth, context: latest.current.drawingControls.context, active: true } : null;
+      },
+      endResize: (cancel = false) => {
+        if (!resizing) return;
+        if (cancel) { const range = resizing.range; resizing = null; latest.current.onRange(props.symbol, range); }
+        else { resizing.active = false; beginSync(); resizeViewport(); finishSync(); }
+      },
       frame: () => ({ width: node.clientWidth, height: node.clientHeight + 76 }),
       capture: async (scale: number, plotOnly = false) => {
         if (!candles.length) throw new Error("Wait for chart history before attaching.");
@@ -102,13 +154,14 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
         frozen.selected = null; frozen.export = true;
         // Freeze every series/range/marker before the first asynchronous yield.
         const range = numericRange(chart) ?? view.range, logical = chart.timeScale().getVisibleLogicalRange(), priceRange = price.priceScale().getVisibleRange();
+        const priceSamples = priceRange && [priceRange.from, priceRange.to].map(value => ({ value, y: price.priceToCoordinate(value) }));
         const fontFamily = chart.options().layout.fontFamily;
         const ratio = chartBitmapRatio(node, window.devicePixelRatio || 1), render = captureRenderFrame({ width: node.clientWidth, height: node.clientHeight }, scale, ratio);
         assertCaptureSize(render.width * ratio, render.height * ratio + Math.ceil(extra * scale));
         const container = document.createElement("div"); container.style.cssText = `position:fixed;left:-100000px;top:0;width:${render.width}px;height:${render.height}px;`; document.body.appendChild(container);
         const clone = createChart(container, { ...chart.options(), autoSize: false, width: render.width, height: render.height,
           layout: { ...chart.options().layout, fontSize: chart.options().layout.fontSize * render.x },
-          timeScale: { ...chart.timeScale().options(), barSpacing: chart.timeScale().options().barSpacing * render.x, minBarSpacing: chart.timeScale().options().minBarSpacing * render.x },
+          timeScale: { ...chart.timeScale().options(), minimumHeight: Math.ceil(chart.timeScale().height() * render.y), barSpacing: chart.timeScale().options().barSpacing * render.x, minBarSpacing: chart.timeScale().options().minBarSpacing * render.x },
           rightPriceScale: { ...chart.options().rightPriceScale, minimumWidth: chart.priceScale("right").width() * render.x },
         });
         let detach = () => {};
@@ -122,6 +175,17 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
           if (logical) clone.timeScale().setVisibleLogicalRange(logical);
           if (priceRange) { cs.priceScale().setAutoScale(false); cs.priceScale().setVisibleRange(priceRange); }
           await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+          // Native entry markers reserve pixel margins outside getVisibleRange().
+          // Calibrate the clone from two frozen coordinates so those margins and
+          // DPR rounding cannot shift candles or annotation anchors vertically.
+          if (priceSamples?.every(sample => sample.y !== null)) {
+            const [a, b] = priceSamples, pa = cs.coordinateToPrice(a.y! * render.y), pb = cs.coordinateToPrice(b.y! * render.y), current = cs.priceScale().getVisibleRange();
+            if (pa !== null && pb !== null && pa !== pb && current) {
+              const factor = (b.value - a.value) / (pb - pa), offset = a.value - factor * pa;
+              cs.priceScale().setVisibleRange({ from: current.from * factor + offset, to: current.to * factor + offset });
+              await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+            }
+          }
           const plot = clone.takeScreenshot(), canvas = document.createElement("canvas");
           assertCaptureSize(plot.width, plot.height + Math.ceil(extra * scale));
           canvas.width = plot.width; canvas.height = plot.height + Math.ceil(extra * scale);
@@ -139,7 +203,7 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
         } finally { detach(); clone.remove(); container.remove(); }
       },
     });
-    return () => { cancelAnimationFrame(frame); drawingLayer.dispose(); props.register(props.symbol, null); chart.timeScale().unsubscribeVisibleTimeRangeChange(changed); markers.detach(); chart.remove(); model.current = null; };
+    return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); historyNotice.remove(); drawingLayer.dispose(); props.register(props.symbol, null); chart.timeScale().unsubscribeVisibleTimeRangeChange(changed); markers.detach(); chart.remove(); model.current = null; };
     // Date/data updates reuse the canvas; only display configuration rebuilds it.
   }, [props.symbol, props.view.interval, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { model.current?.update(); }, [props.series, props.trade, props.view.session, props.view.adjustment, props.view.beforeEntry, props.view.replayAt]);

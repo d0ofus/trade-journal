@@ -1,6 +1,7 @@
 import type { Drawing } from "./types";
 
-export type PeerArrangement = { order: string[]; hidden: string[] };
+export type PeerFrameSize = { width: number; height: number };
+export type PeerArrangement = { order: string[]; hidden: string[]; sizes?: Record<string, PeerFrameSize> };
 export type PeerComparisonState = {
   drawings: Record<string, Drawing[]>;
   arrangements: Record<string, PeerArrangement>;

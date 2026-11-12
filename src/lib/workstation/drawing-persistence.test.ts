@@ -33,3 +33,12 @@ it("rejects unsupported targeted tools before persistence", async () => {
   expect((await PATCH(request(doc), params)).status).toBe(400);
   expect(state.saves).toBe(0);
 });
+it("retains per-group peer frame dimensions through HTTP save/load and rejects invalid sizes", async () => {
+  const comparison = { drawings: {}, arrangements: { group: { order: ["PEER"], hidden: ["PEER"], sizes: { PRIMARY: { width: 900, height: 600 }, PEER: { width: 480, height: 328 } } } } };
+  const doc = { ...emptyDocument(), comparison };
+  expect((await PATCH(request(doc), params)).status).toBe(200);
+  expect((await (await GET(new NextRequest("http://localhost/api/closed-trades/index-drawing-test/workstation"), params)).json()).comparison).toEqual(comparison);
+  doc.comparison.arrangements.group.sizes.PEER.width = 0;
+  expect((await PATCH(request(doc), params)).status).toBe(400);
+  expect(state.saves).toBe(1);
+});

@@ -5,11 +5,43 @@ memberships; **Compare peers** refreshes them again and opens an isolated chart 
 The selected active group is saved per review. Deleted/inactive groups fall back to
 highest priority, then alphabetical name; unavailable memberships are reported explicitly.
 
-The primary ticker stays pinned alongside a virtualized peer grid. Dates are linked by
+The primary ticker stays first in a virtualized, wrapping frame layout. Dates are linked by
 timestamp by default; price scales remain independent. The overlay copies the focused
 chart's timeframe, session, price basis, visible range, moving averages, theme and Before
 entry setting. Match workspace reapplies its dates/settings; Jump to entry requires a
-resolved first execution. Peer drawings are intentionally not editable.
+resolved first execution. Comparison drawings have their own editing controls and remain
+separate from workspace drawings.
+
+## Resizable frames
+
+Every ticker, including the traded ticker, has a bottom-right resize handle. Drag it
+with a mouse or touch, or focus it and use arrow keys (20 px; Shift uses 100 px).
+Escape cancels an unfinished drag. Select a chart and open **Arrange** to confirm exact
+width/height inputs with Enter or by leaving the input.
+
+Frames default to 328 px tall and three equal columns in large containers, two in
+medium containers, and one below 800 px. Custom frames wrap in saved peer order without
+overlap. Display widths are bounded by the available space and a 320 px minimum, with
+heights between 240 and 1200 px. Narrow screens use the full width without replacing
+saved desktop widths. Rows use their actual tallest frame for scrolling and virtualization;
+the primary chart remains mounted for paired capture even when scrolled offscreen.
+
+Widening a frame keeps its candle interval, candle spacing and rightmost date fixed,
+revealing older bars. Height-only edits retain dates. Linked dates follow the resized
+chart; unlinked dates change only on that ticker. Passive reflow and window resizing
+retain date ranges. Additional history uses the existing transient memory queue; failed
+expansion keeps previously completed candles and reports the reason with Retry.
+
+Optional per-ticker `sizes` in each saved peer-group arrangement store CSS dimensions
+in the existing trade review. Reopening restores sizes while dates/settings still start
+from the workspace. Moving, hiding and restoring peers retain sizes. **Reset frame sizes**
+preserves order and visibility; **Reset arrangement** clears the whole customization.
+Schema 1, database tables and endpoints are unchanged.
+
+Individual and paired PNGs reflect resized frames. **Attach visible charts** requires
+the primary plot and at least one peer plot to be fully visible and ready; it stores
+their real geometry and date ranges. Layout controls and chart interaction freeze during
+capture. Native marker margins and measured time-axis height are preserved in exports.
 
 ## Configuration and rollout
 
@@ -86,3 +118,11 @@ Implementation validation (2026-09-18): 116 provider/unit tests, 49 workstation 
 TypeScript validation, changed-file lint, repository-safety scanning and the production
 build. The authenticated peer browser test is included but was not executed: the tool
 runner rejected starting its local production test server. Run that check before rollout.
+
+Frame-resizing validation (2026-11-12): 37 focused layout, HTTP and provider checks and
+71 workstation checks passed. All 18 distinct peer/resize browser scenarios passed across
+targeted runs, covering persistence, cancellation, virtualization, historical modes,
+touch, capture freezing and saved PNG alignment in both themes at DPR 1, 1.25 and 2.
+Dark/light saved PNG originals were visually inspected. Workstation TypeScript,
+affected-file ESLint, repository safety and the production build passed. Browser tests
+used synthetic preview data and HTTP tests used mocks; no production data was changed.
