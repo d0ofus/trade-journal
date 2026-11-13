@@ -68,7 +68,7 @@ export async function fetchRegularHours(symbol: string, range: CandleRange, poli
     // Native five-minute data is transient unless it was independently requested.
     for (let from = gap.from; from < gap.to; from += 14 * 86400) {
       const window = intersectRange({ from, to: from + 14 * 86400 }, gap)!;
-      const fetched = await fetchCompactCandles(symbol, "5m", window, policy.credentials!, background, useCache, context);
+      const fetched = await fetchCompactCandles(symbol, "5m", window, policy.credentials!, background, context.coordinateProvider ?? useCache, context);
       candles = validateCandles([...candles.filter(c => c.time < window.from || c.time >= window.to), ...fetched]);
     }
   }

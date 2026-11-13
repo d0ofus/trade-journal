@@ -149,8 +149,9 @@ export type TradeDocument = {
   legacy?: unknown;
 };
 export type ChartSessionPreference = "auto" | "regular" | "extended";
-export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; lastBenchmark?: "SPY" | "QQQ"; benchmarkMode?: "overlay" | "pane"; benchmarkPaneRatio?: number; beforeEntry?: boolean };
+export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; lastBenchmark?: "SPY" | "QQQ"; benchmarkMode?: "overlay" | "pane"; benchmarkPaneRatio?: number; rvolPaneRatio?: number; beforeEntry?: boolean };
 export type WorkspacePreferences = {
+  rvol?: import("./rvol").RvolSettings;
   volumeStyle?: import("./volume-style").VolumeAppearance;
   capturePinNotes?: boolean;
   benchmarkColor?: string;
@@ -186,6 +187,10 @@ export type WorkspacePreferences = {
   exportColumns: string[];
 };
 export type CandleResult = {
+  /** Successfully retrieved ranges, independent of durable persistence. */
+  retrieved?: import("./candle-ranges").CandleRange[];
+  /** Preserve missing volume instead of treating its chart display zero as reported data. */
+  volumeMissing?: number[];
   splitAdjustment?: import("./split-adjustment").SplitAdjustment;
   cache?: import("./candle-ranges").CandleCacheMetadata;
   identity?: string;
@@ -198,6 +203,7 @@ export type CandleResult = {
 };
 export type CandleSession = { timezone: string | null; calendar: "exchange" | "utc" | "unknown"; marketHours: "regular" | "extended" | "unknown"; aggregation?: string };
 export interface WorkstationAdapter {
+  indicatorCandles?: (trade: Trade, interval: Interval, signal: AbortSignal, range: { from: number; to: number }, identity?: string, mode?: "cache" | "fill") => Promise<CandleResult>;
   reviewStatuses?(groupKeys: string[], signal: AbortSignal): Promise<import("./review-status").ReviewStatusSummary[]>;
   benchmarkCandles?: (symbol: "SPY" | "QQQ", trade: Trade, interval: Interval, signal: AbortSignal, range: { from: number; to: number }, mode?: "cache" | "fill") => Promise<CandleResult>;
   metrics?: (trade: Trade, signal: AbortSignal) => Promise<import("./market-metrics").MarketMetrics>;
@@ -244,6 +250,7 @@ export const emptyDocument = (): TradeDocument => ({
   updatedAt: null,
 });
 export const defaultPreferences = (): WorkspacePreferences => ({
+  rvol: { enabled: false, mode: "cumulative", lookback: 20 },
   theme: "dark",
   panels: [
     { id: "chart-1", interval: "5m", session: "auto" },

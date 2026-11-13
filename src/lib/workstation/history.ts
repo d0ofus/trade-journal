@@ -1,10 +1,16 @@
 import { Candle, CandleResult, Interval, Trade, WorkstationAdapter, seconds } from "./types";
 import { waitForHistory } from "./shared-requests";
+import { unionRanges } from "./candle-ranges";
 
 export type HistoryRange = { from: number; to: number };
 export type HistoryDirection = "older" | "newer";
 export const MAX_HISTORY_CANDLES = 100_000;
 const DAY = 86400;
+function missingVolumes(previous: CandleResult, incoming: CandleResult, candles: Candle[]) {
+  if (!previous.volumeMissing?.length && !incoming.volumeMissing?.length) return [];
+  const retained = new Set(candles.map(c => c.time)), changed = new Set(incoming.candles.map(c => c.time));
+  return [...new Set([...(previous.volumeMissing ?? []).filter(t => retained.has(t) && !changed.has(t)), ...(incoming.volumeMissing ?? []).filter(t => retained.has(t))])];
+}
 const pageDays: Record<Interval, number> = { "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 };
 
 /** Fetch context for indicators without changing the user's saved visible dates. */
@@ -176,7 +182,7 @@ export class CandleHistory {
         const previous = value.cache?.enabled ? this.state.result.candles.filter(c => !value.cache!.covered.some(r => c.time >= r.from && c.time < r.to)) : this.state.result.candles;
         const candles = mergeHistory(previous, value.candles, range);
         if (candles.length > MAX_HISTORY_CANDLES) throw new Error("Chart memory limit reached (100,000 bars). Use a larger timeframe.");
-        this.publish({ result: { ...value, candles, identity: this.state.result.candles.length ? this.state.result.identity : value.identity } });
+        this.publish({ result: { ...value, candles, retrieved: unionRanges([...(this.state.result.retrieved ?? []), ...(value.retrieved ?? []), ...(value.cache?.covered ?? []), ...(value.cache?.temporary ?? [])]), volumeMissing: missingVolumes(this.state.result, value, candles), identity: this.state.result.candles.length ? this.state.result.identity : value.identity } });
       };
       let response = await this.adapter.cachedCandles?.(this.trade, this.interval, signal, range, this.state.result.candles.length ? this.state.result.identity : undefined);
       signal.throwIfAborted();
@@ -224,7 +230,7 @@ export class CandleHistory {
         }
       }
       this.publish({
-        result: { splitAdjustment: response.splitAdjustment, cache: response.cache, candles, source: [...this.sources].join(" / "), warning: [...this.warnings].join(" · "), identity: this.state.result.candles.length ? this.state.result.identity : response.identity, provider: response.provider ?? this.state.result.provider, session: response.session ?? this.state.result.session },
+        result: { splitAdjustment: response.splitAdjustment, cache: response.cache, candles, retrieved: unionRanges([...(this.state.result.retrieved ?? []), ...(response.retrieved ?? []), ...(response.cache?.covered ?? []), ...(response.cache?.temporary ?? [])]), volumeMissing: missingVolumes(this.state.result, response, candles), source: [...this.sources].join(" / "), warning: [...this.warnings].join(" · "), identity: this.state.result.candles.length ? this.state.result.identity : response.identity, provider: response.provider ?? this.state.result.provider, session: response.session ?? this.state.result.session },
         range: { from: Math.min(previous.from, range.from), to: Math.max(previous.to, range.to) },
         messages,
       });

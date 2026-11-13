@@ -2871,3 +2871,12 @@
 .ws-pin-target { position: absolute; z-index: 5; padding: 0; border: 0; background: transparent; cursor: grab; border-radius: 12px; }
 .ws-pin-target:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 1px; }
 .ws-pin-target[hidden] { display: none; }
+.ws-rvol-legend { visibility: hidden; position: absolute; z-index: 3; top: 75%; left: 8px; display: flex; flex-direction: column; gap: 2px; pointer-events: none; font-size: 10px; line-height: 14px; color: var(--ws-muted, #a0adc2); }
+.ws-rvol-legend strong { font-size: 11px; color: var(--ws-text, #dde5f3); }
+.ws-rvol-legend span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-rvol-legend button { pointer-events: auto; align-self: flex-start; padding: 1px 6px; }
+.ws-rvol-legend [data-rvol-description] { pointer-events: auto; cursor: help; }
+.ws-light .ws-rvol-legend { color: #526077; }
+.ws-light .ws-rvol-legend strong { color: #243149; }
+.ws-rvol-settings { min-width: 0; margin: 8px 0; padding: 8px; border: 1px solid var(--ws-border, #30394c); }
+.ws-rvol-settings p { font-size: 11px; line-height: 1.4; }

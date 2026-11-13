@@ -70,6 +70,9 @@ export type ChartHandle = {
   view: () => HistoryRange | null;
 };
 type Props = {
+  indicatorScheduler: IndicatorScheduler;
+  onToggleRvol: () => void;
+  captureLocked: boolean;
   drawingStore?: DrawingStore;
   panel: ChartPanel;
   trade: Trade;
@@ -127,6 +130,10 @@ import { tradeChartSession } from "@/lib/workstation/chart-session";
 import type { DrawingStore } from "./annotation-text-input";
 import { matchesDrawingTarget, projectDrawing, supportsBenchmarkDrawing, type BenchmarkDrawingContext } from "@/lib/workstation/drawing-target";
 import { drawingPane, insideDrawingPane, panePoint, offsetPaneHits } from "./drawing-pane";
+import { restoreRvol, rvolDescription, rvolMode, rvolPaneRatio, rvolTitle } from "@/lib/workstation/rvol";
+import { IndicatorScheduler } from "@/lib/workstation/indicator-scheduler";
+import { useRvol } from "./use-rvol";
+import { addRvolSeries, paintRvolLegend, setRvolData, sizeWorkspacePanes } from "./rvol-layer";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
@@ -150,6 +157,13 @@ export function TradeChart(input: Props) {
   const ohlcContext = useRef("");
   const benchmarkHost = useRef<HTMLDivElement>(null);
   const benchmarkLayer = useRef<ReturnType<typeof createBenchmarkLayer> | null>(null);
+  const rvolSeries = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const rvolActivation = useRef<Promise<void>>(Promise.resolve());
+  const rawVolumeSeries = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const rvolLegend = useRef<HTMLDivElement>(null);
+  const inspectedRvolTime = useRef<number | null>(null);
+  const paneGesture = useRef(0);
+  const rvolSettings = useMemo(() => restoreRvol(input.preferences.rvol), [input.preferences.rvol]);
   const beforeEntryView = useRef<{ range: { from: number; to: number }; candles: Candle[]; interval: Interval; context: string } | null>(null);
   const wasBeforeEntry = useRef(false);
   const sessionBackground = useRef<SessionBackground | null>(null);
@@ -245,6 +259,9 @@ export function TradeChart(input: Props) {
     return beforeEntry ? beforeEntryCandles(completed, props.trade, props.panel.interval, result.session) : completed;
   }, [result.candles, result.session, props.panel.interval, props.replay, props.trade, beforeEntry]);
   bars.current = data;
+  const rvol = useRvol({ settings: rvolSettings, result, candles: data, interval: props.panel.interval, trade, adapter: props.adapter, scheduler: props.indicatorScheduler, visible: visibleWindow, cutoff: Math.min(props.replay ?? Infinity, beforeEntry ? entryBoundary ?? Infinity : Infinity), paused: loading || !!failure || props.captureLocked });
+  const rvolState = useRef({ ...rvol, mode: rvolMode(rvolSettings.mode, props.panel.interval), settings: rvolSettings });
+  rvolState.current = { ...rvol, mode: rvolMode(rvolSettings.mode, props.panel.interval), settings: rvolSettings };
 
   useEffect(() => {
     const changedTimeBasis = interpretationVersion.current !== trade.timeInterpretationVersion;
@@ -301,6 +318,7 @@ export function TradeChart(input: Props) {
     autoPages.current = 0;
     setHistoryState(null);
     let disposed = false;
+    latest.current.indicatorScheduler.foreground(latest.current.panel.id, true);
     const indicatorPeriods = Math.max(0, ...latest.current.preferences.averages,
       latest.current.preferences.volume && latest.current.preferences.volumeAverage.enabled ? latest.current.preferences.volumeAverage.period : 0);
     const restoredHistory = requested?.range ? indicatorWarmupRange(requested.range, props.panel.interval, indicatorPeriods) : null;
@@ -312,6 +330,7 @@ export function TradeChart(input: Props) {
       // so longer averages do not disappear after a narrow saved view is reloaded.
       restoredHistory && !(intervalContext && beforeEntryActive.current) ? { from: restoredHistory.from, to: Math.min(restoredHistory.to, restoredHistory.from + ({ "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 }[props.panel.interval]) * 86400) } : initialHistoryRange(trade, props.panel.interval, context),
       (state) => {
+        latest.current.indicatorScheduler.foreground(latest.current.panel.id, !!state.loading);
         setHistoryState(state);
         dataReady.current = state.result.candles.length > 0 || (!state.loading && !state.failed);
       },
@@ -332,6 +351,7 @@ export function TradeChart(input: Props) {
     return () => {
       disposed = true;
       session.dispose();
+      latest.current.indicatorScheduler.foreground(latest.current.panel.id, false);
       if (history.current === session) history.current = null;
     };
   }, [props.adapter, trade, props.panel.interval, reload]);
@@ -518,7 +538,7 @@ export function TradeChart(input: Props) {
           if (container.current) container.current.dataset.primaryPaneHeight = String(o.plotHeight);
           const rows = executionVisibility({ ...o, executions: o.trade.executions });
           hits.current = paintChart(ctx, { ...o, drawings: o.drawings.filter(d => !d.target) }, rows);
-          const benchmark = benchmarkLayer.current?.drawingSurface(), pane = host.current && drawingPane(api, 1, host.current);
+          const benchmark = benchmarkLayer.current?.drawingSurface(), pane = host.current && benchmark && drawingPane(api, benchmark.series.getPane(), host.current);
           if (benchmark && pane && latest.current.panel.benchmarkMode === "pane" && latest.current.panel.benchmark === benchmark.symbol && benchmarkContext.current?.ready && benchmarkContext.current.symbol === benchmark.symbol) {
             const target = { kind: "benchmark" as const, symbol: benchmark.symbol };
             ctx.save(); ctx.translate(0, pane.top);
@@ -526,6 +546,20 @@ export function TradeChart(input: Props) {
             ctx.restore(); hits.current.push(...offsetPaneHits(paneHits, pane.top));
             if (container.current) { container.current.dataset.benchmarkPaneTop = String(pane.top); container.current.dataset.benchmarkPaneHeight = String(pane.height); }
           } else if (container.current) { delete container.current.dataset.benchmarkPaneTop; delete container.current.dataset.benchmarkPaneHeight; }
+          const rvolPane = rvolSeries.current && host.current ? drawingPane(api, rvolSeries.current.getPane(), host.current) : null;
+          if (rvolPane && rvolLegend.current) {
+            rvolLegend.current.style.top = `${rvolPane.top + 3}px`;
+            rvolLegend.current.style.maxWidth = `${rvolPane.width - 12}px`;
+            const state = rvolState.current, visible = api.timeScale().getVisibleRange();
+            const time = inspectedRvolTime.current ?? (visible && typeof visible.to === "number" ? visible.to : Infinity);
+            const point = state.points.findLast(p => p.time <= time);
+            const title = rvolLegend.current.querySelector("[data-rvol-title]");
+            const description = rvolLegend.current.querySelector("[data-rvol-description]");
+            if (title) title.textContent = rvolTitle(state.mode, state.settings.lookback);
+            if (description) { description.textContent = rvolDescription(point, state.loading, state.error); description.setAttribute("title", description.textContent); }
+            rvolLegend.current.style.visibility = "visible";
+            if (container.current) { container.current.dataset.rvolPaneTop = String(rvolPane.top); container.current.dataset.rvolPaneHeight = String(rvolPane.height); }
+          } else { if (rvolLegend.current) rvolLegend.current.style.visibility = "hidden"; if (container.current) { delete container.current.dataset.rvolPaneTop; delete container.current.dataset.rvolPaneHeight; } }
           container.current?.querySelectorAll<HTMLButtonElement>("[data-pin-target]").forEach(button => {
             const hit = hits.current.find(h => h.id === button.dataset.pinTarget && h.kind === "drawing" && h.point === undefined);
             button.hidden = !hit;
@@ -626,6 +660,7 @@ export function TradeChart(input: Props) {
         typeof event.time !== "number"
       )
         return;
+      inspectedRvolTime.current = event.time;
       ohlcLegend.current?.inspect(event.seriesData.get(candles));
       benchmarkLayer.current?.inspect(event.time);
       if (!latest.current.preferences.linked) return;
@@ -646,6 +681,7 @@ export function TradeChart(input: Props) {
         !dataReady.current
       )
         return;
+      inspectedRvolTime.current = detail.time;
       const bar = executionBar(
         { time: detail.time } as never,
         renderedData.current,
@@ -836,12 +872,16 @@ export function TradeChart(input: Props) {
         light = latest.current.preferences.theme === "light",
         scale = 2,
       ) {
+        if (latest.current.preferences.rvol?.enabled) await rvolActivation.current;
+        if (chart.current !== api) throw new Error("Chart changed before exporting. Retry the capture.");
         if (!dataReady.current || !bars.current.length)
           throw new Error("Wait for chart candles before exporting.");
         const frozen = options(true, light),
           snapshotBars = [...bars.current],
           prefs = latest.current.preferences;
         const frozenBenchmark = benchmarkLayer.current?.snapshot();
+        const rv = rvolState.current, rvTime = inspectedRvolTime.current ?? (api.timeScale().getVisibleRange()?.to as number | undefined) ?? Infinity;
+        const frozenRvol = rvolSeries.current ? { points: structuredClone(rv.points), mode: rv.mode, lookback: rv.settings.lookback, point: rv.points.findLast(p => p.time <= rvTime), loading: rv.loading, error: rv.error, priceRange: rvolSeries.current.priceScale().getVisibleRange() } : null;
         frozen.drawings = structuredClone(frozen.drawings);
         const liveOptions = api.options(), liveCandleOptions = candles.options();
         const frozenLogicalRange = api.timeScale().getVisibleLogicalRange();
@@ -918,6 +958,8 @@ export function TradeChart(input: Props) {
               if (frozenBenchmark.priceRange) { comparison.priceScale().setAutoScale(false); comparison.priceScale().setVisibleRange(frozenBenchmark.priceRange); }
             }
           }
+          const exportRvol = frozenRvol ? addRvolSeries(clone, frozenRvol.points, light) : null;
+          if (exportRvol && frozenRvol?.priceRange) { exportRvol.priceScale().setAutoScale(false); exportRvol.priceScale().setVisibleRange(frozenRvol.priceRange); }
           const exportBackground = new SessionBackground();
           exportBackground.setData(snapshotBars, frozenInterval, frozenHistory.session, light);
           cs.attachPrimitive(exportBackground);
@@ -969,8 +1011,8 @@ export function TradeChart(input: Props) {
           await new Promise<void>((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
           );
-          if (frozenBenchmark?.mode === "pane" && clone.panes().length > 1) {
-            clone.panes()[0].setHeight(paneHeights[0] * render.y);
+          if (clone.panes().length > 1) {
+            clone.panes().forEach((pane, index) => pane.setStretchFactor(paneHeights[index]));
             await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
           }
           const native = clone.takeScreenshot(true, false),
@@ -988,13 +1030,14 @@ export function TradeChart(input: Props) {
           ctx.scale(native.width / width, native.height / height);
           const exportOptions: PaintOptions = { ...frozen, width, height, plotWidth: clone.timeScale().width() / render.x, plotHeight: clone.paneSize(0).height / render.y, x: time => { const x = clone.timeScale().logicalToCoordinate(logicalTimeIndex(time, snapshotBars, frozenInterval) as never); return x === null ? null : x / render.x; }, y: price => { const y = cs.priceToCoordinate(price); return y === null ? null : y / render.y; } };
           paintChart(ctx, { ...exportOptions, drawings: frozen.drawings.filter(d => !d.target) });
-          const indexPane = frozenBenchmark?.mode === "pane" && comparison ? drawingPane(clone, 1, container) : null;
+          const indexPane = frozenBenchmark?.mode === "pane" && comparison ? drawingPane(clone, comparison.getPane(), container) : null;
           if (indexPane && comparison && frozenBenchmark) {
             const indexSeries = comparison;
             ctx.save(); ctx.translate(0, indexPane.top / render.y);
             paintChart(ctx, { ...exportOptions, height: indexPane.height / render.y, plotHeight: indexPane.height / render.y, plotWidth: indexPane.width / render.x, drawings: frozen.drawings.filter(d => d.target?.symbol === frozenBenchmark.symbol), y: price => { const y = indexSeries.priceToCoordinate(price); return y === null ? null : y / render.y; }, candles: frozenBenchmark.candles, trade: { ...frozen.trade, executions: [] }, labels: "hidden", selectedExecution: null }, []);
             ctx.restore();
           }
+          if (exportRvol && frozenRvol) { const pane = drawingPane(clone, exportRvol.getPane(), container); if (pane) paintRvolLegend(ctx, pane.top / render.y, pane.width / render.x, frozenRvol.mode, frozenRvol.lookback, frozenRvol.point, light, frozenRvol.loading, frozenRvol.error); }
           ctx.restore();
           ctx.scale(scale, scale);
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
@@ -1038,6 +1081,7 @@ export function TradeChart(input: Props) {
       api.remove();
       chart.current = null;
       series.current = null;
+      rawVolumeSeries.current = null;
     };
   }, []);
 
@@ -1078,13 +1122,16 @@ export function TradeChart(input: Props) {
     benchmarkLayer.current?.update({ primary: [], benchmark: [], symbol: "", light: props.preferences.theme === "light" });
     cs.setData(data.map((b) => ({ ...b, time: asTime(b.time) })));
     sessionBackground.current?.setData(data, props.panel.interval, result.session, props.preferences.theme === "light");
-    const volume = api.addSeries(HistogramSeries, {
+    // Keep a populated companion series during history updates. Removing every
+    // companion triggers LWC's single-series timeline reset before subset RVOL data.
+    const volume = rawVolumeSeries.current ??= api.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
       lastValueVisible: false,
       priceLineVisible: false,
       visible: props.preferences.volume,
     });
+    volume.applyOptions({ visible: props.preferences.volume });
     volume
       .priceScale()
       .applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
@@ -1185,7 +1232,6 @@ export function TradeChart(input: Props) {
       changingData.current = true;
       if (chart.current === api) {
         viewBeforeUpdate.current = api.timeScale().getVisibleLogicalRange();
-        api.removeSeries(volume);
         averages.forEach((s) => api.removeSeries(s));
       }
     };
@@ -1230,8 +1276,57 @@ export function TradeChart(input: Props) {
   useEffect(() => {
     if (!chart.current || loading || changingData.current) return;
     benchmarkLayer.current?.update({ primary: renderedData.current, benchmark: benchmark.candles, symbol: props.panel.benchmark === "off" ? "" : props.panel.benchmark ?? "", light: props.preferences.theme === "light", color: props.preferences.benchmarkColor, transparency: props.preferences.benchmarkTransparency, mode: props.panel.benchmarkMode, paneRatio: props.panel.benchmarkPaneRatio });
+    if (series.current) sizeWorkspacePanes(chart.current, series.current, benchmarkLayer.current?.paneSeries(), rvolSeries.current ?? undefined, props.panel.benchmarkPaneRatio, props.panel.rvolPaneRatio);
     paintRef.current();
-  }, [benchmark.candles, props.preferences.benchmarkColor, props.preferences.benchmarkTransparency, result.candles, props.panel.benchmark, props.panel.benchmarkMode, props.panel.benchmarkPaneRatio, props.panel.interval, props.preferences.theme, props.preferences.volume, props.preferences.averages, props.replay, beforeEntry, loading, failure]);
+  }, [benchmark.candles, props.preferences.benchmarkColor, props.preferences.benchmarkTransparency, result.candles, props.panel.benchmark, props.panel.benchmarkMode, props.panel.benchmarkPaneRatio, props.panel.rvolPaneRatio, props.panel.interval, props.preferences.theme, props.preferences.volume, props.preferences.averages, props.replay, beforeEntry, loading, failure]);
+  useEffect(() => {
+    const api = chart.current, price = series.current;
+    if (!api || !price || !rvolSettings.enabled || loading || failure) return;
+    const controller = new AbortController();
+    let histogram: ISeriesApi<"Histogram"> | null = null, observer: ResizeObserver | null = null;
+    const painted = new Promise<void>(resolve => {
+      if (!renderedData.current.length || !host.current) { resolve(); return; }
+      const owner = `${props.panel.id}:indicator-price-paint`;
+      let complete = false;
+      const visibility = new ResizeObserver(([entry]) => { if (entry && (entry.contentRect.width < 20 || entry.contentRect.height < 20)) finish(); });
+      // A top primitive draws after the native candles. Its microtask acknowledges
+      // the completed canvas paint, including partial-cache price updates.
+      const gate = { attached: ({ requestUpdate }: { requestUpdate: () => void }) => requestUpdate(), paneViews: () => [{ zOrder: () => "top" as const, renderer: () => ({ draw: () => { if (dimensions.current.width >= 20 && dimensions.current.height >= 20) queueMicrotask(finish); } }) }] };
+      function finish() {
+        if (complete) return; complete = true;
+        visibility.disconnect(); controller.signal.removeEventListener("abort", finish);
+        if (chart.current === api) price!.detachPrimitive(gate);
+        props.indicatorScheduler.foreground(owner, false); resolve();
+      }
+      props.indicatorScheduler.foreground(owner, true);
+      controller.signal.addEventListener("abort", finish, { once: true });
+      visibility.observe(host.current); price.attachPrimitive(gate);
+    });
+    rvolActivation.current = painted.then(() => props.indicatorScheduler.settled(controller.signal)).then(async () => {
+      if (controller.signal.aborted || chart.current !== api) return;
+      window.dispatchEvent(new CustomEvent("workstation-rvol-pane-started"));
+      histogram = addRvolSeries(api, rvolState.current.points, latest.current.preferences.theme === "light");
+      rvolSeries.current = histogram;
+      sizeWorkspacePanes(api, price, benchmarkLayer.current?.paneSeries(), histogram, latest.current.panel.benchmarkPaneRatio, latest.current.panel.rvolPaneRatio);
+      observer = new ResizeObserver(() => paintRef.current());
+      const node = histogram.getPane().getHTMLElement(); if (node) observer.observe(node);
+      paintRef.current();
+      await props.indicatorScheduler.settled(controller.signal);
+    }, () => { /* Obsolete pane activation is cancelled with its chart. */ }).catch(error => { if (!controller.signal.aborted) throw error; });
+    return () => {
+      controller.abort(); observer?.disconnect();
+      if (histogram) {
+        rvolSeries.current = null;
+        if (chart.current === api) { api.removeSeries(histogram); sizeWorkspacePanes(api, price, benchmarkLayer.current?.paneSeries(), undefined, latest.current.panel.benchmarkPaneRatio); paintRef.current(); }
+      }
+    };
+  }, [rvolSettings.enabled, loading, failure, props.indicatorScheduler, props.panel.id]);
+  useEffect(() => {
+    if (!rvolSeries.current || !chart.current || !series.current) return;
+    setRvolData(rvolSeries.current, rvol.points, props.preferences.theme === "light");
+    sizeWorkspacePanes(chart.current, series.current, benchmarkLayer.current?.paneSeries(), rvolSeries.current, props.panel.benchmarkPaneRatio, props.panel.rvolPaneRatio);
+    paintRef.current();
+  }, [rvol.points, rvol.loading, rvol.error, rvolSettings.enabled, rvolSettings.mode, rvolSettings.lookback, props.preferences.theme, props.panel.benchmarkPaneRatio, props.panel.rvolPaneRatio]);
   useEffect(() => {
     const light = props.preferences.theme === "light";
     sessionBackground.current?.setTheme(light);
@@ -1268,7 +1363,7 @@ export function TradeChart(input: Props) {
     drag.current = null;
     previewPin.current = null; touchPin.current = null;
     paintRef.current();
-  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, props.panel.benchmark, props.panel.benchmarkMode, benchmark.ready, benchmark.splitAdjustment, beforeEntry, props.replay, props.temporarilyHiddenIds, result.splitAdjustment, loading, failure]);
+  }, [props.tool, props.trade.id, props.trade.timeInterpretationVersion, props.panel.interval, props.trade.chartSession, props.panel.benchmark, props.panel.benchmarkMode, benchmark.ready, benchmark.splitAdjustment, beforeEntry, props.replay, props.temporarilyHiddenIds, result.splitAdjustment, loading, failure, rvolSettings.enabled]);
 
   const pointer = (event: React.PointerEvent) => {
     const rect = host.current!.getBoundingClientRect();
@@ -1278,7 +1373,7 @@ export function TradeChart(input: Props) {
     if (!chart.current || !host.current || !series.current) return null;
     if (!target) { const pane = drawingPane(chart.current, 0, host.current); return pane ? { ...pane, series: series.current, candles: bars.current } : null; }
     const benchmark = benchmarkLayer.current?.drawingSurface(), context = benchmarkContext.current;
-    const pane = drawingPane(chart.current, 1, host.current);
+    const pane = benchmark ? drawingPane(chart.current, benchmark.series.getPane(), host.current) : null;
     return pane && benchmark && props.panel.benchmarkMode === "pane" && props.panel.benchmark === target.symbol && benchmark.symbol === target.symbol && context?.symbol === target.symbol && context.ready ? { ...pane, ...benchmark } : null;
   };
   const pointAt = (pos: { x: number; y: number }, free = false, target?: Drawing["target"]): Point | null => {
@@ -1330,6 +1425,7 @@ export function TradeChart(input: Props) {
     createdAt: props.replay ?? Date.now() / 1000,
   });
   const down = (event: React.PointerEvent<HTMLDivElement>) => {
+    paneGesture.current = 0;
     focusedWindow.current = null;
     focusedTarget.current = null;
     clickGesture.current = null;
@@ -1340,6 +1436,9 @@ export function TradeChart(input: Props) {
     const benchmarkTarget = symbol === "SPY" || symbol === "QQQ" ? { kind: "benchmark" as const, symbol } : undefined;
     const primary = surfaceFor(), index = benchmarkTarget && surfaceFor(benchmarkTarget);
     const target = primary && insideDrawingPane(pos, primary) ? undefined : index && insideDrawingPane(pos, index) ? benchmarkTarget : null;
+    // Native separator hit areas overlap the neighboring pane canvas.
+    const separator = chart.current && host.current && pos.x >= 0 && pos.x < dimensions.current.width ? chart.current.panes().slice(1).find(p => { const bounds = drawingPane(chart.current!, p, host.current!); return bounds && pos.y >= bounds.top - 7 && pos.y < bounds.top + 3; }) : undefined;
+    if (separator) { paneGesture.current = separator.paneIndex(); pending.current = null; draft.current = null; drag.current = null; return; }
     if (target === null) return;
     const displayed = new Map(props.currentDrawings().map(drawing => [drawing.id, drawing]));
     const hit = hitAt(hits.current.filter(h => { const drawing = displayed.get(h.id); return h.kind === "execution" ? !target : !!drawing && matchesDrawingTarget(drawing, target); }), pos);
@@ -1510,11 +1609,16 @@ export function TradeChart(input: Props) {
     }
   };
   const up = () => {
-    if (props.panel.benchmarkMode === "pane" && chart.current && chart.current.panes().length > 1) {
-      const [main, index] = chart.current.panes().map(pane => pane.getHeight());
+    const panePatch: Partial<ChartPanel> = {}, pricePane = series.current?.getPane(), indexPane = benchmarkLayer.current?.paneSeries()?.getPane(), volumePane = rvolSeries.current?.getPane();
+    if (paneGesture.current && pricePane && indexPane && paneGesture.current === indexPane.paneIndex()) {
+      const main = pricePane.getHeight(), index = indexPane.getHeight();
       const ratio = Math.max(.15, Math.min(.5, Math.round(index / (main + index) * 1000) / 1000));
-      if (Math.abs(ratio - (props.panel.benchmarkPaneRatio ?? .25)) > .005) props.onPanel?.({ benchmarkPaneRatio: ratio });
+      if (Math.abs(ratio - (props.panel.benchmarkPaneRatio ?? .25)) > .005) panePatch.benchmarkPaneRatio = ratio;
     }
+    if (paneGesture.current && pricePane && volumePane && paneGesture.current === volumePane.paneIndex()) { const total = pricePane.getHeight() + (indexPane?.getHeight() ?? 0) + volumePane.getHeight(), ratio = rvolPaneRatio(Math.round(volumePane.getHeight() / total * 1000) / 1000); if (Math.abs(ratio - rvolPaneRatio(props.panel.rvolPaneRatio)) > .005) panePatch.rvolPaneRatio = ratio; }
+    if (paneGesture.current && chart.current && series.current) sizeWorkspacePanes(chart.current, series.current, benchmarkLayer.current?.paneSeries(), rvolSeries.current ?? undefined, panePatch.benchmarkPaneRatio ?? props.panel.benchmarkPaneRatio, panePatch.rvolPaneRatio ?? props.panel.rvolPaneRatio);
+    if (Object.keys(panePatch).length && !props.captureLocked) props.onPanel?.(panePatch);
+    paneGesture.current = 0;
     if (drag.current && draft.current && (draft.current.noteWidth !== drag.current.drawing.noteWidth || draft.current.points.some((p, i) => p.time !== drag.current!.drawing.points[i]?.time || p.price !== drag.current!.drawing.points[i]?.price))) props.onDrawing(draft.current);
     drag.current = null;
     // A two-point tool still needs its placement preview after the first click.
@@ -1555,6 +1659,12 @@ export function TradeChart(input: Props) {
       style={props.fullscreen ? undefined : props.style}
       data-label-mode={props.labelMode}
       data-price-adjustment={result.provider?.adjustment ?? "unverified"}
+      data-history-identity={result.identity}
+      data-rvol-enabled={rvolSettings.enabled}
+      data-rvol-mode={rvolMode(rvolSettings.mode, props.panel.interval)}
+      data-rvol-points={rvol.points.filter(p => p.value !== null).length}
+      data-rvol-last-time={rvol.points.at(-1)?.time}
+      data-rvol-status={!rvolSettings.enabled ? "hidden" : rvol.loading ? "loading" : rvol.error ? "partial" : rvol.points.length ? "ready" : "pending"}
       data-session={props.trade.chartSession}
       onFocusCapture={props.onActive}
       onPointerDownCapture={(event) => {
@@ -1638,6 +1748,7 @@ export function TradeChart(input: Props) {
           >
             {props.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
+          {props.fullscreen && <button type="button" aria-label="Show relative volume" aria-pressed={rvolSettings.enabled} disabled={props.captureLocked} onClick={props.onToggleRvol}>RVOL</button>}
           {props.fullscreen && <button type="button" data-fullscreen-journal-toggle aria-label={props.fullscreenJournal ? "Hide fullscreen journal" : "Show fullscreen journal"} aria-expanded={!!props.fullscreenJournal} onClick={props.onJournal}><BookOpen size={13} /><span>Journal</span></button>}
         </div>
       </div>
@@ -1646,6 +1757,7 @@ export function TradeChart(input: Props) {
       {beforeEntry && !loading && !data.length && <div className="ws-before-entry-empty" role="status">No completed candles before entry</div>}
       <div
         className={`ws-plot ${props.tool !== "cursor" ? "ws-drawing" : ""}`}
+        inert={props.captureLocked}
         onWheelCapture={() => {
           focusedWindow.current = null;
           focusedTarget.current = null;
@@ -1706,6 +1818,7 @@ export function TradeChart(input: Props) {
           ))}
         </span>
       </div>
+        {rvolSettings.enabled && <div className="ws-rvol-legend" ref={rvolLegend} role="status"><strong data-rvol-title>{rvolTitle(rvolMode(rvolSettings.mode, props.panel.interval), rvolSettings.lookback)}</strong><span data-rvol-description title={rvolDescription(rvol.points.at(-1), rvol.loading, rvol.error)}>{rvolDescription(rvol.points.at(-1), rvol.loading, rvol.error)}</span>{rvol.error && <button type="button" disabled={props.captureLocked} onClick={rvol.retry}>Retry RVOL</button>}</div>}
         <div ref={host} className="ws-chart-canvas" />
         <canvas ref={overlay} className="ws-chart-overlay" />
         {!!historyState?.loading && !!result.candles.length && <div className="ws-history-progress" role="status">Loading additional history</div>}

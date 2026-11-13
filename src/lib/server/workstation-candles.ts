@@ -18,8 +18,8 @@ import { loadCompactWorkstationCandles } from "./workstation-cache-loader";
 import type { CandleCacheMetadata } from "@/lib/workstation/candle-ranges";
 
 export type ChartProviderMetadata = { identity: string; provider: string; feed: string | null; adjustment: string; delaySeconds: number; cached: boolean; fallback: boolean };
-export type WorkstationCandles = LoadedCandles & { provider: ChartProviderMetadata; session?: CandleSession; cache?: CandleCacheMetadata };
-export type WorkstationCandleInput = { purpose?: "benchmark"; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; signal?: AbortSignal; identity?: string | null; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete" };
+export type WorkstationCandles = LoadedCandles & { provider: ChartProviderMetadata; session?: CandleSession; cache?: CandleCacheMetadata; retrieved?: { from: number; to: number }[] };
+export type WorkstationCandleInput = { purpose?: "benchmark" | "indicator"; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; signal?: AbortSignal; identity?: string | null; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete" };
 type Input = WorkstationCandleInput;
 const yahooIdentity = "workstation:v1:yahoo:unverified";
 const day = 86400;
@@ -38,7 +38,7 @@ async function yahoo(input: Input, warnings: string[], fallback: boolean): Promi
   url.searchParams.set("period2", String(normalized.period2));
   url.searchParams.set("includePrePost", String(extended));
   url.searchParams.set("events", "div,splits");
-  if (input.purpose === "benchmark") {
+  if (input.purpose) {
     const deadline = Date.now() + 45000;
     while (!(await takeProviderSlot(true))) {
       if (Date.now() > deadline) throw new CacheBusyError();
@@ -53,7 +53,7 @@ async function yahoo(input: Input, warnings: string[], fallback: boolean): Promi
   input.signal?.throwIfAborted();
   const candles = (derived ? aggregateRegularHours(parsed) : input.timeframe === "10m" ? aggregateCandles(parsed, 600) : input.timeframe === "1d" || input.timeframe === "1wk" ? trimTrailingDuplicateDailyCandle(parsed) : parsed)
     .filter(c => c.time >= range.from && c.time <= range.to).slice(-input.limit);
-  return { symbol: input.symbol, candles, source: "yahoo", ...(typeof zone === "string" ? { session: { ...(derived ? regularHourSession : {}), timezone: zone, calendar: "exchange" as const, marketHours: extended ? "extended" as const : "regular" as const } } : {}), warnings: [...warnings, extended ? "Extended-hours intraday candles; some periods may have no eligible trades." : "Regular-session candles.", "Yahoo price adjustment basis is unverified; check execution prices around corporate actions. Yahoo bars are kept separate from Alpaca history."], provider: { identity, provider: "yahoo", feed: null, adjustment: "unverified", delaySeconds: 0, cached: false, fallback } };
+  return { symbol: input.symbol, retrieved: payload?.chart?.result?.[0] && !payload?.chart?.error && parsed.length < input.limit ? [{ from: Math.max(range.from, normalized.period1), to: Math.min(range.to, normalized.period2) }] : [], candles, source: "yahoo", ...(typeof zone === "string" ? { session: { ...(derived ? regularHourSession : {}), timezone: zone, calendar: "exchange" as const, marketHours: extended ? "extended" as const : "regular" as const } } : {}), warnings: [...warnings, extended ? "Extended-hours intraday candles; some periods may have no eligible trades." : "Regular-session candles.", "Yahoo price adjustment basis is unverified; check execution prices around corporate actions. Yahoo bars are kept separate from Alpaca history."], provider: { identity, provider: "yahoo", feed: null, adjustment: "unverified", delaySeconds: 0, cached: false, fallback } };
 }
 
 /** Only the authenticated workstation endpoint uses this policy. Ingestion and outcomes keep their existing loader. */
@@ -67,7 +67,7 @@ export async function loadWorkstationCandles(input: Input, policy = workstationC
   if (cacheEnabled() && policy.provider === "alpaca" && !pinnedYahoo && input.range) {
     const expected = candleIdentity(policy.cacheSource, input.timeframe, input.session);
     if (input.identity && input.identity !== expected) throw new Error("Chart provider identity changed. Reload to start a separate series.");
-    try { return await loadCompactWorkstationCandles({ ...input, range: input.range, ...(input.purpose === "benchmark" ? { background: true, supplementary: true, tradeWindow: false } : {}) }, policy); }
+    try { return await loadCompactWorkstationCandles({ ...input, range: input.range, ...(input.purpose ? { background: true, supplementary: true, tradeWindow: false, preemptible: input.purpose === "indicator" } : {}) }, policy); }
     catch (error) {
       if (isCandleRequestAbort(error, input.signal) || input.mode === "cache" || input.identity || !policy.fallback) throw error;
       return yahoo(input, [`Alpaca unavailable (${alpacaFailureSummary(error)}); Yahoo fallback is active.`], true);
@@ -89,13 +89,14 @@ export async function loadWorkstationCandles(input: Input, policy = workstationC
   const range = { from: requested.from, to: Math.min(requested.to, now - policy.delaySeconds - (policy.delaySeconds ? 1 : 0)) };
   const warnings = range.to < requested.to ? [`Alpaca ${credentials.feed.toUpperCase()} history is capped at ${new Date(range.to * 1000).toISOString()} (${policy.delaySeconds}s configured delay).`] : [];
   if (range.to <= range.from) return { symbol: input.symbol, candles: [], source: "alpaca", provider, warnings };
-  if (input.purpose === "benchmark") {
+  if (input.purpose) {
     const derived = isRegularHour(input.timeframe, input.session);
+    const context = { signal: input.signal, ...(input.purpose === "indicator" ? { yieldToForeground: true, coordinateProvider: true } : {}) };
     const loaded = derived
-      ? await fetchRegularHours(input.symbol, { from: range.from, to: range.to + .001 }, policy, range.to, true, false, { signal: input.signal })
-      : await fetchCompactCandles(input.symbol, input.timeframe, { from: range.from, to: range.to + .001 }, credentials, true, true, { signal: input.signal });
+      ? await fetchRegularHours(input.symbol, { from: range.from, to: range.to + .001 }, policy, range.to, true, false, context)
+      : await fetchCompactCandles(input.symbol, input.timeframe, { from: range.from, to: range.to + .001 }, credentials, true, true, context);
     const candles = input.session === "regular" && input.timeframe !== "1d" && input.timeframe !== "1wk" ? loaded.filter(c => isRegularUsSession(c.time)) : loaded;
-    return { symbol: input.symbol, candles: candles.slice(-input.limit), source: "alpaca", provider, session: derived ? regularHourSession : { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" }, warnings };
+    return { symbol: input.symbol, retrieved: candles.length < input.limit ? [{ from: range.from, to: range.to }] : [], candles: candles.slice(-input.limit), source: "alpaca", provider, session: derived ? regularHourSession : { timezone: "America/New_York", calendar: "exchange", marketHours: input.session ?? "unknown" }, warnings };
   }
   if (isRegularHour(input.timeframe, input.session)) {
     try {

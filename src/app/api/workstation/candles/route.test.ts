@@ -29,6 +29,12 @@ it("validates ranges, symbols, intervals and limits before loading", async () =>
   }
   expect(mocks.load).not.toHaveBeenCalled();
 });
+it("permits indicator requests for any valid ticker while retaining benchmark restrictions", async () => {
+  expect((await GET(new NextRequest(url + "&purpose=indicator&mode=fill"))).status).toBe(200);
+  expect(mocks.load).toHaveBeenCalledWith(expect.objectContaining({ purpose: "indicator", mode: "fill" }));
+  expect((await GET(new NextRequest(url + "&purpose=benchmark"))).status).toBe(400);
+  expect((await GET(new NextRequest(url + "&purpose=unknown"))).status).toBe(400);
+});
 it("passes provider identity and cancellation, returns public metadata without credentials", async () => {
   const request = new NextRequest(url + "&identity=workstation:v1:alpaca:sip:raw");
   const response = await GET(request); const body = await response.json();

@@ -9,6 +9,9 @@ import { storeEvidence, hydrateEvidenceForExport } from "@/lib/workstation/evide
 import { assertEvidenceCapacity } from "@/lib/workstation/image-assets";
 import { EvidencePanel } from "./evidence-panel";
 import { VolumeSettings } from "./volume-settings";
+import { RvolSettings } from "./rvol-settings";
+import { restoreRvol, rvolPaneRatio } from "@/lib/workstation/rvol";
+import { IndicatorScheduler } from "@/lib/workstation/indicator-scheduler";
 import { CaptureQualityContext, CaptureQualityControls } from "./capture-quality";
 import { captureResolution, type CaptureQuality } from "@/lib/workstation/capture-resolution";
 import { FullscreenJournal, JournalPortal, fullscreenJournalWidth } from "./fullscreen-journal";
@@ -345,6 +348,7 @@ export function TradesWorkstation({
   filterControls?: TradeFilterControls;
 }) {
   const trades = useMemo(() => newestTradesFirst(inputTrades), [inputTrades]);
+  const indicatorScheduler = useMemo(() => new IndicatorScheduler(), []);
   const reviewStatuses = useReviewStatuses(adapter, trades, initialReviewStatuses);
   const [peerComparison, setPeerComparison] = useState<{ tradeId: string; selection: PeerGroupSelection; initial: PeerView } | null>(null);
   const peerCaptureGeneration = useRef(0);
@@ -1301,8 +1305,9 @@ export function TradesWorkstation({
     ...value, chartLabels: { ...restoreChartLabels(value.chartLabels, value.labels), [id as ChartSlot]: mode },
   }));
   const toggleLabels = (id = currentPanel.id) => setChartLabels(id, chartLabelMode(preferences, id) === "labels" ? "compact" : "labels");
+  const toggleRvol = () => { if (busy) return; handles.current.forEach(handle => handle.cancel()); const rvol = restoreRvol(preferences.rvol); changePreferences({ rvol: { ...rvol, enabled: !rvol.enabled } }); };
   const chartContent = (
-    <div className="ws-chart-workspace">
+    <div className="ws-chart-workspace" inert={!!busy}>
       {adapter.metrics && <TradeMarketMetrics adapter={adapter} trade={trade} onValue={receiveMetrics} />}
       <div className="ws-chart-toolbar">
         <div className="ws-timeframes">
@@ -1342,6 +1347,7 @@ export function TradesWorkstation({
         </button>
         <button className={`ws-tool-button ${activeLabels === "labels" ? "active" : ""}`} aria-label={activeLabels === "labels" ? "Hide execution labels" : "Show execution labels"} aria-pressed={activeLabels === "labels"} title={titleFor("chart.labels", `Toggle labels on active chart (${currentPanel.id}); markers remain visible`)} onClick={() => toggleLabels()}>{activeLabels === "labels" ? <Eye size={14} /> : <EyeOff size={14} />}<span>Labels</span></button>
         <button className="ws-session-apply" aria-label="Apply active chart’s session to all charts" title={`Apply ${currentPanel.session ?? "auto"} from ${currentPanel.id} to all charts`} onClick={() => changePreferences({ panels: preferences.panels.map(panel => ({ ...panel, session: currentPanel.session ?? "auto" })) })}>Apply session to all</button>
+        <button type="button" className={`ws-tool-button ${preferences.rvol?.enabled ? "active" : ""}`} aria-label="Show relative volume" aria-pressed={preferences.rvol?.enabled === true} disabled={!!busy} onClick={toggleRvol}>RVOL</button>
         <span className="ws-flex-spacer" />
         <details className="ws-date-control">
           <summary
@@ -1474,6 +1480,9 @@ export function TradesWorkstation({
         <ResizableChartGrid count={preferences.panels.length} arrangement={preferences.chartArrangement} sizing={preferences.chartSizing} onChange={chartSizing => changePreferences({ chartSizing })}>
           {styles => viewState.ready ? preferences.panels.map((panel, index) => (
             <TradeChart
+              indicatorScheduler={indicatorScheduler}
+              onToggleRvol={toggleRvol}
+              captureLocked={!!busy}
               key={`${trade.id}:${panel.id}:${viewState.generation}`}
               initialRange={viewRanges.current.panels.find(p => p.id === panel.id && p.interval === panel.interval)?.range}
               onViewChange={range => {
@@ -2600,7 +2609,7 @@ export function TradesWorkstation({
               <button onClick={() => changePreferences({ benchmarkColor: undefined })}>Reset comparison colour</button>
               <label><span>Index transparency · {benchmarkTransparency(preferences.benchmarkTransparency)}%</span><input type="range" aria-label="Index transparency" min={0} max={100} step={1} value={benchmarkTransparency(preferences.benchmarkTransparency)} onChange={e => changePreferences({ benchmarkTransparency: Number(e.target.value) })} /></label>
               <label><span>Index display · {activeChart}</span><select aria-label="Index display mode" value={currentPanel.benchmarkMode ?? "overlay"} onChange={e => changePreferences({ panels: preferences.panels.map(p => p.id === activeChart ? { ...p, benchmarkMode: e.target.value as "overlay" | "pane" } : p) })}><option value="overlay">Overlay</option><option value="pane">Separate lower pane</option></select></label>
-              {currentPanel.benchmarkMode === "pane" && <label><span>Index pane height · {Math.round(benchmarkPaneRatio(currentPanel.benchmarkPaneRatio) * 100)}%</span><input type="range" aria-label="Index pane height" min={15} max={50} step={1} value={benchmarkPaneRatio(currentPanel.benchmarkPaneRatio) * 100} onChange={e => changePreferences({ panels: preferences.panels.map(p => p.id === activeChart ? { ...p, benchmarkPaneRatio: Number(e.target.value) / 100 } : p) })} /></label>}
+              {currentPanel.benchmarkMode === "pane" && <label><span>Index pane height · {Math.round(benchmarkPaneRatio(currentPanel.benchmarkPaneRatio) * 100)}%</span><input type="range" aria-label="Index pane height" disabled={!!busy} min={15} max={50} step={1} value={benchmarkPaneRatio(currentPanel.benchmarkPaneRatio) * 100} onChange={e => changePreferences({ panels: preferences.panels.map(p => p.id === activeChart ? { ...p, benchmarkPaneRatio: Number(e.target.value) / 100 } : p) })} /></label>}
             </div>
             <label>
               <span>Volume</span>
@@ -2628,6 +2637,8 @@ export function TradesWorkstation({
               <input type="checkbox" checked={preferences.capturePinNotes === true} onChange={e => changePreferences({ capturePinNotes: e.target.checked })} />
             </label>
             <VolumeSettings preferences={preferences} onChange={changePreferences} />
+            <RvolSettings value={preferences.rvol} disabled={!!busy} onChange={rvol => { handles.current.forEach(handle => handle.cancel()); changePreferences({ rvol }); }} />
+            {preferences.rvol?.enabled && <label><span>RVOL pane height · {activeChart}</span><input type="range" aria-label="RVOL pane height" disabled={!!busy} min={15} max={40} step={1} value={Math.round(rvolPaneRatio(currentPanel.rvolPaneRatio) * 100)} onChange={e => changePreferences({ panels: preferences.panels.map(p => p.id === activeChart ? { ...p, rvolPaneRatio: Number(e.target.value) / 100 } : p) })} /></label>}
             <label>
               <span>Horizontal gridlines</span>
               <input type="checkbox" checked={preferences.gridlines.horizontal} onChange={e => changePreferences({ gridlines: { ...preferences.gridlines, horizontal: e.target.checked } })} />

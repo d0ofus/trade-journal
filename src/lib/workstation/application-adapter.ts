@@ -14,7 +14,7 @@ export function createApplicationAdapter(): WorkstationAdapter {
   const metricRequests = new SharedRequests<MarketMetrics>();
   const legacy = new Map<string, { at: number; result: CandleResult }>();
   async function request<T>(url: string, init?: RequestInit): Promise<T> { const response = await fetch(url, { credentials: "same-origin", ...init }); const body = await response.json(); if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Request failed"); return body as T; }
-  const candles = async (mode: "cache" | "fill" | "refresh", purpose: "benchmark" | undefined, ...[trade, interval, signal, range, identity]: Parameters<WorkstationAdapter["candles"]>): Promise<CandleResult> => {
+  const candles = async (mode: "cache" | "fill" | "refresh", purpose: "benchmark" | "indicator" | undefined, ...[trade, interval, signal, range, identity]: Parameters<WorkstationAdapter["candles"]>): Promise<CandleResult> => {
       signal?.throwIfAborted();
       const session = trade.chartSession ?? tradeChartSession(trade);
       const padding = Math.max(seconds[interval] * 240, trade.closeTime - trade.openTime);
@@ -27,13 +27,13 @@ export function createApplicationAdapter(): WorkstationAdapter {
       if (mode !== "refresh" && previous && Date.now() - previous.at < 300000) return previous.result;
       return inflight.run(key, signal, async sharedSignal => {
       const params = new URLSearchParams({ symbol: trade.symbol, timeframe: interval, from: String(from), to: String(to), limit: "30000", adjustment: "split", mode });
-      if (purpose) { params.set("purpose", purpose); if (mode === "fill") params.set("mode", "complete"); }
+      if (purpose) { params.set("purpose", purpose); if (purpose === "benchmark" && mode === "fill") params.set("mode", "complete"); }
       if (identity) params.set("identity", identity);
       params.set("session", session);
-      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { splitAdjustment?: CandleResult["splitAdjustment"]; cache?: CandleCacheMetadata; warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { priority: purpose ? "low" : "high", signal: AbortSignal.any([sharedSignal, AbortSignal.timeout(120000)]) });
+      const response = await request<{ candles: Candle[]; source?: string; provider?: CandleResult["provider"]; metadata?: { retrieved?: CandleResult["retrieved"]; splitAdjustment?: CandleResult["splitAdjustment"]; cache?: CandleCacheMetadata; warnings?: string[]; truncated?: boolean; session?: CandleResult["session"] } }>(`/api/workstation/candles?${params}`, { priority: purpose ? "low" : "high", signal: AbortSignal.any([sharedSignal, AbortSignal.timeout(120000)]) });
       sharedSignal.throwIfAborted();
       const providerLabel = response.provider ? `${response.provider.provider.toUpperCase()}${response.provider.feed ? ` ${response.provider.feed.toUpperCase()}` : ""} / ${response.provider.adjustment}${response.provider.cached ? " / cache" : ""}${response.provider.fallback ? " / fallback" : ""}` : response.source ?? "Provider";
-      const result: CandleResult = { splitAdjustment: response.metadata?.splitAdjustment, cache: response.metadata?.cache, identity: response.provider?.identity, provider: response.provider, session: response.metadata?.session, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || (response.metadata?.cache?.enabled ? "" : "Provider history · UTC"), truncated: response.metadata?.truncated ?? false };
+      const result: CandleResult = { retrieved: response.metadata?.retrieved, volumeMissing: response.candles.filter(c => c.volume == null).map(c => c.time), splitAdjustment: response.metadata?.splitAdjustment, cache: response.metadata?.cache, identity: response.provider?.identity, provider: response.provider, session: response.metadata?.session, candles: response.candles.map(c => ({ ...c, volume: c.volume ?? 0 })), source: providerLabel, warning: response.metadata?.warnings?.join(" · ") || (response.metadata?.cache?.enabled ? "" : "Provider history · UTC"), truncated: response.metadata?.truncated ?? false };
       cache.put(base, result);
       if (!result.cache?.enabled && result.candles.length && !result.truncated && !response.metadata?.warnings?.length) {
         if (legacy.size >= 48) legacy.delete(legacy.keys().next().value!);
@@ -44,6 +44,7 @@ export function createApplicationAdapter(): WorkstationAdapter {
   };
   return {
     mode: "application",
+    indicatorCandles: (trade, interval, signal, range, identity, mode = "fill") => candles(mode, "indicator", trade, interval, signal, range, identity),
     reviewStatuses: async (groupKeys, signal) => (await request<{ statuses: import("./review-status").ReviewStatusSummary[] }>("/api/workstation/review-statuses", { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupKeys }), signal })).statuses,
     benchmarkCandles: (symbol, trade, interval, signal, range, mode = "fill") => candles(mode, "benchmark", { ...trade, symbol }, interval, signal, range),
     metrics: (trade, signal) => metricRequests.run(metricIdentity(trade), signal, sharedSignal => request(`/api/closed-trades/${encodeURIComponent(trade.id)}/market-metrics`, { signal: sharedSignal, priority: "low" })),

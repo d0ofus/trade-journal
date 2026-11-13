@@ -112,7 +112,12 @@
     "src/components/workstation/drawing-pane.test.ts",
     "tests/workstation-preview/index-pane-drawings.spec.ts",
     "src/lib/workstation/peer-frame-layout.test.ts",
-    "tests/workstation-preview/peer-frame-sizing.spec.ts"
+    "tests/workstation-preview/peer-frame-sizing.spec.ts",
+    "src/lib/workstation/rvol.test.ts",
+    "src/lib/workstation/indicator-scheduler.test.ts",
+    "src/lib/server/indicator-volume.test.ts", "src/lib/server/indicator-provider.test.ts", "src/lib/server/indicator-candles.test.ts",
+    "tests/workstation-preview/rvol.spec.ts",
+    "tests/workstation-preview/rvol-performance.spec.ts"
   ],
   "exclude": [
     "node_modules"

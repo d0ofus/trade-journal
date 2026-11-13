@@ -3,7 +3,8 @@ import type { Hit } from "./chart-paint";
 
 export type DrawingPane = { top: number; height: number; width: number };
 /** Native pane bounds include separator spacing; summed pane heights do not. */
-export function drawingPane(api: IChartApi, index: number, host: HTMLElement): DrawingPane | null {
+export function drawingPane(api: IChartApi, target: number | ReturnType<IChartApi["panes"]>[number], host: HTMLElement): DrawingPane | null {
+  const index = typeof target === "number" ? target : target.paneIndex();
   const node = api.panes()[index]?.getHTMLElement();
   if (!node) return null;
   const top = node.getBoundingClientRect().top - host.getBoundingClientRect().top;

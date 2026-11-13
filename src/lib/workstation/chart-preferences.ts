@@ -1,6 +1,7 @@
 import { defaultPreferences, intervals, type ChartPanel, type ChartSessionPreference, type WorkspacePreferences } from "./types";
 import { restoreVolumeAppearance } from "./volume-style";
 import { benchmarkTransparency, benchmarkPaneRatio } from "./comparison";
+import { restoreRvol, rvolPaneRatio } from "./rvol";
 
 export function parseMovingAveragePeriods(fields: string[]): { periods: number[]; error?: never } | { error: string; periods?: never } {
   const values = fields.map(field => field.trim()).filter(Boolean);
@@ -25,12 +26,13 @@ export function restoreChartPanels(value: unknown, legacySession?: unknown): Cha
   if (!Array.isArray(value) || !value.length || value.length > 4 || value.some((panel, index) =>
     !panel || panel.id !== `chart-${index + 1}` || !intervals.includes(panel.interval),
   )) return defaultPreferences().panels.map(panel => ({ ...panel, session: chartSessionPreference(legacySession) }));
-  return value.map(panel => ({ ...panel, session: chartSessionPreference(panel.session ?? legacySession), benchmarkMode: panel.benchmarkMode === "pane" ? "pane" : "overlay", benchmarkPaneRatio: benchmarkPaneRatio(panel.benchmarkPaneRatio) }));
+  return value.map(panel => ({ ...panel, session: chartSessionPreference(panel.session ?? legacySession), benchmarkMode: panel.benchmarkMode === "pane" ? "pane" : "overlay", benchmarkPaneRatio: benchmarkPaneRatio(panel.benchmarkPaneRatio), ...(panel.rvolPaneRatio === undefined ? {} : { rvolPaneRatio: rvolPaneRatio(panel.rvolPaneRatio) }) }));
 }
 
 export function restoreChartDisplay(value: Partial<WorkspacePreferences>) {
   const period = value.volumeAverage?.period;
   return {
+    rvol: restoreRvol(value.rvol),
     benchmarkTransparency: benchmarkTransparency(value.benchmarkTransparency),
     volumeStyle: restoreVolumeAppearance(value.volumeStyle),
     capturePinNotes: value.capturePinNotes === true,

@@ -600,7 +600,7 @@ export function aggregateCandles(rows: Candle[], bucketSeconds: number) {
         high: Math.max(...sorted.map((row) => row.high)),
         low: Math.min(...sorted.map((row) => row.low)),
         close: sorted[sorted.length - 1].close,
-        volume: volume > 0 ? volume : undefined,
+        volume: sorted.every(row => Number.isFinite(row.volume)) ? volume : undefined,
       };
     });
 }

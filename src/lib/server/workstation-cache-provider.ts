@@ -3,7 +3,7 @@ import type { CandleRange, CandleTimings } from "@/lib/workstation/candle-ranges
 import { waitForHistory } from "@/lib/workstation/shared-requests";
 import { AlpacaCandleError } from "./alpaca-candle-error";
 import { validateCandles } from "./workstation-cache-codec";
-import { deferProviderRequests, takeProviderSlot } from "./workstation-cache-store";
+import { deferProviderRequests, foregroundPending, takeProviderSlot } from "./workstation-cache-store";
 
 const intervals: Record<CandleTimeframe, string> = { "5m": "5Min", "10m": "10Min", "15m": "15Min", "1h": "1Hour", "1d": "1Day", "1wk": "1Week" };
 export class CacheBusyError extends Error { constructor() { super("Chart history is queued; cached candles remain available."); } }
@@ -11,14 +11,16 @@ export class CacheProviderError extends AlpacaCandleError {
   constructor(status: number, readonly retryAfterSeconds: number) { super("http", status); }
 }
 /** Workstation fetch only: no writes to the legacy candle cache. A 200 empty result is meaningful coverage. */
-export type ProviderRequestContext = { signal?: AbortSignal; timings?: CandleTimings };
+export type ProviderRequestContext = { signal?: AbortSignal; timings?: CandleTimings; yieldToForeground?: boolean; coordinateProvider?: boolean };
 export async function fetchCompactCandles(symbol: string, timeframe: CandleTimeframe, range: CandleRange, credentials: AlpacaCandleCredentials, background = false, coordinate = true, context: ProviderRequestContext = {}): Promise<Candle[]> {
   const rows: Candle[] = []; let token: string | null = null; const seen = new Set<string>();
   const deadline = Date.now() + 45_000;
   do {
     context.signal?.throwIfAborted();
     const queuedAt = performance.now();
-    try { while (coordinate && !(await takeProviderSlot(background))) {
+    try { while (coordinate) {
+      if (background && context.yieldToForeground && await foregroundPending()) throw new CacheBusyError();
+      if (await takeProviderSlot(background)) break;
       context.signal?.throwIfAborted();
       if (Date.now() > deadline) throw new CacheBusyError();
       await waitForHistory(background ? 1050 : 525, context.signal);

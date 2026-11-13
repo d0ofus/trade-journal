@@ -8,9 +8,16 @@ import { tradeFilterError, tradeFilterHref, type WorkstationTradeFilters } from 
 import { filterDemoTrades } from "@/lib/workstation/demo-filters";
 import { timingDemoTrade } from "@/lib/workstation/timing-demo";
 import { diagnosticDemoTrade } from "@/lib/workstation/diagnostic-demo";
-export function WorkstationPreview({ initialId, journalView = false, filters = {}, diagnostic = false, timing = false, interpreted = true }: { initialId?: string; journalView?: boolean; filters?: WorkstationTradeFilters; diagnostic?: boolean; timing?: boolean; interpreted?: boolean }) {
+import { createApplicationAdapter } from "@/lib/workstation/application-adapter";
+export function WorkstationPreview({ initialId, journalView = false, filters = {}, diagnostic = false, timing = false, interpreted = true, candleTransport = false }: { initialId?: string; journalView?: boolean; filters?: WorkstationTradeFilters; diagnostic?: boolean; timing?: boolean; interpreted?: boolean; candleTransport?: boolean }) {
   const samples = useMemo(() => timing ? [timingDemoTrade(interpreted), ...demoTrades] : diagnostic ? [diagnosticDemoTrade, ...demoTrades] : demoTrades, [diagnostic, timing, interpreted]);
-  const adapter = useMemo(() => createDemoAdapter(samples), [samples]);
+  const adapter = useMemo(() => {
+    const demo = createDemoAdapter(samples);
+    if (!candleTransport) return demo;
+    // Development-only route: browser tests intercept this real candle transport.
+    const { candles, cachedCandles, indicatorCandles, benchmarkCandles } = createApplicationAdapter();
+    return { ...demo, candles, cachedCandles, indicatorCandles, benchmarkCandles };
+  }, [samples, candleTransport]);
   const router = useRouter(), pathname = usePathname();
   const [pending, startTransition] = useTransition();
   const trades = useMemo(() => tradeFilterError(filters) ? [] : filterDemoTrades(samples, filters), [filters, samples]);

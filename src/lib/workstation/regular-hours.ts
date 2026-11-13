@@ -23,7 +23,7 @@ export function aggregateRegularHours(candles: Candle[]): Candle[] {
   for (const c of [...candles].sort((a, b) => a.time - b.time)) {
     const period = regularHourPeriod(c.time); if (!period) continue;
     const previous = result.get(period.start);
-    if (previous) { previous.high = Math.max(previous.high, c.high); previous.low = Math.min(previous.low, c.low); previous.close = c.close; previous.volume = (previous.volume ?? 0) + (c.volume ?? 0); }
+    if (previous) { previous.high = Math.max(previous.high, c.high); previous.low = Math.min(previous.low, c.low); previous.close = c.close; previous.volume = previous.volume === undefined || c.volume === undefined ? undefined : previous.volume + c.volume; }
     else result.set(period.start, { ...c, time: period.start });
   }
   return [...result.values()];

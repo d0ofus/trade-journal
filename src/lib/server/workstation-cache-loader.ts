@@ -10,7 +10,7 @@ import { CacheBudgetError, CachePriorityError, cacheBudgetAvailable, claimCacheL
 import { CacheBusyError, CacheProviderError, fetchCompactCandles } from "./workstation-cache-provider";
 import { alpacaFailureSummary } from "./alpaca-candle-error";
 
-export type CompactInput = { supplementary?: boolean; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete"; background?: boolean; tradeWindow?: boolean; signal?: AbortSignal };
+export type CompactInput = { preemptible?: boolean; supplementary?: boolean; symbol: string; timeframe: CandleTimeframe; range: CandleRange; limit: number; session?: "regular" | "extended"; mode?: "cache" | "fill" | "refresh" | "complete"; background?: boolean; tradeWindow?: boolean; signal?: AbortSignal };
 const days: Record<CandleTimeframe, number> = { "5m": 14, "10m": 21, "15m": 28, "1h": 90, "1d": 365, "1wk": 1825 };
 export function boundedCacheRanges(range: CandleRange, timeframe: CandleTimeframe) {
   const result: CandleRange[] = [];
@@ -19,7 +19,7 @@ export function boundedCacheRanges(range: CandleRange, timeframe: CandleTimefram
 }
 export async function loadCompactWorkstationCandles(input: CompactInput, policy: WorkstationCandlePolicy): Promise<WorkstationCandles> {
   const timings: CandleTimings = { cacheReadMs: 0, providerFetchMs: 0, persistenceMs: 0, queueWaitMs: 0, storageCheckMs: 0, providerRequestCount: 0 };
-  const context: RegularHourContext = { signal: input.signal, timings };
+  const context: RegularHourContext = { signal: input.signal, timings, yieldToForeground: input.preemptible };
   const now = Math.floor(Date.now() / 1000);
   // A moving endpoint must not create a one-second cache miss on every trade selection.
   // Recent history advances in 15-minute batches, behind the configured SIP delay.

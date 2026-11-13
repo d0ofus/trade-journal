@@ -1,5 +1,6 @@
 import { CandlestickSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import { alignComparison, benchmarkColor, benchmarkTransparency, benchmarkPaneRatio, type Comparison } from "@/lib/workstation/comparison";
+import { isRvolSeries } from "./rvol-layer";
 import type { Candle } from "@/lib/workstation/types";
 
 export const benchmarkStyle = (light: boolean, value?: string, transparency = 0, mode: "overlay" | "pane" = "overlay") => {
@@ -51,7 +52,7 @@ export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
       const nextMode = next.mode ?? "overlay", nextTransparency = benchmarkTransparency(next.transparency), nextRatio = benchmarkPaneRatio(next.paneRatio);
       const resized = !series || mode !== nextMode || ratio !== nextRatio;
       if (series && mode !== nextMode) { api.removeSeries(series); series = null; }
-      if (!series) { series = api.addSeries(CandlestickSeries, benchmarkStyle(next.light, next.color, nextTransparency, nextMode), nextMode === "pane" ? 1 : 0); series.priceScale().applyOptions(nextMode === "pane" ? benchmarkPaneScale : benchmarkScale); dirty = true; }
+      if (!series) { const hasRvol = api.panes?.().some(pane => pane.getSeries?.().some(s => isRvolSeries(s))); series = api.addSeries(CandlestickSeries, benchmarkStyle(next.light, next.color, nextTransparency, nextMode), nextMode === "pane" ? hasRvol ? api.panes().length : 1 : 0); if (nextMode === "pane") series.getPane?.().moveTo(1); series.priceScale().applyOptions(nextMode === "pane" ? benchmarkPaneScale : benchmarkScale); dirty = true; }
       else if (light !== next.light || color !== next.color || transparency !== nextTransparency) series.applyOptions(benchmarkStyle(next.light, next.color, nextTransparency, nextMode));
       mode = nextMode; transparency = nextTransparency; ratio = nextRatio;
       if (mode === "pane" && resized) sizeBenchmarkPanes(api, ratio);
@@ -59,6 +60,7 @@ export function createBenchmarkLayer(api: IChartApi, legend: HTMLElement) {
       refresh();
     },
     refresh,
+    paneSeries: () => mode === "pane" ? series ?? undefined : undefined,
     drawingSurface: () => mode === "pane" && series && comparison.candles.length && (symbol === "SPY" || symbol === "QQQ") ? { series, candles: comparison.candles, symbol } : null,
     inspect(time: number) { const candle = comparison.originals.get(time); if (candle && primary.length && time <= primary[primary.length - 1].time && time >= primary[0].time && candle !== inspected) display(candle); },
     snapshot: () => ({ ...comparison, symbol, legend: written, mode, priceRange: series?.priceScale().getVisibleRange?.() ?? null }),

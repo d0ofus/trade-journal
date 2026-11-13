@@ -6,7 +6,7 @@ import { DEMO_PREFIX, demoTrades, initialDemoDocument } from "../../src/lib/work
 const prefKey = "execution-lab:workstation:preferences:demo:v1", docKey = DEMO_PREFIX + demoTrades[0].id;
 type Row = { text: string; x: number; y: number; chart?: string };
 declare global { interface Window { indexRows: Row[]; indexExport: Row[]; indexPng?: Blob; indexStroke?: { x: number; y: number }; indexResize?: { x: number; y: number }; } }
-async function open(page: Page, theme: "dark" | "light" = "dark", count = 1) {
+async function open(page: Page, theme: "dark" | "light" = "dark", count = 1, rvol = false) {
   const errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
   await page.route("**/api/**", route => route.abort());
   const doc = initialDemoDocument(demoTrades[0]); doc.drawings = [];
@@ -30,12 +30,21 @@ async function open(page: Page, theme: "dark" | "light" = "dark", count = 1) {
     proto.fillRect = function(x, y, w, h) { if (this.canvas.classList.contains("ws-chart-overlay") && w === 6 && h === 10) window.indexResize = screen(this, x + 3, y + 5); rect.call(this, x, y, w, h); };
     const create = URL.createObjectURL;
     URL.createObjectURL = function(value) { if (value instanceof Blob && value.type === "image/png") window.indexPng = value; return create.call(URL, value); };
-  }, { prefKey, docKey, prefs: { ...defaultPreferences(), theme, labels: "hidden", magnet: false, journal: false, panels: Array.from({ length: count }, (_, i) => ({ id: `chart-${i + 1}`, interval: "5m", session: "regular", benchmark: "SPY", benchmarkMode: "pane", benchmarkPaneRatio: .35 })) }, doc });
+  }, { prefKey, docKey, prefs: { ...defaultPreferences(), rvol: { enabled: rvol, mode: "ordinary", lookback: 20 }, theme, labels: "hidden", magnet: false, journal: false, panels: Array.from({ length: count }, (_, i) => ({ id: `chart-${i + 1}`, interval: "5m", session: "regular", benchmark: "SPY", benchmarkMode: "pane", benchmarkPaneRatio: .35 })) }, doc });
   await page.goto("/preview/trades?groupKey=demo-nvda");
   await expect(page.locator(".ws-chart").first()).toHaveAttribute("data-benchmark-pane-top", /\d+/);
   return errors;
 }
 const saved = (page: Page) => page.evaluate(key => JSON.parse(localStorage.getItem(key)!) as TradeDocument, docKey);
+test("keeps three supported index tools confined with RVOL underneath", async ({ page }) => {
+  const errors = await open(page, "dark", 1, true), chart = page.locator(".ws-chart");
+  await expect(chart).toHaveAttribute("data-rvol-pane-top", /\d+/);
+  for (const [key, name, fraction] of [["n", "Index with RVOL note", .7], ["r", "Index with RVOL ray", .45], ["h", "Index with RVOL level", .25]] as const) await place(page, key, name, fraction);
+  const before = (await saved(page)).drawings, box = (await chart.locator(".ws-chart-overlay").boundingBox())!, top = Number(await chart.getAttribute("data-rvol-pane-top"));
+  await chart.focus(); await page.keyboard.press("h"); await page.mouse.click(box.x + box.width * .5, box.y + top + 45);
+  expect((await saved(page)).drawings).toEqual(before);
+  expect(before.every(d => d.target?.symbol === "SPY")).toBe(true); expect(errors).toEqual([]);
+});
 async function place(page: Page, key: string, text: string, fraction = .55) {
   const chart = page.locator(".ws-chart").first(); await chart.focus(); await page.keyboard.press(key);
   const box = (await chart.locator(".ws-chart-overlay").boundingBox())!, top = Number(await chart.getAttribute("data-benchmark-pane-top")), height = Number(await chart.getAttribute("data-benchmark-pane-height"));
@@ -160,7 +169,7 @@ test("respects chart scope, unsupported tools, off mode and historical boundarie
 for (const ratio of [1, 1.25, 2]) for (const theme of ["dark", "light"] as const) test.describe(`${theme} index capture DPR ${ratio}`, () => {
   test.use({ deviceScaleFactor: ratio });
   test("keeps stock and index notes aligned after resizing and in exported PNGs", async ({ page }, info) => {
-    const errors = await open(page, theme), chart = page.locator(".ws-chart");
+    const errors = await open(page, theme, 1, ratio !== 1), chart = page.locator(".ws-chart");
     const index = await place(page, "n", "Index capture", .7);
     await chart.focus(); await page.keyboard.press("n");
     let box = (await chart.locator(".ws-chart-overlay").boundingBox())!;
