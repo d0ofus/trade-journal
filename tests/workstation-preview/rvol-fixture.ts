@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 import { usEquitiesTradingSession } from "../../src/lib/server/market-session-calendar";
 import { intersectRange, missingRanges, unionRanges, type CandleRange } from "../../src/lib/workstation/candle-ranges";
-import { defaultPreferences, seconds, type Candle, type Interval } from "../../src/lib/workstation/types";
+import { defaultPreferences, seconds, type Candle, type CandleSession, type Interval } from "../../src/lib/workstation/types";
 
 export const rvolPrefKey = "execution-lab:workstation:preferences:demo:v1";
 export type RvolMetrics = { started: number | null; clickedAt?: number; symbol?: string; paints: Record<string, number>; paneStarts: number[]; calculationStarts: number[]; indicatorStarts: number[]; calculations: { maximumSlice: number; points: number }[]; longTasks: number[] };
@@ -21,7 +21,7 @@ export function fixtureCandles(from: number, to: number, interval: Interval, ext
   }
   return rows;
 }
-export async function openRvol(page: Page, options: { enabled?: boolean; mode?: "ordinary" | "cumulative" | "per-bar"; lookback?: number; panels?: number; cache?: "warm" | "cold" | "partial"; extended?: boolean; index?: boolean; theme?: "dark" | "light"; failure?: boolean; delay?: number; volumeSpike?: boolean } = {}) {
+export async function openRvol(page: Page, options: { sessionMetadata?: CandleSession; enabled?: boolean; mode?: "ordinary" | "cumulative" | "per-bar"; lookback?: number; panels?: number; cache?: "warm" | "cold" | "partial"; extended?: boolean; index?: boolean; theme?: "dark" | "light"; failure?: boolean; delay?: number; volumeSpike?: boolean } = {}) {
   const errors: string[] = [], requests: { purpose: string | null; mode: string; timeframe: string; from: number; to: number }[] = [], fills: string[] = [], covered = new Map<string, CandleRange[]>();
   page.on("pageerror", e => errors.push(e.stack ?? e.message));
   await page.addInitScript(() => {
@@ -59,7 +59,7 @@ export async function openRvol(page: Page, options: { enabled?: boolean; mode?: 
     ranges = unionRanges(ranges);
     const missing = missingRanges(window, ranges), rows = fixtureCandles(from, to, interval, extended, symbol).filter(c => ranges.some(r => c.time >= r.from && c.time < r.to));
     if (options.volumeSpike) for (const row of rows) if (row.time >= Date.parse("2026-09-09T00:00:00Z") / 1000 && row.time < Date.parse("2026-09-10T00:00:00Z") / 1000) row.volume *= 1e8;
-    await route.fulfill({ json: { symbol, timeframe: interval, candles: rows, source: "alpaca", provider: { identity: `fixture:${key}`, provider: "alpaca", feed: "sip", adjustment: "split", delaySeconds: 0, cached: mode === "cache", fallback: false }, metadata: { session: { timezone: "America/New_York", calendar: "exchange", marketHours: extended ? "extended" : "regular" }, cache: { enabled: true, status: missing.length ? rows.length ? "partial" : "miss" : "hit", covered: ranges.map(r => intersectRange(r, window)).filter(Boolean), missing, refresh: [], effectiveRange: window }, warnings: [], truncated: false } } });
+    await route.fulfill({ json: { symbol, timeframe: interval, candles: rows, source: "alpaca", provider: { identity: `fixture:${key}`, provider: "alpaca", feed: "sip", adjustment: "split", delaySeconds: 0, cached: mode === "cache", fallback: false }, metadata: { session: options.sessionMetadata ?? { timezone: "America/New_York", calendar: "exchange", marketHours: extended ? "extended" : "regular" }, cache: { enabled: true, status: missing.length ? rows.length ? "partial" : "miss" : "hit", covered: ranges.map(r => intersectRange(r, window)).filter(Boolean), missing, refresh: [], effectiveRange: window }, warnings: [], truncated: false } } });
   });
   await page.addInitScript(({ key, prefs }) => { if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(prefs)); }, { key: rvolPrefKey, prefs: { ...defaultPreferences(), theme: options.theme ?? "dark", journal: false, rvol: { enabled: options.enabled ?? false, mode: options.mode ?? "cumulative", lookback: options.lookback ?? 20 }, panels: ["5m", "15m", "1h", "1d"].slice(0, options.panels ?? 1).map((interval, i) => ({ id: `chart-${i + 1}`, interval, session: options.extended ? "extended" : "regular", benchmark: options.index ? "SPY" : "off", benchmarkMode: "pane", benchmarkPaneRatio: .3 })) } });
   await page.goto("/preview/trades?scenario=rvol&groupKey=demo-nvda");

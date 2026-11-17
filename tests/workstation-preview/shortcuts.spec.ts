@@ -87,7 +87,7 @@ test("chart shortcuts respect focus, typing and Escape priority; fullscreen and 
   await page.keyboard.press("g");
   const date = page.getByRole("dialog", { name: "Jump to date", exact: true });
   await expect(date).toBeVisible();
-  const target = date.getByLabel("Jump target date UTC");
+  const target = date.getByLabel(/^Jump target date /);
   await expect(target).toBeFocused();
   await target.fill("2026-09-09T15:00");
   await target.press("Enter");

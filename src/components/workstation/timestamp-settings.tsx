@@ -21,7 +21,7 @@ export function TimestampInterpretationSettings() {
   }); }
   return <section className="space-y-4 text-sm" aria-label="Timestamp interpretation">
     <AccountTimestampSettings />
-    <p>Confirm the timezone of an archived broker report to interpret its execution times in the workstation. Charts, replay and review exports use the interpreted UTC time. Accounting records and import automation stay unchanged.</p>
+    <p>Confirm the timezone of an archived broker report to interpret its execution times in the workstation. Charts, replay and review exports use the interpreted UTC instant; chart labels follow the selected chart timezone. Accounting records and import automation stay unchanged.</p>
     <label className="flex flex-wrap items-center gap-3">Source timezone <select className="rounded border border-slate-300 bg-white p-2 text-slate-900" aria-label="Source timezone" value={timezone} disabled={busy} onChange={e => { setTimezone(e.target.value); setPreview(null); }}><option value="America/New_York">US Eastern — America/New_York (EDT / EST)</option><option value="UTC">UTC</option></select></label>
     <p className="text-slate-500">The controls below apply to one report and override the account default. Disabling a report is an explicit exception. Without an account default, new reports remain unverified. Explicit offsets are preserved; ambiguous or unsupported timestamps remain unresolved.</p>
     {error && <p role="alert" className="text-red-700">{error}</p>}{notice && <p role="status" className="text-emerald-700">{notice}</p>}

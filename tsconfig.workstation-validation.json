@@ -4,6 +4,9 @@
     "incremental": false
   },
   "include": [
+    "scripts/benchmark-workstation-timezone.ts",
+    "src/lib/workstation/chart-timezone.test.ts",
+    "tests/workstation-preview/chart-timezone.spec.ts",
     "tests/workstation-preview/drawing-typing.spec.ts",
     "src/lib/workstation/drawing-label-text.test.ts",
     "src/lib/workstation/publication-review-completion.test.ts",

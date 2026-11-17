@@ -2,6 +2,7 @@ import { defaultPreferences, intervals, type ChartPanel, type ChartSessionPrefer
 import { restoreVolumeAppearance } from "./volume-style";
 import { benchmarkTransparency, benchmarkPaneRatio } from "./comparison";
 import { restoreRvol, rvolPaneRatio } from "./rvol";
+import { restoreChartTimezone } from "./chart-timezone";
 
 export function parseMovingAveragePeriods(fields: string[]): { periods: number[]; error?: never } | { error: string; periods?: never } {
   const values = fields.map(field => field.trim()).filter(Boolean);
@@ -32,6 +33,7 @@ export function restoreChartPanels(value: unknown, legacySession?: unknown): Cha
 export function restoreChartDisplay(value: Partial<WorkspacePreferences>) {
   const period = value.volumeAverage?.period;
   return {
+    chartTimezone: restoreChartTimezone(value.chartTimezone),
     rvol: restoreRvol(value.rvol),
     benchmarkTransparency: benchmarkTransparency(value.benchmarkTransparency),
     volumeStyle: restoreVolumeAppearance(value.volumeStyle),

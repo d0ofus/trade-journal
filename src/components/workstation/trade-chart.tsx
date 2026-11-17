@@ -16,6 +16,7 @@ import { Crosshair, Download, Maximize2, Minimize2, Info, X, Eye, EyeOff, BookOp
 import { assertCaptureSize, captureRenderFrame, chartBitmapRatio, type CaptureFrame } from "@/lib/workstation/capture-resolution";
 import {
   Candle,
+  CandleResult,
   ChartPanel,
   Drawing,
   Interval,
@@ -56,6 +57,7 @@ import {
 } from "@/lib/workstation/date-link";
 
 export type ChartHandle = {
+  timezone: () => import("@/lib/workstation/chart-timezone").ChartTimezone;
   focus: () => void;
   inspect: (id: string) => void;
   cancel: () => void;
@@ -70,6 +72,9 @@ export type ChartHandle = {
   view: () => HistoryRange | null;
 };
 type Props = {
+  systemTimezone?: string;
+  onTimezoneChange?: (mode: import("@/lib/workstation/chart-timezone").ChartTimezoneMode) => void;
+  onTimezoneSession?: (tradeId: string, panel: string, session: CandleResult["session"]) => void;
   indicatorScheduler: IndicatorScheduler;
   onToggleRvol: () => void;
   captureLocked: boolean;
@@ -134,6 +139,9 @@ import { restoreRvol, rvolDescription, rvolMode, rvolPaneRatio, rvolTitle } from
 import { IndicatorScheduler } from "@/lib/workstation/indicator-scheduler";
 import { useRvol } from "./use-rvol";
 import { addRvolSeries, paintRvolLegend, setRvolData, sizeWorkspacePanes } from "./rvol-layer";
+import { chartTimestamp } from "@/lib/workstation/chart-timezone";
+import { applyChartTimezone, useChartTimezone } from "./use-chart-timezone";
+import { ChartTimezoneSelector } from "./chart-timezone-selector";
 
 const asTime = (time: number) => time as UTCTimestamp;
 
@@ -143,6 +151,10 @@ export function TradeChart(input: Props) {
   const trade = useMemo(() => ({ ...input.trade, chartSession: tradeChartSession(input.trade, input.panel.session) }), [input.trade, input.panel.session]);
   const [historyState, setHistoryState] = useState<HistoryState | null>(null);
   const result = historyState?.result ?? { candles: [], warning: "", source: "" };
+  const timezone = useChartTimezone(input.preferences.chartTimezone, result.session, input.systemTimezone);
+  const timezoneRef = useRef(timezone); timezoneRef.current = timezone;
+  const timezoneSessionCallback = useRef(input.onTimezoneSession); timezoneSessionCallback.current = input.onTimezoneSession;
+  useEffect(() => { timezoneSessionCallback.current?.(input.trade.id, input.panel.id, result.session); }, [input.trade.id, input.panel.id, result.session]);
   const adjustedTrade = useMemo(() => splitAdjustedTrade(trade, result.splitAdjustment), [trade, result.splitAdjustment]);
   const benchmarkContext = useRef<BenchmarkDrawingContext | null>(null);
   const drawings = input.drawings.map(d => projectDrawing(d, result.splitAdjustment, benchmarkContext.current));
@@ -798,6 +810,7 @@ export function TradeChart(input: Props) {
       paint();
     };
     const handle: ChartHandle = {
+      timezone: () => timezoneRef.current,
       inspect: (id) => setInspectedId(id),
       focus: () => container.current?.focus({ preventScroll: true }),
       cancel: () => {
@@ -892,6 +905,7 @@ export function TradeChart(input: Props) {
         assertCaptureSize(width * scale, (height + header) * scale);
         const render = captureRenderFrame({ width, height }, scale, ratio);
         const frozenBeforeEntry = beforeEntryActive.current;
+        const frozenTimezone = timezoneRef.current;
         const frozenTrade = frozenBeforeEntry ? { ...latest.current.trade, executions: [] } : latest.current.trade, frozenInterval = latest.current.panel.interval, frozenHistory = historyResult.current;
         const priceRange = candles.priceScale().getVisibleRange();
         const container = document.createElement("div");
@@ -1043,7 +1057,7 @@ export function TradeChart(input: Props) {
           ctx.fillStyle = light ? "#243149" : "#dde5f3";
           ctx.font = "600 13px system-ui";
           ctx.fillText(
-            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · UTC${frozenHistory.splitAdjustment ? " \u00b7 SPLIT ADJUSTED" : ""}${frozen.replay !== null ? ` · REPLAY ${new Date(frozen.replay * 1000).toISOString()}` : ""}`,
+            `${frozenTrade.symbol} / ${frozenInterval}${frozenBeforeEntry ? " · BEFORE ENTRY" : ""}${frozenBenchmark?.symbol ? ` · ${frozenBenchmark.symbol} comparison` : ""} · ${frozenTrade.direction} · ${frozenTimezone.label}${frozenHistory.splitAdjustment ? " \u00b7 SPLIT ADJUSTED" : ""}${frozen.replay !== null ? ` · REPLAY ${chartTimestamp(frozen.replay, frozenTimezone)}` : ""}`,
             16,
             21,
           );
@@ -1084,6 +1098,11 @@ export function TradeChart(input: Props) {
       rawVolumeSeries.current = null;
     };
   }, []);
+
+  // Formatting has no dependency on history, series or indicator lifecycles.
+  useEffect(() => {
+    if (chart.current) applyChartTimezone(chart.current, timezone, input.panel.interval, result.session);
+  }, [timezone, input.panel.interval, result.session]);
 
   useEffect(() => {
     const api = chart.current,
@@ -1675,6 +1694,8 @@ export function TradeChart(input: Props) {
       aria-label={`${props.trade.symbol} ${props.panel.interval} chart`}
       data-visible-from={visibleWindow?.from}
       data-visible-to={visibleWindow?.to}
+      data-chart-timezone={timezone.zone}
+      data-timezone-mode={timezone.mode}
       data-visible-bars={visibleBars}
       data-benchmark-mode={props.panel.benchmarkMode ?? "overlay"}
       data-history-interval={historyState?.interval}
@@ -1749,6 +1770,7 @@ export function TradeChart(input: Props) {
             {props.fullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </button>
           {props.fullscreen && <button type="button" aria-label="Show relative volume" aria-pressed={rvolSettings.enabled} disabled={props.captureLocked} onClick={props.onToggleRvol}>RVOL</button>}
+          {props.fullscreen && props.onTimezoneChange && <ChartTimezoneSelector value={timezone} onChange={props.onTimezoneChange} disabled={props.captureLocked} label="Fullscreen chart timezone" />}
           {props.fullscreen && <button type="button" data-fullscreen-journal-toggle aria-label={props.fullscreenJournal ? "Hide fullscreen journal" : "Show fullscreen journal"} aria-expanded={!!props.fullscreenJournal} onClick={props.onJournal}><BookOpen size={13} /><span>Journal</span></button>}
         </div>
       </div>
@@ -1849,7 +1871,7 @@ export function TradeChart(input: Props) {
         </div>)}</div>
         <p>Independent chart ranges are preserved. Fit trade shows the full holding period. Session exclusions and unresolved timestamps require their respective settings; navigation never moves a fill onto a different candle.</p>
       </div>}
-      {inspected && <ExecutionDetails diagnostic={inspected} history={result} onClose={() => setInspectedId(null)} />}
+      {inspected && <ExecutionDetails timezone={timezone} diagnostic={inspected} history={result} onClose={() => setInspectedId(null)} />}
       {historyOpen && (
         <div
           ref={historyPopover}
@@ -1871,16 +1893,7 @@ export function TradeChart(input: Props) {
           {visibleWindow && (
             <p className="ws-visible-window">
               {Math.round(visibleBars)} visible bars ·{" "}
-              {new Date(visibleWindow.from * 1000)
-                .toISOString()
-                .slice(0, 16)
-                .replace("T", " ")}{" "}
-              —{" "}
-              {new Date(visibleWindow.to * 1000)
-                .toISOString()
-                .slice(0, 16)
-                .replace("T", " ")}{" "}
-              UTC
+              {chartTimestamp(visibleWindow.from, timezone, false)} — {chartTimestamp(visibleWindow.to, timezone, false)}
             </p>
           )}
           <div
@@ -1948,7 +1961,7 @@ export function TradeChart(input: Props) {
           </div>
           <div className="ws-diagnostic-list">{diagnostics.map(d => <button key={d.execution.id} onClick={() => { setHistoryOpen(false); setInspectedId(d.execution.id); props.onExecution(d.execution.id); }}>{d.execution.side} {d.execution.quantity} @ {d.execution.price.toFixed(2)} <span>{d.status === "price-outside" ? "Price outside candle" : d.status === "missing" ? "Missing candle" : "Time bucket / price match"}</span></button>)}</div>
           <p className="ws-history-help">
-            Pan near an edge to load more. Workstation times display in UTC; markers
+            Pan near an edge to load more. Chart times use the selected display timezone; markers
             use their containing candle.
             {props.replay !== null
               ? " Future bars and executions are concealed during replay."

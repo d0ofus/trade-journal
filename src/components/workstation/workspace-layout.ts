@@ -1,12 +1,13 @@
 import type { DockviewApi, SerializedDockview } from "dockview";
 import type { WorkspacePreferences } from "@/lib/workstation/types";
+type VisibilityPreferences = Pick<WorkspacePreferences, "focusMode" | "bottomCollapsed" | "journal">;
 
 export const reviewPanelIds = ["executions", "evidence", "drawings"] as const;
 
 /** Hide groups without destroying their panels, sizes, active tabs, or draft editors. */
 export function applyWorkspaceVisibility(
   api: DockviewApi,
-  preferences: WorkspacePreferences,
+  preferences: VisibilityPreferences,
   focusJournal = false,
 ) {
   for (const group of api.groups) {
@@ -32,7 +33,7 @@ export function applyWorkspaceVisibility(
 
 export type FocusDockState = { snapshot: SerializedDockview | null };
 /** Temporary arrangement: never persist focus-only moves, resizes or visibility. */
-export function syncFocusDock(api: DockviewApi, preferences: WorkspacePreferences, state: FocusDockState, journalOpen: boolean) {
+export function syncFocusDock(api: DockviewApi, preferences: VisibilityPreferences, state: FocusDockState, journalOpen: boolean) {
   if (preferences.focusMode && !state.snapshot) {
     state.snapshot = api.toJSON();
     const charts = api.getPanel("charts");

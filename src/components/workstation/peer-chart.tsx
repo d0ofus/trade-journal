@@ -13,11 +13,14 @@ import { assertCaptureSize, captureRenderFrame, chartBitmapRatio, type CaptureFr
 import { createPeerDrawingLayer, type PeerDrawingControls } from "./peer-drawing-layer";
 import { paintChart } from "./chart-paint";
 import { logicalTimeIndex } from "@/lib/workstation/math";
+import { chartTimestamp, type ChartTimezone } from "@/lib/workstation/chart-timezone";
+import { applyChartTimezone, useChartTimezone } from "./use-chart-timezone";
 import { preserveHistoryViewport } from "@/lib/workstation/history";
 import { peerTimeAtLogical } from "@/lib/workstation/peer-frame-layout";
 
-export type PeerChartHandle = { capture: (scale: number, plotOnly?: boolean) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; bounds: () => DOMRect; range: () => HistoryRange | null; cancelDrawing: () => void; beginResize: () => void; endResize: (cancel?: boolean) => void };
-type Props = { drawingStore: DrawingStore; drawingControls: PeerDrawingControls; symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
+const exchangeSession = { timezone: "America/New_York", calendar: "exchange", marketHours: "regular" } as const;
+export type PeerChartHandle = { timezone: () => ChartTimezone; capture: (scale: number, plotOnly?: boolean) => Promise<HTMLCanvasElement>; frame: () => CaptureFrame; bounds: () => DOMRect; range: () => HistoryRange | null; cancelDrawing: () => void; beginResize: () => void; endResize: (cancel?: boolean) => void };
+type Props = { systemTimezone?: string; drawingStore: DrawingStore; drawingControls: PeerDrawingControls; symbol: string; trade: Trade; view: PeerView; series?: PeerSeries; preferences: WorkspacePreferences; onRange: (symbol: string, range: HistoryRange) => void; register: (symbol: string, handle: PeerChartHandle | null) => void };
 const numericRange = (chart: IChartApi): HistoryRange | null => {
   const range = chart.timeScale().getVisibleRange();
   return range && typeof range.from === "number" && typeof range.to === "number" ? { from: range.from, to: range.to } : null;
@@ -34,7 +37,9 @@ export function PeerChart(props: Props) {
 }
 const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
   const host = useRef<HTMLDivElement>(null), latest = useRef(props);
-  const model = useRef<{ update: () => void; sync: () => void; draw: () => void; cancel: () => void } | null>(null);
+  const timezone = useChartTimezone(props.preferences.chartTimezone, exchangeSession, props.systemTimezone);
+  const timezoneRef = useRef(timezone); timezoneRef.current = timezone;
+  const model = useRef<{ format: () => void; update: () => void; sync: () => void; draw: () => void; cancel: () => void } | null>(null);
   const appearance = JSON.stringify([props.preferences.theme, props.preferences.gridlines, props.preferences.volume, props.preferences.volumeAverage, props.preferences.volumeStyle, props.preferences.averages]);
   useEffect(() => { latest.current = props; });
   useEffect(() => {
@@ -131,8 +136,11 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
       });
     });
     observer.observe(node);
-    model.current = { update, sync, draw: drawingLayer.draw, cancel: drawingLayer.cancel }; update();
+    const format = () => { applyChartTimezone(chart, timezoneRef.current, latest.current.view.interval, exchangeSession); };
+    format();
+    model.current = { format, update, sync, draw: drawingLayer.draw, cancel: drawingLayer.cancel }; update();
     props.register(props.symbol, {
+      timezone: () => timezoneRef.current,
       range: () => numericRange(chart),
       bounds: () => node.getBoundingClientRect(),
       cancelDrawing: drawingLayer.cancel,
@@ -150,6 +158,7 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
       capture: async (scale: number, plotOnly = false) => {
         if (!candles.length) throw new Error("Wait for chart history before attaching.");
         const { view, series } = latest.current;
+        const frozenTimezone = timezoneRef.current;
         const frozen = drawingLayer.snapshot(), snapshotBars = [...candles], extra = plotOnly ? 0 : 76, top = plotOnly ? 0 : 43;
         frozen.selected = null; frozen.export = true;
         // Freeze every series/range/marker before the first asynchronous yield.
@@ -197,8 +206,8 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
           if (plotOnly) { ctx.fillText(props.symbol, 10 * scale, 16 * scale); return canvas; }
           ctx.fillText(`${props.symbol} · ${view.interval} · ${view.adjustment} · ${series?.source ?? ""}`, 12 * scale, 19 * scale);
           ctx.font = `${10 * scale}px sans-serif`;
-          ctx.fillText(`${new Date(range.from * 1000).toISOString().slice(0, 10)} – ${new Date(range.to * 1000).toISOString().slice(0, 10)} · ${view.session}${view.beforeEntry ? " · Before entry" : ""}`, 12 * scale, 35 * scale);
-          ctx.fillText(`TradingView Lightweight Charts · Peer comparison${view.replayAt === undefined ? "" : ` · REPLAY ${new Date(view.replayAt * 1000).toISOString()}`}`, 12 * scale, canvas.height - 12 * scale);
+          ctx.fillText(`${new Date(range.from * 1000).toISOString().slice(0, 10)} – ${new Date(range.to * 1000).toISOString().slice(0, 10)} · ${view.session} · ${frozenTimezone.label}${view.beforeEntry ? " · Before entry" : ""}`, 12 * scale, 35 * scale);
+          ctx.fillText(`TradingView Lightweight Charts · Peer comparison${view.replayAt === undefined ? "" : ` · REPLAY ${chartTimestamp(view.replayAt, frozenTimezone)}`}`, 12 * scale, canvas.height - 12 * scale);
           return canvas;
         } finally { detach(); clone.remove(); container.remove(); }
       },
@@ -206,6 +215,7 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
     return () => { observer.disconnect(); cancelAnimationFrame(resizeFrame); cancelAnimationFrame(frame); historyNotice.remove(); drawingLayer.dispose(); props.register(props.symbol, null); chart.timeScale().unsubscribeVisibleTimeRangeChange(changed); markers.detach(); chart.remove(); model.current = null; };
     // Date/data updates reuse the canvas; only display configuration rebuilds it.
   }, [props.symbol, props.view.interval, appearance]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { model.current?.format(); }, [timezone]);
   useEffect(() => { model.current?.update(); }, [props.series, props.trade, props.view.session, props.view.adjustment, props.view.beforeEntry, props.view.replayAt]);
   useEffect(() => { model.current?.sync(); }, [props.view.range]);
   useEffect(() => { model.current?.draw(); }, [props.drawingControls]);
@@ -214,5 +224,5 @@ const MemoPeerChart = memo(function PeerChartCanvas(props: Props) {
     let prior = drawingStore.getSnapshot()?.value.comparison?.drawings[symbol];
     return drawingStore.subscribe(() => { const next = drawingStore.getSnapshot()?.value.comparison?.drawings[symbol]; if (next !== prior) { prior = next; model.current?.draw(); } });
   }, [drawingStore, symbol]);
-  return <div className="ws-peer-chart" ref={host} tabIndex={0} aria-label={`${props.symbol} comparison chart`} data-peer-canvas={props.symbol} />;
+  return <div className="ws-peer-chart" ref={host} tabIndex={0} aria-label={`${props.symbol} comparison chart`} data-peer-canvas={props.symbol} data-chart-timezone={timezone.zone} data-timezone-mode={timezone.mode} />;
 });

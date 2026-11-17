@@ -120,6 +120,7 @@ export type Review = {
   custom: Record<string, string>;
 };
 export type Evidence = {
+  chartTimezone?: import("./chart-timezone").ChartTimezoneCapture;
   fundamentalsCapture?: import("./fundamentals").FundamentalsCapture;
   asset?: import("./image-assets").ImageAssetReference;
   /** Replay cutoff at capture time; absent for ordinary captures and imports. */
@@ -151,6 +152,7 @@ export type TradeDocument = {
 export type ChartSessionPreference = "auto" | "regular" | "extended";
 export type ChartPanel = { id: string; interval: Interval; session?: ChartSessionPreference; benchmark?: "off" | "SPY" | "QQQ"; lastBenchmark?: "SPY" | "QQQ"; benchmarkMode?: "overlay" | "pane"; benchmarkPaneRatio?: number; rvolPaneRatio?: number; beforeEntry?: boolean };
 export type WorkspacePreferences = {
+  chartTimezone?: import("./chart-timezone").ChartTimezoneMode;
   rvol?: import("./rvol").RvolSettings;
   volumeStyle?: import("./volume-style").VolumeAppearance;
   capturePinNotes?: boolean;
@@ -250,6 +252,7 @@ export const emptyDocument = (): TradeDocument => ({
   updatedAt: null,
 });
 export const defaultPreferences = (): WorkspacePreferences => ({
+  chartTimezone: "exchange",
   rvol: { enabled: false, mode: "cumulative", lookback: 20 },
   theme: "dark",
   panels: [

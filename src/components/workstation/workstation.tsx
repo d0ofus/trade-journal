@@ -12,6 +12,10 @@ import { VolumeSettings } from "./volume-settings";
 import { RvolSettings } from "./rvol-settings";
 import { restoreRvol, rvolPaneRatio } from "@/lib/workstation/rvol";
 import { IndicatorScheduler } from "@/lib/workstation/indicator-scheduler";
+import { chartTimestamp, chartClock, resolveChartTimezone, timezoneCapture, type ChartTimezoneMode } from "@/lib/workstation/chart-timezone";
+import { useChartTimezone, useSystemTimezone } from "./use-chart-timezone";
+import { ChartTimezoneSelector } from "./chart-timezone-selector";
+import { ZonedDateTimeInput, type ZonedDateTimeHandle } from "./zoned-datetime-input";
 import { CaptureQualityContext, CaptureQualityControls } from "./capture-quality";
 import { captureResolution, type CaptureQuality } from "@/lib/workstation/capture-resolution";
 import { FullscreenJournal, JournalPortal, fullscreenJournalWidth } from "./fullscreen-journal";
@@ -120,6 +124,7 @@ import {
   Trade,
   WorkstationAdapter,
   WorkspacePreferences,
+  CandleSession,
   defaultPreferences,
   intervals,
   seconds,
@@ -139,7 +144,7 @@ import { measurementLabels, measureText, riskReward } from "@/lib/workstation/ma
 import { useTradeDocument } from "./use-trade-document";
 import { useReviewStatuses } from "./use-review-statuses";
 import { TradeListRows } from "./trade-list-rows";
-import { money, time, date } from "./trade-display-format";
+import { money, date } from "./trade-display-format";
 import type { ReviewStatusSummary } from "@/lib/workstation/review-status";
 import { useTradeView } from "./use-trade-view";
 import { viewPreferences, type TradeView } from "@/lib/workstation/trade-view";
@@ -392,15 +397,21 @@ export function TradesWorkstation({
   const getMarketMetrics = useCallback(() => marketMetrics.current.key === metricKey ? marketMetrics.current.value : undefined, [metricKey]);
   const prefRef = useRef(preferences);
   prefRef.current = preferences;
-  const [targetDate, setTargetDate] = useState(() =>
-    new Date((trade?.openTime ?? Date.now() / 1000) * 1000)
-      .toISOString()
-      .slice(0, 16),
-  );
+  const [targetDate, setTargetDate] = useState(() => trade?.openTime ?? Date.now() / 1000);
+  const targetDateInput = useRef<ZonedDateTimeHandle>(null), jumpDateInput = useRef<ZonedDateTimeHandle>(null);
   const [activeChart, setActiveChart] = useState("chart-1"),
     [tool, setTool] = useState<Tool>("cursor"),
     [selectedDrawing, setSelectedDrawing] = useState<string | null>(null),
     [selectedExecution, setSelectedExecution] = useState<string | null>(null);
+  const systemTimezone = useSystemTimezone(preferences.chartTimezone);
+  const [chartSessions, setChartSessions] = useState<{ tradeId: string; panels: Record<string, CandleSession | undefined> }>({ tradeId: "", panels: {} });
+  const displayTimezone = useChartTimezone(preferences.chartTimezone, chartSessions.tradeId === trade?.id ? chartSessions.panels[activeChart] : undefined, systemTimezone);
+  const receiveChartSession = useCallback((tradeId: string, panel: string, session: CandleSession | undefined) => setChartSessions(current => {
+    if (!session && current.tradeId !== tradeId) return current;
+    const previous = current.tradeId === tradeId ? current.panels[panel] : undefined;
+    if (previous?.timezone === session?.timezone && previous?.calendar === session?.calendar) return current;
+    return { tradeId, panels: { ...(current.tradeId === tradeId ? current.panels : {}), [panel]: session } };
+  }), []);
   const [drawingVisibility, setDrawingVisibility] = useState<TemporaryDrawingVisibility | null>(null);
   const [comparisonVisibility, setComparisonVisibility] = useState<TemporaryDrawingVisibility | null>(null);
   const temporarilyHiddenIds = hiddenDrawingIdsFor(drawingVisibility, trade?.id);
@@ -691,7 +702,7 @@ export function TradesWorkstation({
     setListDrawer(false);
     const next = trades.find((candidate) => candidate.id === id);
     if (next)
-      setTargetDate(new Date(next.openTime * 1000).toISOString().slice(0, 16));
+      setTargetDate(next.openTime);
     setSelectedDrawing(null);
     setSelectedExecution(null);
     setTool("cursor");
@@ -747,7 +758,7 @@ export function TradesWorkstation({
     handles.current.get(activeChart)?.inspect(id);
     const fill = trade.executions.find((e) => e.id === id);
     if (fill) {
-      setTargetDate(new Date(fill.time * 1000).toISOString().slice(0, 16));
+      setTargetDate(fill.time);
       handles.current.forEach((handle) => handle.reveal({ time: fill.time }));
     }
   };
@@ -923,11 +934,12 @@ export function TradesWorkstation({
     },
     [buildDock, changePreferences],
   );
+  const dockVisibility = useMemo(() => ({ focusMode: preferences.focusMode, bottomCollapsed: preferences.bottomCollapsed, journal: preferences.journal }), [preferences.focusMode, preferences.bottomCollapsed, preferences.journal]);
   useEffect(() => {
     if (!dock.current || isSmall) return;
     const before = document.activeElement as HTMLElement | null;
     const focusedChart = before?.closest<HTMLElement>("[data-chart-id]")?.dataset.chartId;
-    syncFocusDock(dock.current, preferences, focusDock.current, focusJournal);
+    syncFocusDock(dock.current, dockVisibility, focusDock.current, focusJournal);
     // Moving/restoring dock panels can remount the focused chart. Preserve
     // keyboard continuity, without stealing focus from the Journal toggle.
     if (focusedChart) {
@@ -936,7 +948,7 @@ export function TradesWorkstation({
       });
       return () => cancelAnimationFrame(frame);
     }
-  }, [preferences, isSmall, focusJournal]);
+  }, [dockVisibility, isSmall, focusJournal]);
   const showPanel = (id: keyof typeof names) => {
     if (id === "journal")
       changePreferences({ journal: true, focusMode: false });
@@ -996,13 +1008,12 @@ export function TradesWorkstation({
   const syncClickedDate = (source: string, target: ChartDateTarget) => {
     const mode = prefRef.current.dateLink;
     if (mode === "independent") return;
-    setTargetDate(new Date(target.time * 1000).toISOString().slice(0, 16));
+    setTargetDate(target.time);
     handles.current.forEach((handle, id) => {
       if (id !== source) handle.reveal(target);
     });
   };
-  const goToDate = () => {
-    const target = Date.parse(`${targetDate}Z`) / 1000;
+  const goToDate = (target: number) => {
     if (!Number.isFinite(target)) return;
     if (!viewState.ready || !handles.current.size) { pendingDate.current = { tradeId: trade.id, time: target, panel: preferences.dateLink === "independent" ? activeChart : null }; return; }
     handles.current.forEach((handle, id) => {
@@ -1012,11 +1023,7 @@ export function TradesWorkstation({
   };
   const fitAllCharts = () => {
     handles.current.forEach((handle) => handle.fit());
-    setTargetDate(
-      new Date((trade.openTime + trade.closeTime) * 500)
-        .toISOString()
-        .slice(0, 16),
-    );
+    setTargetDate((trade.openTime + trade.closeTime) / 2);
   };
   const setPanelCount = (count: number) => {
     changePreferences({
@@ -1057,6 +1064,8 @@ export function TradesWorkstation({
       // Calling each handle freezes its candles, annotations and replay frame
       // synchronously, before waiting for either rendering or review saves.
       const capturedReplay = replay, capturedAt = Date.now() / 1000;
+      const capturedPanels = kind === "layout" ? preferences.panels.map(p => p.id) : [activeChart];
+      const capturedTimezone = timezoneCapture(Object.fromEntries(capturedPanels.map(id => [id, handles.current.get(id)?.timezone() ?? displayTimezone])));
       const outputFrame = kind === "layout" ? { width: Math.max(...bounds.map(b => b.x + b.width)), height: Math.max(...bounds.map(b => b.y + b.height)) } : selected.captureFrame();
       const exportScale = captureResolution(outputFrame, captureQuality, window.devicePixelRatio).scale;
       const canvas = kind === "layout" ? compositeCharts(await Promise.all(preferences.panels.map((p) => {
@@ -1084,6 +1093,7 @@ export function TradesWorkstation({
           name: `${reviewSections.find(([key]) => key === destination)?.[1]} · ${name}`,
           image: canvas.toDataURL("image/png"),
           time: capturedAt,
+          chartTimezone: capturedTimezone,
           ...(capturedReplay === null ? {} : { replayAt: capturedReplay }),
           revision: persistence.getDocument()?.revision ?? 0,
           timeframe: interval,
@@ -1132,7 +1142,7 @@ export function TradesWorkstation({
     try {
       if (!(await persistence.flush())) throw new Error("Save the review before attaching a comparison.");
       assertCurrent();
-      const evidence = await storeEvidence(trade.id, adapter.mode, { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.parse(metadata.capturedAt) / 1000, replayAt: metadata.replayAt, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata }, attachmentAbort.current.signal, "peers");
+      const evidence = await storeEvidence(trade.id, adapter.mode, { id: crypto.randomUUID(), name: `${metadata.symbols.join(" + ")} · ${metadata.interval} · ${metadata.groupName}`.slice(0, 240), image: canvas.toDataURL("image/png"), time: Date.parse(metadata.capturedAt) / 1000, replayAt: metadata.replayAt, revision: persistence.getDocument()?.revision ?? 0, timeframe: metadata.interval, timeInterpretationVersion: trade.timeInterpretationVersion ?? "original", peerCapture: metadata, chartTimezone: metadata.chartTimezone }, attachmentAbort.current.signal, "peers");
       assertCurrent();
       persistence.changeContent(d => attachEvidence(d, evidence, "peers", layoutState.layout));
       if (!(await persistence.flush())) throw new Error("The chart remains in your recovery draft. Retry saving the review.");
@@ -1305,6 +1315,7 @@ export function TradesWorkstation({
     ...value, chartLabels: { ...restoreChartLabels(value.chartLabels, value.labels), [id as ChartSlot]: mode },
   }));
   const toggleLabels = (id = currentPanel.id) => setChartLabels(id, chartLabelMode(preferences, id) === "labels" ? "compact" : "labels");
+  const changeTimezone = (chartTimezone: ChartTimezoneMode) => { if (!busy && !operation.current) changePreferences({ chartTimezone }); };
   const toggleRvol = () => { if (busy) return; handles.current.forEach(handle => handle.cancel()); const rvol = restoreRvol(preferences.rvol); changePreferences({ rvol: { ...rvol, enabled: !rvol.enabled } }); };
   const chartContent = (
     <div className="ws-chart-workspace" inert={!!busy}>
@@ -1377,16 +1388,8 @@ export function TradesWorkstation({
                 <option value="target">Link clicked date</option>
               </select>
             </label>
-            <label>
-              Target date · UTC
-              <input
-                type="datetime-local"
-                aria-label="Target date UTC"
-                value={targetDate}
-                onChange={(e) => setTargetDate(e.target.value)}
-              />
-            </label>
-            <button className="ws-primary" onClick={goToDate}>
+            <ZonedDateTimeInput ref={targetDateInput} label="Target date" timezone={displayTimezone} value={targetDate} onCommit={setTargetDate} />
+            <button className="ws-primary" onClick={() => { const target = targetDateInput.current?.commit(); if (target != null) goToDate(target); }}>
               Go to date
             </button>
             <p>
@@ -1480,6 +1483,9 @@ export function TradesWorkstation({
         <ResizableChartGrid count={preferences.panels.length} arrangement={preferences.chartArrangement} sizing={preferences.chartSizing} onChange={chartSizing => changePreferences({ chartSizing })}>
           {styles => viewState.ready ? preferences.panels.map((panel, index) => (
             <TradeChart
+              systemTimezone={systemTimezone}
+              onTimezoneChange={changeTimezone}
+              onTimezoneSession={receiveChartSession}
               indicatorScheduler={indicatorScheduler}
               onToggleRvol={toggleRvol}
               captureLocked={!!busy}
@@ -1551,7 +1557,7 @@ export function TradesWorkstation({
         <div className="ws-drawing-properties">
           <span>{tools.find((t) => t.id === chosenDrawing.tool)?.label}</span>
           {chosenDrawing.target && <span>{drawingTargetLabel(chosenDrawing)}</span>}
-          <DrawingCoordinates unavailable={!!chosenDrawing.target && !benchmarkForDrawing(chosenDrawing)} disabled={trade.stale} drawing={projectDrawing(chosenDrawing, chartAdjustments[chosenDrawing.panel ?? activeChart], benchmarkForDrawing(chosenDrawing))} onChange={drawing => saveDrawing(projectDrawing(drawing, chartAdjustments[drawing.panel ?? activeChart], benchmarkForDrawing(drawing), true))} />
+          <DrawingCoordinates timezone={resolveChartTimezone(displayTimezone.mode, chartSessions.tradeId === trade.id ? chartSessions.panels[chosenDrawing.panel ?? activeChart] : undefined, systemTimezone)} unavailable={!!chosenDrawing.target && !benchmarkForDrawing(chosenDrawing)} disabled={trade.stale} drawing={projectDrawing(chosenDrawing, chartAdjustments[chosenDrawing.panel ?? activeChart], benchmarkForDrawing(chosenDrawing))} onChange={drawing => saveDrawing(projectDrawing(drawing, chartAdjustments[drawing.panel ?? activeChart], benchmarkForDrawing(drawing), true))} />
           <AnnotationTextInput
             key={chosenDrawing.id}
             autoFocus={chosenDrawing.tool === "text"}
@@ -1764,7 +1770,7 @@ export function TradesWorkstation({
                 setReplay(Number(e.target.value));
               }}
             />
-            <span>{time(replay)} UTC</span>
+            <span title={chartTimestamp(replay, displayTimezone)}>{chartClock(replay, displayTimezone)}</span>
             <select
               aria-label="Replay speed"
               value={speed}
@@ -1785,7 +1791,7 @@ export function TradesWorkstation({
                 : `${tools.find((t) => t.id === tool)?.label} · ${["trend", "arrow", "zone", "measure", "long", "short"].includes(tool) ? "click a start and end point" : "click to place"} · Esc to cancel`}
             </span>
             <span className="ws-flex-spacer" />
-            <span>UTC</span>
+            <span>{displayTimezone.label}</span>
 
           </>
         )}
@@ -1834,7 +1840,7 @@ export function TradesWorkstation({
             trade.executions.filter((e) => replay === null || e.time <= replay)
               .length
           }{" "}
-          fills <b>·</b> Workstation times in UTC
+          fills <b>·</b> Chart time · {displayTimezone.label}
         </span>
         <div>
           <button
@@ -1877,7 +1883,7 @@ export function TradesWorkstation({
           <thead>
             <tr>
               <th>#</th>
-              <th>Time (UTC)</th>
+              <th>Time · {displayTimezone.label}</th>
               <th>Side</th>
               <th>Quantity</th>
               <th>Price</th>
@@ -1903,7 +1909,7 @@ export function TradesWorkstation({
                       {i + 1}
                     </button>
                   </td>
-                  <td title={executionTimezoneLabel(e)}>{new Date(e.time * 1000).toISOString().slice(0, 19).replace("T", " ")}{!executionTimeResolved(e) && <span className="ws-diagnostic-warning"> *</span>}</td>
+                  <td title={executionTimezoneLabel(e)}>{chartTimestamp(e.time, displayTimezone)}{!executionTimeResolved(e) && <span className="ws-diagnostic-warning"> *</span>}</td>
                   <td>
                     <span className={`ws-side ${e.side.toLowerCase()}`}>
                       {e.side === "BUY" ? "↗ Buy" : "↘ Sell"}
@@ -2040,7 +2046,7 @@ export function TradesWorkstation({
                 <span /> Demo data
               </span>
             )}
-            <span className="ws-timezone">UTC</span>
+            <ChartTimezoneSelector value={displayTimezone} onChange={changeTimezone} disabled={!!busy} />
             <button onClick={() => setModal("workspace")}>
               <Grid2X2 size={14} /> My workspace <ChevronDown size={12} />
             </button>
@@ -2380,7 +2386,7 @@ export function TradesWorkstation({
           </button>
         </div>
       )}
-      {peerComparison?.tradeId === trade.id && <PeerComparison drawingStore={persistence} key={`${trade.id}:${trade.timeInterpretationVersion}`} comparison={documentState?.comparison} hiddenIds={hiddenDrawingIdsFor(comparisonVisibility, trade.id)} onHideDrawings={ids => setComparisonVisibility(ids ? { tradeId: trade.id, ids } : null)} onComparisonChange={comparison => persistence.change(doc => ({ ...doc, comparison }))} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
+      {peerComparison?.tradeId === trade.id && <PeerComparison systemTimezone={systemTimezone} onTimezoneChange={changeTimezone} drawingStore={persistence} key={`${trade.id}:${trade.timeInterpretationVersion}`} comparison={documentState?.comparison} hiddenIds={hiddenDrawingIdsFor(comparisonVisibility, trade.id)} onHideDrawings={ids => setComparisonVisibility(ids ? { tradeId: trade.id, ids } : null)} onComparisonChange={comparison => persistence.change(doc => ({ ...doc, comparison }))} trade={trade} selection={peerComparison.selection} initial={peerComparison.initial} preferences={preferences} mode={adapter.mode} readOnly={!!trade.stale} getWorkspaceView={getPeerWorkspaceView} onSelectGroup={selectPeerGroup} onCapture={capturePeer} onClose={closePeers} />}
       {modal === "attach" && <Modal title="Attach current chart" onClose={closeModal}>
         <p>Choose the review section for the active chart.</p>
         <CaptureQualityControls />
@@ -2546,8 +2552,8 @@ export function TradesWorkstation({
       )}
       {modal === "date" && (
         <Modal title="Jump to date" onClose={closeModal}>
-          <form className="ws-date-dialog" onSubmit={event => { event.preventDefault(); goToDate(); closeModal(); }}>
-            <label>Target date · UTC<input data-autofocus required type="datetime-local" aria-label="Jump target date UTC" value={targetDate} onChange={e => setTargetDate(e.target.value)} /></label>
+          <form className="ws-date-dialog" onSubmit={event => { event.preventDefault(); const target = jumpDateInput.current?.commit(); if (target != null) { goToDate(target); closeModal(); } }}>
+            <ZonedDateTimeInput ref={jumpDateInput} autoFocus label="Jump target date" timezone={displayTimezone} value={targetDate} onCommit={setTargetDate} />
             <p>{preferences.dateLink === "target" ? "Linked charts move only when this date is outside their visible range. Each chart keeps its own zoom." : "Only the active chart moves, and only when this date is outside its visible range."}</p>
             <button className="ws-primary" type="submit">Go to date</button>
           </form>
@@ -2557,6 +2563,7 @@ export function TradesWorkstation({
         <Modal title="Chart settings" onClose={closeModal}>
           <button className="ws-key-entry" onClick={() => setModal("shortcuts")}>Keyboard shortcuts <kbd>?</kbd></button>
           <div className="ws-settings">
+            <ChartTimezoneSelector value={displayTimezone} onChange={changeTimezone} disabled={!!busy} label="Settings chart timezone" />
             <label>
               Three-chart arrangement
               <select
