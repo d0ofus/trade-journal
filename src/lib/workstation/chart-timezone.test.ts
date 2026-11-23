@@ -46,8 +46,20 @@ describe("isolated chart timezone presentation", () => {
   it("formats intraday native axes and crosshairs without changing timestamps", () => {
     const time = at("2026-09-10T13:30:00Z"), f = chartTimeFormatters(ny, "5m", session);
     expect(f.timeScale.tickMarkFormatter(time as never, 3)).toBe("09:30");
-    expect(f.localization.timeFormatter(time as never)).toContain("2026-09-10 09:30:00");
+    expect(f.localization.timeFormatter(time as never)).toBe("2026-09-10 09:30:00");
     expect(time).toBe(at("2026-09-10T13:30:00Z"));
+  });
+  it.each([
+    [ny, "2026-01-07T14:30:17Z", "2026-01-07 09:30:17"],
+    [ny, "2026-07-07T13:30:31Z", "2026-07-07 09:30:31"],
+    [utc, "2026-01-07T14:30:17Z", "2026-01-07 14:30:17"],
+    [utc, "2026-07-07T13:30:31Z", "2026-07-07 13:30:31"],
+    [syd, "2026-01-01T20:30:17Z", "2026-01-02 07:30:17"],
+    [syd, "2026-07-01T20:30:31Z", "2026-07-02 06:30:31"],
+  ])("shows only the selected local date and time in %j at %s", (zone, value, expected) => {
+    for (const interval of ["5m", "10m", "15m", "1h"] as const) {
+      expect(chartTimeFormatters(zone, interval, session).localization.timeFormatter(at(value) as never)).toBe(expected);
+    }
   });
   it("preserves daily/weekly exchange dates and UTC date-only provider conventions", () => {
     for (const zone of [ny, syd, utc]) for (const interval of ["1d", "1wk"] as const) {

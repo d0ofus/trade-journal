@@ -4,7 +4,7 @@ import { defaultPreferences } from "../../src/lib/workstation/types";
 import { DEMO_PREFIX } from "../../src/lib/workstation/demo";
 import { mkdir, writeFile } from "node:fs/promises";
 
-declare global { interface Window { timezoneDurations: number[]; timezoneText: string[]; timezoneCanvases: HTMLCanvasElement[]; timezonePng?: Blob } }
+declare global { interface Window { timezoneDurations: number[]; timezoneText: string[]; timezoneCanvases: HTMLCanvasElement[]; timezonePng?: Blob; timezoneHoverTime?: number } }
 async function observe(page: Page) {
   await page.addInitScript(() => {
     window.timezoneDurations = []; window.timezoneText = []; window.timezoneCanvases = [];
@@ -50,6 +50,35 @@ test("shares controls, defaults to Exchange and isolates four live charts from t
   await expect(mainSelector(page)).toHaveValue("exchange");
   await page.reload(); await expect(mainSelector(page)).toHaveValue("exchange");
   expect(info.errors).toEqual([]);
+});
+
+test("hover dates show the selected local time without a timezone suffix", async ({ page }) => {
+  await observe(page);
+  await page.addInitScript(() => window.addEventListener("workstation-crosshair", event => {
+    window.timezoneHoverTime = (event as CustomEvent).detail.time;
+  }));
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "Australia/Sydney" });
+  const info = await openRvol(page);
+  const chart = page.locator(".ws-chart");
+  for (const [mode, zone] of [["exchange", "America/New_York"], ["utc", "UTC"], ["system", "Australia/Sydney"]]) {
+    await mainSelector(page).selectOption(mode);
+    await expect(chart).toHaveAttribute("data-chart-timezone", zone);
+    await page.mouse.move(0, 0);
+    await page.evaluate(() => { window.timezoneText = []; window.timezoneHoverTime = undefined; });
+    const box = (await chart.locator(".ws-chart-canvas").boundingBox())!;
+    await page.mouse.move(box.x + (box.width - 65) * .45, box.y + (box.height - 25) * .4);
+    await expect.poll(() => page.evaluate(zone => {
+      if (window.timezoneHoverTime === undefined) return false;
+      const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(window.timezoneHoverTime * 1000).map(p => [p.type, p.value]));
+      const expected = `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+      const labels = window.timezoneText.filter(text => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(text));
+      return labels.length > 0 && labels.every(text => text === expected);
+    }, zone)).toBe(true);
+    await expect(mainSelector(page).locator("..")).toContainText(zone);
+  }
+  expect(info.errors).toEqual([]);
+  await cdp.detach();
 });
 
 test("System follows the device timezone on focus without retrieval or RVOL work", async ({ page }) => {

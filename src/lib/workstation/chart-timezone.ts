@@ -72,7 +72,7 @@ export function chartTimeFormatters(timezone: ChartTimezone, interval: Interval,
   return {
     localization: { timeFormatter: (time: Time) => {
       const t = instant(time), coarse = interval === "1d" || interval === "1wk" || typeof time !== "number";
-      return coarse ? parts(t, calendarZone(time, interval, session, timezone)).slice(0, 3).join("-") : chartTimestamp(t, timezone);
+      return coarse ? parts(t, calendarZone(time, interval, session, timezone)).slice(0, 3).join("-") : timezoneInputValue(t, timezone).replace("T", " ");
     } },
     timeScale: { tickMarkFormatter: (time: Time, type: TickMarkType) => {
       const zone = calendarZone(time, interval, session, timezone);
