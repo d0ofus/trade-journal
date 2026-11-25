@@ -3,12 +3,12 @@ import { Prisma, type NotionPublishJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { NOTION_DATA_SOURCE_ID, NOTION_TEMPLATE_ID, type TemplateBlock } from "@/lib/workstation/template-layout";
 import { jsonHash, managedPlaceholder, NotionError, notionChildren, notionRequest, notionTree, requireNotionPublishing, type JsonObject, type RemoteBlock } from "./notion-publisher-support";
-import { managedBlockValue, notionRichText } from "./notion-format";
+import { blockMatchesRequest, comparableRichText, notionRichText } from "./notion-format";
 import { readWorkstationDocument, WorkstationError } from "./trade-workstation";
 import { readTemplateLayout } from "./notion-template-sync";
 import { publicationStatus, type PublishPlan, type PublishSnapshot } from "./notion-publication-plan";
 import { withNotionBudget } from "./notion-client";
-import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
+import { notionPublicationProperties, propertySchemaSignature, type RemoteProperty } from "./notion-properties";
 import { templateRetryAt, templateTimeoutMessage, templateWaitExpired, type TemplateWait } from "@/lib/workstation/notion-publication-state";
 import { completePublishedReview } from "./notion-review-completion";
 import { effectivePresentation, planPresentation } from "./notion-presentation";
@@ -22,17 +22,18 @@ type Progress = { pageId?: string; botId?: string; createIntent?: boolean; creat
   checkIndex?: number; finalIndex?: number; verification?: VerificationState;
   retryReason?: string; failures?: number;
   provider?: { code?: string; requestId?: string };
+  confirmation?: { properties: { id: string; name: string; type: string; expected: string; actual: string }[] };
   conflicts?: { key: string; label: string; fingerprint: string }[];
   overrides?: Record<string, SectionBinding>; propertyOverride?: string;
   overwriteAcknowledgement?: string;
   templateWait?: TemplateWait;
-  checked?: boolean; propertiesDone?: boolean; propertyIntent?: boolean; propertyBase?: string; newPropertyFingerprint?: string;
-  pendingAppend?: { parent: string; count: number }; sections?: Record<string, { container?: string; createIntent?: boolean; removeIntent?: string; done?: boolean; fingerprint?: string; plain?: PlainProgress; unchanged?: boolean; contentHash?: string; appendedParents?: string[]; legacyRoot?: WrittenNode }>; };
+  checked?: boolean; propertiesDone?: boolean; propertyIntent?: boolean; propertyBase?: string; propertyBefore?: Record<string, string>; newPropertyFingerprint?: string; newPropertyFingerprints?: Record<string, string>;
+  pendingAppend?: { parent: string; count: number; acknowledgedIds?: string[] }; sections?: Record<string, { container?: string; createIntent?: boolean; removeIntent?: string; done?: boolean; fingerprint?: string; plain?: PlainProgress; unchanged?: boolean; contentHash?: string; appendedParents?: string[]; legacyRoot?: WrittenNode }>; };
 class ContentConflict extends NotionError {
   constructor(public key: string, public label: string, public fingerprint: string) { super(`App-managed Notion content was edited: ${label}. Review before replacing it with saved app data.`, 409); }
 }
 const asJson = (value: unknown) => value as Prisma.InputJsonValue;
-const progressDigest = (progress: Progress) => { const content = { ...progress }; delete content.failures; delete content.retryReason; delete content.provider; return jsonHash(content); };
+const progressDigest = (progress: Progress) => { const content = { ...progress }; delete content.failures; delete content.retryReason; delete content.provider; delete content.confirmation; return jsonHash(content); };
 function dateInstant(raw: unknown, zone: unknown) {
   if (typeof raw !== "string") return null;
   if (/Z$|[+-]\d\d:\d\d$/.test(raw)) return new Date(raw).toISOString();
@@ -54,6 +55,12 @@ export function propertyValue(property: JsonObject): unknown {
   if (type === "date") { const date = value as JsonObject | null; return { type, value: date ? { start: dateInstant(date.start, date.time_zone), end: dateInstant(date.end, date.time_zone) } : null }; }
   return { type, value };
 }
+const propertyRequestValue = (property: JsonObject) => {
+  const type = String(property.type ?? Object.keys(property)[0]);
+  return type === "title" || type === "rich_text" ? { type, text: comparableRichText(property[type]) } : propertyValue(property);
+};
+const propertyRequestHash = (property: JsonObject) => jsonHash(propertyRequestValue(property));
+export const propertyMatchesRequest = (actual: JsonObject, expected: JsonObject) => propertyRequestHash(actual) === propertyRequestHash(expected);
 async function readPageProperties(pageId: string, ids: string[]) {
   const page = await notionRequest<{ properties: Record<string, JsonObject> }>(`/pages/${pageId}`);
   const byId = new Map<string, JsonObject>(Object.entries(page.properties).map(([name, value]) => [String(value.id), { ...value, name }]));
@@ -147,6 +154,7 @@ async function runPublicationStep(id: string, groupKey: string, overwrite?: stri
     }
     job = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } });
     const plan = job.plan as unknown as PublishPlan, snapshot = job.snapshot as unknown as PublishSnapshot;
+    const properties = notionPublicationProperties(plan.properties);
     const progress = job.progress as unknown as Progress;
     currentProgress = progress;
     if (previous && ["failed", "conflict"].includes(previous.state)) {
@@ -188,9 +196,11 @@ async function runPublicationStep(id: string, groupKey: string, overwrite?: stri
       await checkpoint();
       for (const conflict of progress.conflicts) {
         if (conflict.key === "$properties") {
-          const actual = await pageProperties(progress.pageId!, bindings.propertyIds ?? []);
+          const actual = await pageProperties(progress.pageId!, bindings.propertyIds ?? Object.keys(properties));
           if (actual !== conflict.fingerprint) throw new ContentConflict(conflict.key, conflict.label, actual);
           progress.propertyOverride = actual;
+          progress.propertyIntent = false; progress.propertiesDone = false;
+          delete progress.propertyBefore; delete progress.confirmation;
         } else {
           const binding = progress.overrides?.[conflict.key] ?? bindings.sections?.[conflict.key];
           if (!binding) throw new NotionError("The section binding is unavailable. Review the page layout.", 409);
@@ -378,20 +388,31 @@ async function runPublicationStep(id: string, groupKey: string, overwrite?: stri
         if (depth > 12) throw new NotionError("This section's nesting exceeds the safe publishing limit.", 422);
         if (state.appendedParents?.includes(parentId)) return;
         const existing = await notionChildren(parentId);
-        if (existing.length > desired.length || existing.some((block, index) => jsonHash(managedBlockValue(block)) !== jsonHash(managedBlockValue({ id: "", ...desired[index] } as RemoteBlock)))) throw new NotionError("An in-progress Notion section was edited. Resolve the conflicting content before resuming.", 409);
+        if (existing.length > desired.length || existing.some((block, index) => !blockMatchesRequest(block, desired[index]))) throw new NotionError("An in-progress Notion section was edited. Resolve the conflicting content before resuming.", 409);
         if (nodes.some((node, index) => node.id !== existing[index]?.id || node.value !== written(existing[index]).value)) throw new NotionError("An in-progress Notion section changed. Review the conflicting content before resuming.", 409);
         nodes.push(...existing.slice(nodes.length).map(written));
         if (progress.pendingAppend?.parent === parentId) {
-          if (existing.length < progress.pendingAppend.count) throw new NotionError("A content append is unconfirmed. No duplicate text or images will be sent. Resume after checking Notion.", 409);
+          const acknowledged = progress.pendingAppend.acknowledgedIds;
+          if (acknowledged && existing.slice(progress.pendingAppend.count - acknowledged.length, progress.pendingAppend.count).some((block, i) => block.id !== acknowledged[i])) throw new NotionError("The confirmed Notion block identities changed. Review the section before resuming.", 409);
+          if (existing.length < progress.pendingAppend.count) throw new NotionError("Notion has not yet confirmed the complete block batch.", 503, undefined, false, "confirmation");
           delete progress.pendingAppend; await checkpoint();
         }
         while (existing.length < desired.length) {
           const chunk = desired.slice(existing.length, existing.length + 80).map(block => { const type = String(block.type), data = { ...block[type] as JsonObject }; delete data.children; return { ...block, [type]: data }; });
           progress.pendingAppend = { parent: parentId, count: existing.length + chunk.length }; await checkpoint();
-          try {
-            const result = await write<{ results: RemoteBlock[] }>(`/blocks/${parentId}/children`, "PATCH", { children: chunk });
-            existing.push(...result.results); nodes.push(...result.results.map(written)); delete progress.pendingAppend; await checkpoint();
-          } catch (e) { if (e instanceof NotionError && !e.uncertain) { delete progress.pendingAppend; await checkpoint(); } throw e; }
+          let result: { results?: Partial<RemoteBlock>[]; has_more?: boolean };
+          try { result = await write(`/blocks/${parentId}/children`, "PATCH", { children: chunk }); }
+          catch (e) { if (e instanceof NotionError && !e.uncertain) { delete progress.pendingAppend; await checkpoint(); } throw e; }
+          const returned = Array.isArray(result?.results) ? result.results : [];
+          const ids = returned.flatMap(block => block && typeof block.id === "string" && block.id ? [block.id] : []);
+          const acknowledged = !result?.has_more && returned.length === chunk.length && ids.length === chunk.length && new Set(ids).size === ids.length && ids.every(id => !existing.some(block => block.id === id));
+          if (!acknowledged || returned.some((block, i) => !blockMatchesRequest(block, chunk[i]))) {
+            if (acknowledged) progress.pendingAppend.acknowledgedIds = ids;
+            await checkpoint();
+            await append(parentId, desired, nodes, depth);
+            return;
+          }
+          existing.push(...returned as RemoteBlock[]); nodes.push(...(returned as RemoteBlock[]).map(written)); delete progress.pendingAppend; await checkpoint();
         }
         for (let index = 0; index < desired.length; index++) {
           const children = (desired[index][String(desired[index].type)] as { children?: JsonObject[] }).children;
@@ -433,29 +454,39 @@ async function runPublicationStep(id: string, groupKey: string, overwrite?: stri
       await checkpoint({ state: "waiting" }); return status();
     }
     if (!progress.propertiesDone) {
-      const ids = Object.keys(plan.properties), values = await readPageProperties(pageId, ids), current = propertiesFingerprint(values);
-      const expected = propertiesFingerprint(plan.properties);
+      const ids = Object.keys(properties), values = await readPageProperties(pageId, ids), current = propertiesFingerprint(values);
+      function confirmProperties(actual: Record<string, JsonObject>) {
+        const mismatches = ids.filter(id => !propertyMatchesRequest(actual[id], properties[id]));
+        if (!mismatches.length) {
+          progress.newPropertyFingerprint = propertiesFingerprint(actual);
+          progress.newPropertyFingerprints = Object.fromEntries(ids.map(id => [id, jsonHash(propertyValue(actual[id]))]));
+          progress.propertiesDone = true; progress.propertyIntent = false; delete progress.confirmation;
+          return;
+        }
+        progress.confirmation = { properties: mismatches.map(id => ({ id, name: String(actual[id].name ?? id), type: String(actual[id].type), expected: propertyRequestHash(properties[id]), actual: propertyRequestHash(actual[id]) })) };
+        const names = progress.confirmation.properties.map(property => property.name).join(", ");
+        const pending = progress.propertyBefore ? mismatches.every(id => propertyRequestHash(actual[id]) === progress.propertyBefore![id]) : propertiesFingerprint(actual) === progress.propertyBase;
+        if (pending) throw new NotionError("Notion has not yet confirmed the property values: " + names + ".", 503, undefined, false, "confirmation");
+        throw new ContentConflict("$properties", names, propertiesFingerprint(actual));
+      }
       if (progress.propertyIntent) {
-        if (current === expected) { progress.propertiesDone = true; progress.newPropertyFingerprint = current; progress.propertyIntent = false; await checkpoint(); }
-        else if (current !== progress.propertyBase) throw new NotionError("Property update completion is uncertain. Verify the Notion values before a reviewed retry.", 409);
+        confirmProperties(values); await checkpoint();
       } else if (bindings.propertyFingerprint) {
-        const actual = await pageProperties(pageId, bindings.propertyIds ?? []);
+        const actual = await pageProperties(pageId, bindings.propertyIds ?? Object.keys(properties));
         if (actual !== bindings.propertyFingerprint) throw new ContentConflict("$properties", "Trade properties", actual);
       }
       if (!progress.propertiesDone) {
-        const changed = Object.fromEntries(ids.filter(key => jsonHash(propertyValue(values[key])) !== jsonHash(propertyValue(plan.properties[key]))).map(key => [key, plan.properties[key]]));
-        progress.propertyBase = current; progress.propertyIntent = true; await checkpoint();
+        const changed = Object.fromEntries(ids.filter(key => !propertyMatchesRequest(values[key], properties[key])).map(key => [key, properties[key]]));
+        progress.propertyBase = current; progress.propertyBefore = Object.fromEntries(ids.map(id => [id, propertyRequestHash(values[id])])); progress.propertyIntent = true; await checkpoint();
         try { if (Object.keys(changed).length) await write(`/pages/${pageId}`, "PATCH", { properties: changed }); }
         catch (e) { if (e instanceof NotionError && !e.uncertain) { progress.propertyIntent = false; await checkpoint(); } throw e; }
-        progress.newPropertyFingerprint = await pageProperties(pageId, ids);
-        if (progress.newPropertyFingerprint !== expected) throw new NotionError("The written properties differ from the preview. Review Notion before finalizing this publication.", 409);
-        progress.propertiesDone = true; progress.propertyIntent = false; await checkpoint();
+        confirmProperties(await readPageProperties(pageId, ids)); await checkpoint();
       }
-    } else if (await pageProperties(pageId, Object.keys(plan.properties)) !== progress.newPropertyFingerprint) {
+    } else if (await pageProperties(pageId, Object.keys(properties)) !== progress.newPropertyFingerprint) {
       throw new NotionError("The published properties changed before completion. Review Notion before resuming.", 409);
     }
-    const nextBindings: Bindings = { presentationVersion: planPresentation(plan), sections: { ...bindings.sections }, propertyIds: Object.keys(plan.properties), propertyFingerprint: progress.newPropertyFingerprint,
-      propertyFingerprints: Object.fromEntries(Object.entries(plan.properties).map(([id, property]) => [id, jsonHash(propertyValue(property))])) };
+    const nextBindings: Bindings = { presentationVersion: planPresentation(plan), sections: { ...bindings.sections }, propertyIds: Object.keys(properties), propertyFingerprint: progress.newPropertyFingerprint,
+      propertyFingerprints: progress.newPropertyFingerprints ?? Object.fromEntries(Object.entries(properties).map(([id, property]) => [id, jsonHash(propertyValue(property))])) };
     for (const section of plan.sections) { const done = progress.sections[section.key]; nextBindings.sections![section.key] = { anchor: progress.anchors[section.key], contentHash: done.contentHash, ...(done.container ? { container: done.container, fingerprint: done.fingerprint! } : {}), ...(done.plain ? { plain: done.plain.binding! } : {}) }; }
     await prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT "groupKey" FROM "NotionPublication" WHERE "groupKey" = ${groupKey} FOR UPDATE`;
@@ -495,7 +526,7 @@ async function runPublicationStep(id: string, groupKey: string, overwrite?: stri
       await prisma.notionPublishJob.updateMany({ where: { id, leaseToken: lease }, data: {
         progress: asJson(currentProgress),
         state: waiting ? "waiting" : known && error.status === 409 && !retryable ? "conflict" : "failed",
-        error: waiting ? null : timedOut ? templateTimeoutMessage : retryable ? "Automatic retries paused after repeated interruptions. Saved progress is retained; Resume to try again." : known ? error.message : "Publishing failed. Progress is retained; inspect and resume.",
+        error: waiting ? null : timedOut ? templateTimeoutMessage : retryable ? error instanceof NotionError && error.reason === "confirmation" ? "Automatic confirmation checks paused. " + error.message + " Saved progress is retained; Resume to check again." : "Automatic retries paused after repeated interruptions. Saved progress is retained; Resume to try again." : known ? error.message : "Publishing failed. Progress is retained; inspect and resume.",
         retryAt,
       } });
       return publicationStatus(await prisma.notionPublishJob.findUniqueOrThrow({ where: { id } }));

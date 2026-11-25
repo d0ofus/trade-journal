@@ -1,5 +1,5 @@
 import { decodeText, richHtml, richPlain } from "@/lib/workstation/rich-text";
-import type { JsonObject, RemoteBlock } from "./notion-client";
+import { jsonHash, type JsonObject, type RemoteBlock } from "./notion-client";
 
 type Node = { tag: string; text?: string; children: Node[] };
 export function notionRichText(text: string): JsonObject[] {
@@ -48,4 +48,31 @@ export function managedBlockValue(block: RemoteBlock): JsonObject {
     annotations: Object.fromEntries(Object.entries(part.annotations as JsonObject ?? {}).filter(([, value]) => value !== false && value !== "default")) }));
   if (block.type === "image") return { type: block.type, caption: text(data.caption) };
   return { type: block.type, rich_text: text(data.rich_text), color: data.color ?? "default", icon: data.icon ?? null };
+}
+
+/** Request equivalence only. Persisted ownership fingerprints retain their format. */
+export function comparableRichText(value: unknown): JsonObject[] {
+  const runs: JsonObject[] = [];
+  for (const part of value as JsonObject[] ?? []) {
+    const type = String(part.type ?? "text");
+    const annotations = Object.fromEntries(Object.entries(part.annotations as JsonObject ?? {}).filter(([, value]) => value !== false && value !== "default"));
+    if (type !== "text") { runs.push({ type, value: part[type], annotations }); continue; }
+    const text = part.text as JsonObject | undefined;
+    const content = String(text?.content ?? part.plain_text ?? "");
+    if (!content) continue;
+    const link = text?.link ?? null, previous = runs.at(-1);
+    if (previous?.type === "text" && jsonHash([previous.link, previous.annotations]) === jsonHash([link, annotations])) previous.content = String(previous.content) + content;
+    else runs.push({ type, content, link, annotations });
+  }
+  return runs;
+}
+
+export function blockMatchesRequest(actual: Partial<RemoteBlock>, expected: JsonObject): boolean {
+  if (!actual.type || actual.type !== expected.type) return false;
+  const key = actual.type === "image" ? "caption" : "rich_text";
+  const data = actual[actual.type] as JsonObject | undefined;
+  if (!data || !Array.isArray(data[key])) return false;
+  const wanted = expected[actual.type] as JsonObject;
+  const left = managedBlockValue(actual as RemoteBlock), right = managedBlockValue({ id: "", ...expected } as RemoteBlock);
+  return jsonHash({ ...left, [key]: comparableRichText(data[key]) }) === jsonHash({ ...right, [key]: comparableRichText(wanted[key]) });
 }

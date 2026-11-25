@@ -1,0 +1,17 @@
+{
+  "description": "Sanitized canonical regression for the Entry Date mismatch. The actual read-after-write response fingerprints matched the frozen plans only after both date endpoints were projected to minute precision. Dates and property identity below are synthetic; no private review content or raw provider response is retained.",
+  "request": {
+    "date": {
+      "start": "2026-07-01T09:30:04",
+      "end": "2026-07-01T10:00:28",
+      "time_zone": "America/New_York"
+    }
+  },
+  "canonicalResponse": {
+    "type": "date",
+    "value": {
+      "start": "2026-07-01T13:30:00.000Z",
+      "end": "2026-07-01T14:00:00.000Z"
+    }
+  }
+}

@@ -52,6 +52,7 @@ export function NotionPublishDialog({ groupKey, revision, onClose }: { groupKey:
   }
   return <ReviewDialog title="Publish/update in Notion" onClose={onClose}>
     <p className="ws-help">Review the latest saved preview, then confirm to publish to the linked app-owned Notion page. Changes are not sent automatically. Manually created journals are not modified.</p>
+    <p className="ws-help">Notion Entry Date uses minute precision. Exact execution timestamps remain in the journal.</p>
     <p role="status">Saved revision {savedRevision} · Last published: {lastPublished == null ? "Not yet published" : `revision ${lastPublished}`}</p>
     {result && !enabled && <p role="status">Publishing is disabled until Notion permissions and live validation are complete. You can still prepare a preview.</p>}
     {error && <p role="alert">{error}</p>}

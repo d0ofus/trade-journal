@@ -1,13 +1,13 @@
 import { IMAGE_MAX_BYTES } from "@/lib/workstation/image-assets";
 import { jsonHash, NotionError, notionChildren, notionRequest, yieldNotion, type JsonObject, type RemoteBlock } from "./notion-client";
-import { managedBlockValue } from "./notion-format";
+import { blockMatchesRequest } from "./notion-format";
 import { readFingerprint, blockValue, written, type WrittenNode, type VerificationState } from "./notion-block-verification";
 export type { VerificationState } from "./notion-block-verification";
 
 export type SectionAnchor = { id: string; parent: string; sourceId: string; type: string };
 type Position = { parent: string; after: string | null; before: string | null };
 export type PlainBinding = Position & { blocks: { id: string; fingerprint: string }[] };
-type AppendIntent = Position & { priorIds: string[]; expected: JsonObject[]; imageHashes: (string | null)[] };
+type AppendIntent = Position & { priorIds: string[]; expected: JsonObject[]; imageHashes: (string | null)[]; acknowledgedIds?: string[] };
 export type PlainProgress = Position & {
   nodes: WrittenNode[];
   pending?: AppendIntent;
@@ -25,8 +25,8 @@ function conflict(message: string): never { throw new NotionError(message, 409);
 /** Include descendants, order and file identity, excluding expiring URL signatures. */
 export const fingerprint = (id: string, cursors?: VerificationState, checkpoint?: () => Promise<void>) => readFingerprint(id, false, cursors, checkpoint);
 
-async function placement(position: Position, ids: string[], ignore: string[] = [], checkEnd = true) {
-  const blocks = (await notionChildren(position.parent)).filter(b => !ignore.includes(b.id)), siblings = blocks.map(b => b.id);
+async function placement(position: Position, ids: string[], ignore: string[] = [], checkEnd = true, snapshot?: RemoteBlock[]) {
+  const blocks = (snapshot ?? await notionChildren(position.parent)).filter(b => !ignore.includes(b.id)), siblings = blocks.map(b => b.id);
   const start = position.after === null ? 0 : siblings.indexOf(position.after) + 1;
   if (position.after !== null && start === 0 || jsonHash(siblings.slice(start, start + ids.length)) !== jsonHash(ids) || checkEnd && (siblings[start + ids.length] ?? null) !== position.before)
     conflict("App-managed Notion blocks or their section boundaries were moved or changed. Review the conflict before publishing.");
@@ -109,19 +109,23 @@ export async function publishPlainSection(state: PlainProgress, desired: JsonObj
   const freshIds = () => state.nodes.map(b => b.id);
   async function reconcile(parent: string, nodes: WrittenNode[]) {
     const pending = state.pending!;
-    if (pending.parent !== parent) return;
+    if (pending.parent !== parent) return [];
     const siblings = await notionChildren(parent), prior = new Set(pending.priorIds);
     if (jsonHash(siblings.filter(b => prior.has(b.id)).map(b => b.id)) !== jsonHash(pending.priorIds)) conflict("Notion content changed during an unconfirmed append. Review the section before resuming.");
     const added = siblings.filter(b => !prior.has(b.id));
-    if (added.length !== pending.expected.length) conflict("A content append is unconfirmed or ambiguous. No duplicate text or images will be sent.");
-    await placement(pending, added.map(b => b.id));
+    if (added.length > pending.expected.length) conflict("A content append is ambiguous. No duplicate text or images will be sent.");
+    await placement(pending, added.map(b => b.id), [], true, siblings);
     for (let i = 0; i < added.length; i++) {
       const block = added[i], creator = block.created_by as { id?: string } | undefined;
-      if (creator?.id !== botId || block.has_children || jsonHash(managedBlockValue(block)) !== jsonHash(managedBlockValue({ id: "", ...pending.expected[i] } as RemoteBlock)))
+      const editor = block.last_edited_by as { id?: string } | undefined;
+      if (creator?.id !== botId || editor?.id && editor.id !== botId || block.has_children ||
+        pending.acknowledgedIds && pending.acknowledgedIds[i] !== block.id || !blockMatchesRequest(block, pending.expected[i]))
         conflict("Unconfirmed blocks do not match this connection's frozen append. Review the conflict.");
-      if (pending.imageHashes[i]) await verifyRecoveredImage(block, pending.imageHashes[i]!);
     }
+    if (added.length < pending.expected.length) throw new NotionError("Notion has not yet confirmed the complete block batch.", 503, undefined, false, "confirmation");
+    for (let i = 0; i < added.length; i++) if (pending.imageHashes[i] && !pending.acknowledgedIds) await verifyRecoveredImage(added[i], pending.imageHashes[i]!);
     nodes.push(...added.map(written)); delete state.pending; await checkpoint();
+    return added;
   }
   async function append(parent: string, nodes: WrittenNode[], blocks: JsonObject[], root = false, depth = 0): Promise<void> {
     if (depth > 12) throw new NotionError("This section's nesting exceeds the safe publishing limit.", 422);
@@ -144,16 +148,24 @@ export async function publishPlainSection(state: PlainProgress, desired: JsonObj
       state.pending = { parent, after, before, priorIds: siblings.map(b => b.id), expected,
         imageHashes: expected.map(b => b.type === "image" ? imageHashes.get(((b.image as JsonObject).file_upload as { id: string }).id) ?? null : null) };
       await checkpoint();
-      let result: { results: RemoteBlock[] };
+      let result: { results?: Partial<RemoteBlock>[]; has_more?: boolean };
       try {
         result = await write(`/blocks/${parent}/children`, "PATCH", { children: expected, position: after ? { type: "after_block", after_block: { id: after } } : { type: "start" } });
       } catch (error) {
         if (error instanceof NotionError && !error.uncertain) { delete state.pending; await checkpoint(); }
         throw error;
       }
-      if (result.results.length !== expected.length || result.results.some((b, i) => jsonHash(managedBlockValue(b)) !== jsonHash(managedBlockValue({ id: "", ...expected[i] } as RemoteBlock))))
-        conflict("Notion did not confirm the expected block batch. Resume to reconcile its placement.");
-      nodes.push(...result.results.map(written)); actual.push(...result.results); delete state.pending; await checkpoint();
+      const returned = Array.isArray(result?.results) ? result.results : [];
+      const ids = returned.flatMap(block => block && typeof block.id === "string" && block.id ? [block.id] : []);
+      const acknowledged = !result?.has_more && returned.length === expected.length && ids.length === expected.length && new Set(ids).size === ids.length && ids.every(id => !state.pending!.priorIds.includes(id));
+      if (acknowledged && returned.every((block, i) => blockMatchesRequest(block, expected[i]))) {
+        const confirmed = returned as RemoteBlock[];
+        nodes.push(...confirmed.map(written)); actual.push(...confirmed); delete state.pending; await checkpoint();
+      } else {
+        if (acknowledged) state.pending!.acknowledgedIds = ids;
+        await checkpoint();
+        actual.push(...await reconcile(parent, nodes));
+      }
     }
     for (let i = 0; i < blocks.length; i++) {
       const nested = (blocks[i][String(blocks[i].type)] as { children?: JsonObject[] }).children ?? [];

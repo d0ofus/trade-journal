@@ -9,13 +9,28 @@ import { readTemplateLayout } from "./notion-template-sync";
 import { readWorkstationDocument, saveWorkstationDocument } from "./trade-workstation";
 import { resumeNotionPublication as resumeStep, startNotionPublication } from "./notion-publisher";
 import { createNotionPreview, publicationContext } from "./notion-publication-plan";
-import { propertySchemaSignature, type RemoteProperty } from "./notion-properties";
+import { notionPublicationProperties, propertySchemaSignature, type RemoteProperty } from "./notion-properties";
+import dateConfirmation from "../../../fixtures/notion-confirmation/entry-date-minute-precision.json";
 import type { PublishPlan, PublishSnapshot } from "./notion-publication-plan";
 import { verifyEvidencePng } from "./evidence-r2";
 import { assetReference } from "./evidence-assets";
 import { assignSectionEvidence, attachEvidence } from "@/lib/workstation/evidence";
 import { completePublishedReview } from "./notion-review-completion";
 import { htmlToNotionBlocks } from "./notion-format";
+import { appendFileSync } from "node:fs";
+
+const publishingMetrics = vi.hoisted(() => ({ queries: 0, statements: {} as Record<string, number> }));
+vi.mock("@/lib/prisma", async original => {
+  if (!process.env.NOTION_PUBLISH_METRICS) return original<typeof import("@/lib/prisma")>();
+  const { PrismaClient } = await import("@prisma/client");
+  const client = new PrismaClient({ log: [{ level: "query", emit: "event" }] });
+  client.$on("query", event => {
+    publishingMetrics.queries++;
+    const statement = event.query.trim().split(/\s+/).slice(0, 3).join(" ");
+    publishingMetrics.statements[statement] = (publishingMetrics.statements[statement] ?? 0) + 1;
+  });
+  return { prisma: client };
+});
 
 const remote = vi.hoisted(() => ({ call: vi.fn(), children: vi.fn(), tree: vi.fn() }));
 const originals = vi.hoisted(() => new Map<string, Buffer>());
@@ -810,4 +825,142 @@ describe("plain Notion pages and per-page presentation compatibility", () => {
     const saved = await readWorkstationDocument(f.groupKey); expect((await finish(f.job.id, f.groupKey)).reviewCompletion?.outcome).toBe("superseded");
     expect(await readWorkstationDocument(f.groupKey)).toEqual(saved);
   });
+  it.each(["root", "nested", "image", "legacy"])("automatically confirms partial %s append responses without duplicate writes", async kind => {
+    const f = kind === "legacy" ? await fixture() : await plainFixture(kind === "image");
+    if (kind === "nested") f.plan.sections[0].blocks = htmlToNotionBlocks("<ul><li>Parent<ul><li>Child</li></ul></li></ul>");
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
+    const implementation = remote.call.getMockImplementation()!;
+    remote.call.mockImplementation(async (path: string, method = "GET", body?: unknown) => {
+      const result = await implementation(path, method, body);
+      return method === "PATCH" && path.startsWith("/blocks/")
+        ? { results: (result as { results: RemoteBlock[] }).results.map(block => ({ object: "block", id: block.id })), has_more: false } : result;
+    });
+    if (kind === "legacy") await confirmLegacyPublication(f.job.id, f.groupKey); else await startNotionPublication(f.job.id, f.groupKey);
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(live().filter(node => remoteText(node) === (kind === "nested" ? "Child" : "Saved entry"))).toHaveLength(1);
+    expect(uploads.size).toBe(kind === "image" ? 1 : 0);
+  });
+  it.each([false, true])("recovers a delayed append read and bounds persistent invisibility (%s)", async persistent => {
+    const f = await plainFixture();
+    const implementation = remote.call.getMockImplementation()!, childrenImplementation = remote.children.getMockImplementation()!;
+    let hidden: string[] = [], hide = true, reads = 0;
+    remote.call.mockImplementation(async (path: string, method = "GET", body?: unknown) => {
+      const result = await implementation(path, method, body);
+      if (method !== "PATCH" || !path.startsWith("/blocks/")) return result;
+      hidden = (result as { results: RemoteBlock[] }).results.map(block => block.id);
+      return { results: hidden.map(id => ({ id })), has_more: false };
+    });
+    remote.children.mockImplementation(async (id: string) => {
+      const blocks = await childrenImplementation(id) as RemoteBlock[];
+      return hide && hidden.length && (persistent || reads++ === 0) ? blocks.filter(block => !hidden.includes(block.id)) : blocks;
+    });
+    await startNotionPublication(f.job.id, f.groupKey);
+    const result = await finish(f.job.id, f.groupKey);
+    expect(result.state).toBe(persistent ? "failed" : "succeeded");
+    if (persistent) {
+      expect(result.error).toContain("confirmation checks paused");
+      expect(live().filter(node => remoteText(node) === "Saved entry")).toHaveLength(1);
+      hide = false;
+      expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    }
+    expect(live().filter(node => remoteText(node) === "Saved entry")).toHaveLength(1);
+  });
+  it("records returned rich-text property fingerprints after equivalent run normalization", async () => {
+    schema.Takeaways = { id: "takeaways", name: "Takeaways", type: "rich_text" };
+    const f = await plainFixture();
+    f.plan.properties.takeaways = { rich_text: [{ text: { content: "First " } }, { text: { content: "second" } }] };
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
+    const implementation = remote.call.getMockImplementation()!;
+    remote.call.mockImplementation(async (path: string, method = "GET", body?: unknown) => {
+      const result = await implementation(path, method, body);
+      if (method === "PATCH" && path.startsWith("/pages/")) {
+        const property = ((pages.get(path.split("/")[2])!.properties as JsonObject).Takeaways as JsonObject);
+        property.rich_text = [{ type: "text", text: { content: "First second", link: null }, annotations: { bold: false, color: "default" } }];
+      }
+      return result;
+    });
+    await startNotionPublication(f.job.id, f.groupKey);
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    const next = await update(f, f.plan.sections); await startNotionPublication(next.id, f.groupKey);
+    expect((await finish(next.id, f.groupKey)).state).toBe("succeeded");
+    expect(remote.call.mock.calls.filter(([path, method]) => path.startsWith("/pages/") && method === "PATCH")).toHaveLength(1);
+  });
+  it("finishes an existing second-precision frozen plan without rewriting completed Notion content", async () => {
+    schema.EntryDate = { id: "entry-date", name: "Entry Date", type: "date" };
+    const f = await plainFixture(); f.plan.properties["entry-date"] = structuredClone(dateConfirmation.request);
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue } });
+    await startNotionPublication(f.job.id, f.groupKey);
+    let stored = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    while ((stored.progress as { finalIndex?: number }).finalIndex !== f.plan.sections.length) {
+      await resumeNotionPublication(f.job.id, f.groupKey);
+      stored = await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    }
+    const page = pages.get((stored.progress as { pageId: string }).pageId)!, properties = page.properties as Record<string, JsonObject>;
+    for (const [id, expected] of Object.entries(notionPublicationProperties(f.plan.properties))) {
+      const name = Object.keys(properties).find(name => properties[name].id === id)!;
+      properties[name] = { id, type: Object.keys(expected)[0], ...expected };
+    }
+    await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { state: "conflict", error: "Property update completion is uncertain. Verify the Notion values before a reviewed retry.", progress: { ...stored.progress as JsonObject, propertyIntent: true, propertyBase: "prior-properties" } as Prisma.InputJsonValue } });
+    const before = mutations().length;
+    expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    expect(mutations()).toHaveLength(before); expect(pages.size).toBe(1);
+    expect((await prisma.notionPublishJob.findUniqueOrThrow({ where: { id: f.job.id } })).plan).toEqual(stored.plan);
+  });
+  it.each(["delayed", "mixed", "persistent", "edit"])("verifies %s property confirmation before any repeated mutation", async kind => {
+    const f = await plainFixture();
+    const implementation = remote.call.getMockImplementation()!;
+    let before: JsonObject | undefined, reads = 0;
+    remote.call.mockImplementation(async (path: string, method = "GET", body?: unknown) => {
+      if (path.startsWith("/pages/") && method === "PATCH") before = copy(pages.get(path.split("/")[2])!);
+      const result = await implementation(path, method, body);
+      if (path.startsWith("/pages/") && method === "GET" && before) {
+        if (kind === "edit") ((pages.get(path.split("/")[2])!.properties as JsonObject).Entry as JsonObject).number = 123;
+        if (kind === "persistent" || reads++ === 0 && kind !== "edit") {
+          const stale = copy(before);
+          if (kind === "mixed") (stale.properties as JsonObject).Trade = (copy(result) as { properties: JsonObject }).properties.Trade;
+          if (kind === "persistent") { const props = stale.properties as JsonObject; props["Entry " + reads++] = props.Entry; delete props.Entry; }
+          return stale;
+        }
+        if (kind === "edit") return copy(pages.get(path.split("/")[2]));
+      }
+      return result;
+    });
+    await startNotionPublication(f.job.id, f.groupKey);
+    const result = await finish(f.job.id, f.groupKey);
+    expect(result.state).toBe(kind === "edit" ? "conflict" : kind === "persistent" ? "failed" : "succeeded");
+    expect(remote.call.mock.calls.filter(([path, method]) => path.startsWith("/pages/") && method === "PATCH")).toHaveLength(1);
+    if (kind === "edit") {
+      expect(result.conflicts).toMatchObject([{ key: "$properties", label: "Entry" }]);
+      expect((await readWorkstationDocument(f.groupKey)).review.status).toBe(f.doc.review.status);
+      remote.call.mockImplementation(implementation);
+      await resumeStep(f.job.id, f.groupKey, result.overwriteToken!);
+      expect((await finish(f.job.id, f.groupKey)).state).toBe("succeeded");
+    }
+    if (kind === "persistent") expect(result.error).toContain("confirmation checks paused");
+  });
+  it.skipIf(!process.env.NOTION_PUBLISH_METRICS).each(["small", "typical", "image-heavy"])("records healthy-path publishing metrics for %s", async size => {
+    for (let trial = 0; trial < 6; trial++) {
+      const f = await plainFixture(size !== "small");
+      const count = size === "small" ? 1 : 10;
+      const snapshot = copy(f.job.snapshot) as unknown as PublishSnapshot;
+      if (size === "image-heavy") {
+        snapshot.assets = Array.from({ length: 6 }, (_, i) => ({ ...snapshot.assets[0], id: "image-" + i, caption: "Evidence " + i }));
+        f.plan.sections.forEach(section => { section.images = snapshot.assets.map(asset => asset.id); });
+      }
+      f.plan.sections.forEach(section => { section.blocks = htmlToNotionBlocks(Array.from({ length: count }, (_, i) => "<p>Detail " + i + "</p>").join("")); });
+      f.job = await prisma.notionPublishJob.update({ where: { id: f.job.id }, data: { plan: f.plan as unknown as Prisma.InputJsonValue, snapshot: snapshot as unknown as Prisma.InputJsonValue } });
+      for (const mode of ["publish", "update"]) {
+        const job = mode === "publish" ? f.job : await update(f, f.plan.sections.map(section => ({ ...section, blocks: htmlToNotionBlocks(Array.from({ length: count }, (_, i) => "<p>Updated detail " + i + "</p>").join("")) })));
+        const statements = { ...publishingMetrics.statements }, queries = publishingMetrics.queries, calls = remote.call.mock.calls.length + remote.children.mock.calls.length + remote.tree.mock.calls.length, started = performance.now();
+        await startNotionPublication(job.id, f.groupKey);
+        let result = await resumeNotionPublication(job.id, f.groupKey), scheduledWaits = 0;
+        for (let i = 0; i < 200 && result.state === "waiting"; i++) { if (result.retryAt) scheduledWaits++; result = await resumeNotionPublication(job.id, f.groupKey); }
+        const elapsed = performance.now() - started;
+        expect(result.state).toBe("succeeded");
+        if (trial) appendFileSync(process.env.NOTION_PUBLISH_METRICS!, JSON.stringify({ size, mode, trial, requests: remote.call.mock.calls.length + remote.children.mock.calls.length + remote.tree.mock.calls.length - calls, queries: publishingMetrics.queries - queries, queryKinds: Object.fromEntries(Object.entries(publishingMetrics.statements).map(([key, count]) => [key, count - (statements[key] ?? 0)]).filter(([, count]) => count)), scheduledWaits, milliseconds: elapsed }) + "\n");
+      }
+    }
+  }, 300_000);
 });

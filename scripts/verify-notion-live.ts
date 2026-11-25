@@ -8,13 +8,13 @@ import { inspectBatchTimestamps, confirmBatchTimestamps } from "../src/lib/serve
 import { readWorkstationDocument, saveWorkstationDocument } from "../src/lib/server/trade-workstation";
 import { readTemplateLayout } from "../src/lib/server/notion-template-sync";
 import { createNotionPreview, publicationStatus, type PublishPlan } from "../src/lib/server/notion-publication-plan";
-import { startNotionPublication, resumeNotionPublication, propertyValue } from "../src/lib/server/notion-publisher";
+import { startNotionPublication, resumeNotionPublication, propertyMatchesRequest } from "../src/lib/server/notion-publisher";
 import { notionChildren, notionRequest, jsonHash, remoteText, withNotionBudget, type JsonObject } from "../src/lib/server/notion-client";
 import { NOTION_DATA_SOURCE_ID, setSectionText } from "../src/lib/workstation/template-layout";
 import { notionProperties, type NotionValue } from "../src/lib/workstation/notion-template";
 import { attachEvidence, assignSectionEvidence } from "../src/lib/workstation/evidence";
 import { workstationDocumentSchema } from "../src/lib/workstation/schema";
-import type { RemoteProperty } from "../src/lib/server/notion-properties";
+import { notionPublicationProperties, type RemoteProperty } from "../src/lib/server/notion-properties";
 import { createEvidenceUpload, finalizeEvidenceUpload, readOriginalAsset } from "../src/lib/server/evidence-assets";
 import { evidenceStorageConfig } from "../src/lib/server/evidence-r2";
 import type { TradeDocument } from "../src/lib/workstation/types";
@@ -131,7 +131,7 @@ async function verify() {
   const plan = job.plan as unknown as PublishPlan;
   const page = await notionRequest<{ properties: Record<string, JsonObject> }>(`/pages/${publication.pageId}`);
   const byId = new Map(Object.values(page.properties).map(p => [String(p.id), p]));
-  for (const [id, value] of Object.entries(plan.properties)) assert.equal(jsonHash(propertyValue(byId.get(id)!)), jsonHash(propertyValue(value)), `Property mismatch: ${id}`);
+  for (const [id, value] of Object.entries(notionPublicationProperties(plan.properties))) assert(propertyMatchesRequest(byId.get(id)!, value), `Property mismatch: ${id}`);
   const title = (plan.properties[plan.titleId].title as { text: { content: string } }[]).map(p => p.text.content).join("");
   const matches = await notionRequest<{ results: { id: string }[]; has_more: boolean }>(`/data_sources/${NOTION_DATA_SOURCE_ID}/query`, "POST", { filter: { property: plan.titleId, title: { equals: title } }, page_size: 2 });
   assert.equal(matches.results.length, 1, "The synthetic review must have exactly one Notion page."); assert.equal(matches.results[0].id, publication.pageId); assert.equal(matches.has_more, false);

@@ -41,6 +41,17 @@ describe("live Notion property mapping", () => {
     expect(plan.errors).toEqual([]); expect(plan.values.Entry).toEqual({ number: trade.entry }); expect(plan.values.Exit).toEqual({ number: trade.exit }); expect(plan.values["S/L"]).toEqual({ number: 95 });
     expect(plan.values.entryDate).toMatchObject({ date: { time_zone: "America/New_York" } }); expect(plan.values.stopLossPercent).toBeUndefined();
   });
+  it.each(["2026-01-07T14:30:04Z", "2026-07-01T13:30:04Z"])("previews Notion minute precision while retaining exact execution times at %s", async start => {
+    const { trade, doc } = inputs();
+    trade.executions[0].time = Date.parse(start) / 1000;
+    trade.executions.forEach((execution, i) => { execution.time = trade.executions[0].time + i * 60 + (i ? 24 : 0); });
+    const savedTimes = trade.executions.map(execution => execution.time);
+    const plan = await planNotionProperties(trade, doc, schema());
+    const date = plan.values.entryDate.date as { start: string; end: string };
+    expect(date.start).toMatch(/T09:30:00$/); expect(date.end).toMatch(/:00$/);
+    expect(plan.display.find(property => property.name === "Entry Date")?.value).toContain("Notion minute precision");
+    expect(trade.executions.map(execution => execution.time)).toEqual(savedTimes);
+  });
   it("reports all six missing relation permissions rather than omitting them silently", async () => {
     const { trade, doc } = inputs(), properties = schema(); requiredRelations.forEach(name => delete properties[name]);
     const plan = await planNotionProperties(trade, doc, properties);

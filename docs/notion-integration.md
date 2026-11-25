@@ -16,6 +16,52 @@ The read-only production audit found 12 real saved trade-review records plus thr
 
 ## Publishing protocol
 
+Confirmation recovery uses the existing continuation loop. A successful append
+with incomplete block details is reconciled against the saved batch, boundaries,
+creator and acknowledged identities before any further append. A temporarily
+invisible batch or unchanged property read remains pending, with the existing
+bounded retry limit. Real edits still require review. Acknowledged image blocks
+can be read back by identity; images recovered after a lost response still require
+the original-byte check. Complete matching responses gain no requests or waits.
+
+Request comparisons accept equivalent rich-text run boundaries and default
+annotations without changing stored ownership fingerprints. Property baselines
+and mismatch diagnostics use the existing job JSON/checkpoints; diagnostic changes
+cannot reset the no-progress retry counter. New property fingerprints are taken
+from verified returned values, so later updates retain accurate conflict checks.
+
+The Entry Date confirmation blocker was reproduced from all four retained
+read-after-write response fingerprints in a read-only audit: the complete property
+fingerprint matched only after both named-zone Entry Date endpoints had their
+seconds set to zero. New previews explicitly plan Notion's minute precision.
+Existing frozen plans receive the same outbound projection without rewriting the
+plan or their source executions. Date comparisons remain exact; journal execution
+timestamps retain seconds. The sanitized canonical fixture is
+`fixtures/notion-confirmation/entry-date-minute-precision.json`.
+
+Deployment does not resume paused publications. Existing jobs continue only after
+an explicit Resume, using their frozen snapshot and completed sections. No migration
+or separate worker deployment is required.
+
+Controlled comparisons against `fee6fbf` used identical small, typical and image-heavy
+publish/update fixtures, with one warmup and five measured trials per case. All six
+cases retained their Notion request and scheduled-wait counts, with no observed
+median or p95 timing regression. Detailed repeated SQL profiles confirmed identical
+application statement counts; occasional extra `SELECT 1` calls were existing pool
+health checks. These are mocked-provider/local-PostgreSQL comparisons, not a promise
+of live Notion latency. Raw measurements and the read-only response-fingerprint
+audit remain in ignored `artifacts/notion-reliability/` reports.
+
+Validation passed 153 focused formatting, mapping, publisher, transport,
+continuation, completion and API tests; three authenticated production-build
+browser scenarios; workstation type checks; changed-file lint; repository safety;
+and the production build. Browser validation used an environment-free application
+copy, the dedicated local Notion test database and an external-HTTP guard. It
+covered legacy/current publication, automatic confirmation continuation, updates,
+conflict approval, draft preservation, cross-tab review status and reload. The
+production diagnosis was read only; no live Notion publication or bulk job repair
+was performed by this validation.
+
 Reliability update: confirmed publications now continue through normal bounded-step
 pauses, provider cooldowns and publisher contention while the dialog stays open.
 Active leases are polled; uncertain writes are reconciled before further writes.

@@ -83,6 +83,15 @@ describe("publication continuation without implicit publishing", () => {
     await continuePublication("trade", "publish", result(), new AbortController().signal, vi.fn());
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it("completes pending confirmation within the original user-confirmed publication", async () => {
+    vi.useFakeTimers();
+    const waiting = result("waiting"); waiting.job!.retryReason = "confirmation"; waiting.job!.retryAt = new Date(Date.now() + 1000);
+    const fetcher = responses(result("ready"), waiting, result("succeeded"));
+    const pending = continuePublication("trade", "publish", result(), new AbortController().signal, vi.fn());
+    await vi.runAllTimersAsync();
+    expect((await pending).job?.state).toBe("succeeded");
+    expect(actions(fetcher)).toEqual([{ action: "publish", groupKey: "trade", id: "job" }, { action: "resume", groupKey: "trade", id: "job" }, { action: "resume", groupKey: "trade", id: "job" }]);
+  });
   it("polls a running lease before resuming and sends overwrite approval only once", async () => {
     vi.useFakeTimers();
     const running = result("running"); running.job!.leaseUntil = new Date(Date.now() + 10000);

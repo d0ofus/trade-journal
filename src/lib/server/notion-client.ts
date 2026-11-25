@@ -12,7 +12,7 @@ export class NotionError extends Error {
   providerCode?: string;
   providerRequestId?: string;
   constructor(message: string, public status = 503, public retryAt?: Date, public uncertain = false,
-    public reason?: "budget" | "cooldown" | "busy" | "transient" | "blocked") { super(message); }
+    public reason?: "budget" | "cooldown" | "busy" | "transient" | "blocked" | "confirmation") { super(message); }
 }
 export const yieldNotion = () => { throw new NotionError("Continuing from saved progress…", 429, new Date(Date.now() + 1000), false, "budget"); };
 export const jsonHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)

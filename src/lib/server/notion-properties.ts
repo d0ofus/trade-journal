@@ -11,6 +11,17 @@ export type PropertyPlan = { values: Record<string, JsonObject>; display: { name
 export const requiredRelations = ["Type of Review", "Type of Trade", "Chart Pattern", "Confluences", "Characteristics", "News Impact"];
 export const publishedPrice = (price: number) => new Prisma.Decimal(price).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 export const propertySchemaSignature = (properties: RemoteProperty[]) => properties.map(p => ({ id: p.id, name: p.name, type: p.type, relation: p.relation, select: p.select, multi_select: p.multi_select })).sort((a, b) => a.id.localeCompare(b.id));
+
+/** Notion stores the journal's named-zone Entry Date at minute precision.
+ * Project the outbound value explicitly; never change the frozen source or
+ * weaken instant comparisons to accept arbitrary differences in seconds. */
+export function notionPublicationProperties(properties: Record<string, JsonObject>): Record<string, JsonObject> {
+  const minute = (value: unknown) => typeof value === "string" ? value.replace(/(T\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/, "$1:00$2") : value;
+  return Object.fromEntries(Object.entries(properties).map(([id, property]) => {
+    const date = property.date as JsonObject | null | undefined;
+    return [id, date?.time_zone === "America/New_York" ? { ...property, date: { ...date, start: minute(date.start), end: minute(date.end) } } : property];
+  }));
+}
 export async function planNotionProperties(trade: Trade, doc: TradeDocument, schema: Record<string, RemoteProperty>): Promise<PropertyPlan> {
   const values: Record<string, JsonObject> = {}, display: { name: string; value: string }[] = [], errors: string[] = [];
   const properties = Object.values(schema), byName = new Map(properties.map(p => [p.name, p]));
@@ -38,11 +49,11 @@ export async function planNotionProperties(trade: Trade, doc: TradeDocument, sch
   const date = byName.get("Entry Date");
   if (date && values[date.id] && executions.length) {
     const wall = (time: number) => {
-      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(time * 1000)).map(part => [part.type, part.value]));
+      const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(Math.floor(time / 60) * 60_000)).map(part => [part.type, part.value]));
       return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
     };
     values[date.id] = { date: { start: wall(executions[0].time), end: wall(executions.at(-1)!.time), time_zone: "America/New_York" } };
-    const item = display.find(item => item.name === "Entry Date"); if (item) item.value = `${wall(executions[0].time)} → ${wall(executions.at(-1)!.time)} America/New_York`;
+    const item = display.find(item => item.name === "Entry Date"); if (item) item.value = `${wall(executions[0].time)} → ${wall(executions.at(-1)!.time)} America/New_York · Notion minute precision`;
   }
   for (const p of notionProperties) {
     if (p.kind === "date" || p.kind === "formula") continue;

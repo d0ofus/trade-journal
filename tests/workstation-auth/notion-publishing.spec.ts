@@ -45,8 +45,8 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     } else if (body?.action === "resume") {
       resumes++;
       if (body.overwrite) { expect(body.overwrite).toBe("a".repeat(64)); overwrites++; }
-      if (stage < 2) job = { ...job!, state: "waiting", phase: "waiting", retryReason: stage++ === 0 ? "budget" : "cooldown", retryAt: new Date(Date.now() + 300), error: null, conflicts: [], overwriteToken: null };
-      else if (stage++ === 2) job = { ...job!, state: "running", phase: "running", leaseUntil: new Date(Date.now() + 10000), retryAt: null };
+      if (stage < 3) job = { ...job!, state: "waiting", phase: "waiting", retryReason: ["budget", "cooldown", "confirmation"][stage++], retryAt: new Date(Date.now() + 300), error: null, conflicts: [], overwriteToken: null };
+      else if (stage++ === 3) job = { ...job!, state: "running", phase: "running", leaseUntil: new Date(Date.now() + 10000), retryAt: null };
       else {
         lastPublished = job!.revision; publishedText = job!.sections[0].html!;
         const reviewCompletion = await prisma.$transaction(tx => completePublishedReview(tx, groupKey, job!.revision, jsonHash(frozen)));
@@ -68,6 +68,7 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     await note.fill(text);
     await page.getByRole("button", { name: "Publish/update in Notion", exact: true }).click();
     await expect(dialog.getByRole("button", { name: new RegExp(`^Confirm ${index ? "update" : "publish"} revision`) })).toBeEnabled();
+    await expect(dialog.getByText("Notion Entry Date uses minute precision. Exact execution timestamps remain in the journal.")).toBeVisible();
     expect(confirms).toBe(index);
     await expect(dialog.getByText(presentationVersion === 4 ? /Sections publish as ordinary text/ : /retains the page.*existing callout format/)).toBeVisible();
     await dialog.locator("summary").filter({ hasText: /^Takeaways:/ }).click(); await expect(dialog.locator(".ws-notion-preview-text")).toContainText(text);
@@ -102,7 +103,7 @@ for (const presentationVersion of [3, 4]) test(`version ${presentationVersion}: 
     }
     expect((await read()).review.status).toBe("Reviewed");
     await otherTab.close();
-    expect(confirms).toBe(index + 1); expect(resumes).toBe((index + 1) * 4); expect(publishedText).toContain(text);
+    expect(confirms).toBe(index + 1); expect(resumes).toBe((index + 1) * 5); expect(publishedText).toContain(text);
     await expect(dialog.getByRole("link", { name: "Open app-owned Notion page" })).toHaveAttribute("href", pageUrl);
     await dialog.getByRole("button", { name: "Close Publish/update in Notion", exact: true }).click();
   }

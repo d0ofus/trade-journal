@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { htmlToNotionBlocks, managedBlockValue, notionRichText } from "./notion-format";
-import { propertyValue } from "./notion-publisher";
+import { blockMatchesRequest, htmlToNotionBlocks, managedBlockValue, notionRichText } from "./notion-format";
+import { propertyMatchesRequest, propertyValue } from "./notion-publisher";
 import { jsonHash, type JsonObject, type RemoteBlock } from "./notion-client";
+import { notionPublicationProperties } from "./notion-properties";
+import dateConfirmation from "../../../fixtures/notion-confirmation/entry-date-minute-precision.json";
 describe("Notion formatting and conflict normalization", () => {
   it.each(["", " \n\t", "<p></p>", "<p><br></p>", "<ul><li><p>&nbsp;&#160;</p></li></ul>", "<p><strong> </strong></p>"])("omits visually empty rich text %s", html => {
     expect(htmlToNotionBlocks(html)).toEqual([]);
@@ -34,5 +36,31 @@ describe("Notion formatting and conflict normalization", () => {
   });
   it("does not treat reordered JSON annotation keys as conflicting edits", () => {
     expect(jsonHash({ annotations: { italic: true, bold: true } })).toBe(jsonHash({ annotations: { bold: true, italic: true } }));
+  });
+  it("accepts equivalent rich-text runs without changing ownership fingerprints", () => {
+    const expected = { type: "paragraph", paragraph: { rich_text: [{ text: { content: "First " } }, { text: { content: "second" }, annotations: { bold: false } }] } };
+    const actual: RemoteBlock = { id: "confirmed", type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: "First second", link: null }, annotations: { color: "default", bold: false } }] } };
+    expect(blockMatchesRequest(actual, expected)).toBe(true);
+    expect(managedBlockValue(actual)).not.toEqual(managedBlockValue({ id: "", ...expected }));
+    expect(propertyMatchesRequest({ type: "rich_text", rich_text: (actual.paragraph as JsonObject).rich_text }, { rich_text: expected.paragraph.rich_text })).toBe(true);
+  });
+  it("requires full block content and preserves meaningful text, style, link and type changes", () => {
+    const expected = htmlToNotionBlocks("<p>First second</p>")[0];
+    expect(blockMatchesRequest({ id: "partial" }, expected)).toBe(false);
+    for (const rich_text of [[{ text: { content: "Firstsecond" } }], [{ text: { content: "First second" }, annotations: { bold: true } }], [{ text: { content: "First second", link: { url: "https://example.invalid/changed" } } }], [{ type: "mention", plain_text: "First second", mention: { type: "page", page: { id: "other" } } }]]) {
+      expect(blockMatchesRequest({ id: "changed", type: "paragraph", paragraph: { rich_text } }, expected)).toBe(false);
+      expect(propertyMatchesRequest({ rich_text }, { rich_text: (expected.paragraph as JsonObject).rich_text })).toBe(false);
+    }
+    expect(propertyMatchesRequest({ number: 100.01 }, { number: 100 })).toBe(false);
+    expect(propertyMatchesRequest({ date: { start: "2026-07-01T13:30:01Z" } }, { date: { start: "2026-07-01T13:30:00Z" } })).toBe(false);
+  });
+  it("reproduces the recorded Entry Date mismatch with an explicit outbound projection", () => {
+    const frozen = structuredClone(dateConfirmation.request);
+    const projected = notionPublicationProperties({ entryDate: frozen }).entryDate;
+    expect(propertyValue(frozen)).not.toEqual(dateConfirmation.canonicalResponse);
+    expect(propertyValue(projected)).toEqual(dateConfirmation.canonicalResponse);
+    expect(frozen).toEqual(dateConfirmation.request);
+    const changed = { date: { ...dateConfirmation.canonicalResponse.value, start: "2026-07-01T13:31:00.000Z" } };
+    expect(propertyMatchesRequest(changed, projected)).toBe(false);
   });
 });
